@@ -1,0 +1,57 @@
+package core
+
+import "context"
+
+// PolicyDecisionType represents the outcome of a policy evaluation.
+type PolicyDecisionType string
+
+const (
+	PolicyDecisionAllow            PolicyDecisionType = "allow"
+	PolicyDecisionDeny             PolicyDecisionType = "deny"
+	PolicyDecisionApprovalRequired PolicyDecisionType = "approval_required"
+	PolicyDecisionRedactContext    PolicyDecisionType = "redact_context"
+	PolicyDecisionReduceScope      PolicyDecisionType = "reduce_context_scope"
+	PolicyDecisionThrottle         PolicyDecisionType = "throttle"
+)
+
+// PolicyInput is the input to a policy evaluation.
+type PolicyInput struct {
+	TenantID string    `json:"tenant_id"`
+	Actor    PolicyActor `json:"actor"`
+	Action   string    `json:"action"`
+	Resource PolicyResource `json:"resource"`
+	Context  PolicyContextData `json:"context"`
+}
+
+// PolicyActor represents the entity performing an action.
+type PolicyActor struct {
+	Type string `json:"type"` // "agent", "user", "system"
+	ID   string `json:"id"`
+}
+
+// PolicyResource represents the target of an action.
+type PolicyResource struct {
+	Type  string `json:"type"`  // "capability", "agent", "mailbox", "tool"
+	Value string `json:"value"`
+}
+
+// PolicyContextData carries additional context for policy evaluation.
+type PolicyContextData struct {
+	DataClassification string  `json:"data_classification,omitempty"`
+	Tools              []string `json:"tools,omitempty"`
+	CostEstimateUSD    float64 `json:"cost_estimate_usd,omitempty"`
+}
+
+// PolicyDecision is the output of a policy evaluation.
+type PolicyDecision struct {
+	Decision     PolicyDecisionType `json:"decision"`
+	DecisionID   string            `json:"decision_id"`
+	MatchedRules []string          `json:"matched_rules,omitempty"`
+	Reason       string            `json:"reason,omitempty"`
+}
+
+// PolicyEngine is the interface for policy evaluation.
+// Implementations: BuiltinPolicyEngine (MVP), OPAPolicyEngine (enterprise).
+type PolicyEngine interface {
+	Evaluate(ctx context.Context, input PolicyInput) (PolicyDecision, error)
+}

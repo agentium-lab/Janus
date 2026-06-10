@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
+import "janus/v1/common.proto";
+
+message PullTaskRequest {
+  string tenant_id = 1;
+  string mailbox_id = 2;
+  int32 max_messages = 3;
+  google.protobuf.Duration wait_time = 4;
+}
+
+message Lease {
+  string lease_id = 1;
+  google.protobuf.Timestamp expires_at = 2;
+}
+
+message PullTaskResponse {
+  Task task = 1;
+  Lease lease = 2;
+}
+
+message StartTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string lease_id = 3;
+}
+
+message StartTaskResponse {}
+
+message TaskHeartbeatRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string lease_id = 3;
+}
+
+message TaskHeartbeatResponse {}
+
+message AckTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string lease_id = 3;
+  string result_ref = 4;
+  TokenUsage token_usage = 5;
+}
+
+message AckTaskResponse {}
+
+message NackTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string lease_id = 3;
+  bool retriable = 4;
+  TaskError error = 5;
+}
+
+message NackTaskResponse {}
+
+service DispatchService {
+  rpc PullTask(PullTaskRequest) returns (PullTaskResponse);
+  rpc StartTask(StartTaskRequest) returns (StartTaskResponse);
+  rpc TaskHeartbeat(TaskHeartbeatRequest) returns (TaskHeartbeatResponse);
+  rpc AckTask(AckTaskRequest) returns (AckTaskResponse);
+  rpc NackTask(NackTaskRequest) returns (NackTaskResponse);
+}

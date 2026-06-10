@@ -1,0 +1,53 @@
+server:
+  http_port: 8080
+  grpc_port: 9090
+
+nats:
+  url: "nats://localhost:4222"
+
+postgres:
+  host: "localhost"
+  port: 5432
+  user: "janus"
+  password: "${JANUS_PG_PASSWORD}"
+  database: "janus"
+  max_conns: 20
+
+cache:
+  driver: "redis"
+  mode: "standalone"
+  addr: "localhost:6379"
+  sentinel:
+    master_name: "mymaster"
+    addrs:
+      - "sentinel1:26379"
+      - "sentinel2:26379"
+      - "sentinel3:26379"
+  cluster:
+    addrs:
+      - "node1:6379"
+      - "node2:6379"
+      - "node3:6379"
+  password: "${JANUS_CACHE_PASSWORD}"
+  db: 0
+  pool_size: 100
+
+log:
+  level: "info"
+  format: "json"
+
+migration:
+  auto: true
+  path: "migrations/"
+
+heartbeat:
+  sweeper_interval: "30s"
+  ttl: "60s"
+
+observability:
+  metrics:
+    enabled: true
+    port: 9091
+  tracing:
+    enabled: false
+    endpoint: ""

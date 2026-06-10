@@ -1,0 +1,91 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/protobuf/timestamp.proto";
+import "janus/v1/common.proto";
+
+message AgentCapability {
+  string capability = 1;
+  string description = 2;
+}
+
+message Agent {
+  string id = 1;
+  string tenant_id = 2;
+  string display_name = 3;
+  string protocol = 4;
+  string endpoint = 5;
+  string status = 6;
+  string description = 7;
+  repeated AgentCapability capabilities = 8;
+  int32 max_concurrency = 9;
+  int32 rpm = 10;
+  int32 tpm = 11;
+  google.protobuf.Timestamp created_at = 12;
+  google.protobuf.Timestamp updated_at = 13;
+  google.protobuf.Timestamp last_heartbeat_at = 14;
+}
+
+message RegisterAgentRequest {
+  string tenant_id = 1;
+  string id = 2;
+  string display_name = 3;
+  string protocol = 4;
+  string endpoint = 5;
+  string description = 6;
+  repeated AgentCapability capabilities = 7;
+  int32 max_concurrency = 8;
+  int32 rpm = 9;
+  int32 tpm = 10;
+}
+
+message UpdateAgentRequest {
+  string tenant_id = 1;
+  string agent_id = 2;
+  optional string display_name = 3;
+  optional string endpoint = 4;
+  optional string description = 5;
+  optional string status = 6;
+  repeated AgentCapability capabilities = 7;
+  optional int32 max_concurrency = 8;
+  optional int32 rpm = 9;
+  optional int32 tpm = 10;
+}
+
+message HeartbeatRequest {
+  string tenant_id = 1;
+  string agent_id = 2;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp server_time = 1;
+}
+
+message ListAgentsRequest {
+  string tenant_id = 1;
+  string status = 2;
+  string capability = 3;
+  int32 page_size = 4;
+  string page_token = 5;
+}
+
+message ListAgentsResponse {
+  repeated Agent agents = 1;
+  string next_page_token = 2;
+}
+
+message GetAgentRequest {
+  string tenant_id = 1;
+  string agent_id = 2;
+}
+
+service AgentService {
+  rpc RegisterAgent(RegisterAgentRequest) returns (Agent);
+  rpc UpdateAgent(UpdateAgentRequest) returns (Agent);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+  rpc GetAgent(GetAgentRequest) returns (Agent);
+}

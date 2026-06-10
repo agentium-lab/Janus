@@ -1,0 +1,9 @@
+go 1.25.8
+
+use (
+	./cli
+	./core
+	./proto
+	./sdk/go
+	./server
+)

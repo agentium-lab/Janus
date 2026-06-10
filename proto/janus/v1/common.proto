@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// Target
+message Target {
+  string type = 1;
+  string value = 2;
+}
+
+// Budget
+message Budget {
+  int64 max_tokens = 1;
+  double max_cost_usd = 2;
+  repeated string model_classes = 3;
+}
+
+// PolicyContext
+message PolicyContext {
+  string data_classification = 1;
+  bool requires_human_approval = 2;
+  repeated string allowed_tools = 3;
+}
+
+// ContextRef
+message ContextRef {
+  string type = 1;
+  string uri = 2;
+  string hash = 3;
+  string classification = 4;
+  google.protobuf.Timestamp expires_at = 5;
+}
+
+// Payload
+message TaskPayload {
+  string type = 1;
+  string content = 2;
+}
+
+// TraceContext
+message TraceContext {
+  string trace_id = 1;
+  string parent_task_id = 2;
+  string span_id = 3;
+}
+
+// TaskEnvelope
+message TaskEnvelope {
+  string janus_version = 1;
+  string task_id = 2;
+  string idempotency_key = 3;
+  string tenant_id = 4;
+  string source_agent = 5;
+  Target target = 6;
+  string priority = 7;
+  google.protobuf.Timestamp deadline = 8;
+  int32 ttl_seconds = 9;
+  Budget budget = 10;
+  PolicyContext policy = 11;
+  repeated ContextRef context_refs = 12;
+  TaskPayload payload = 13;
+  TraceContext trace = 14;
+}
+
+// Task (current state view)
+message Task {
+  string tenant_id = 1;
+  string id = 2;
+  string idempotency_key = 3;
+  string source_agent = 4;
+  string target_type = 5;
+  string target_value = 6;
+  string mailbox_id = 7;
+  string status = 8;
+  string priority = 9;
+  google.protobuf.Timestamp deadline = 10;
+  int32 ttl_seconds = 11;
+  TaskEnvelope envelope = 12;
+  string result_ref = 13;
+  TaskError error = 14;
+  int32 attempt_count = 15;
+  google.protobuf.Timestamp created_at = 16;
+  google.protobuf.Timestamp updated_at = 17;
+  google.protobuf.Timestamp completed_at = 18;
+}
+
+message TaskError {
+  string code = 1;
+  string message = 2;
+}
+
+// TokenUsage
+message TokenUsage {
+  int64 prompt_tokens = 1;
+  int64 completion_tokens = 2;
+  int64 total_tokens = 3;
+}

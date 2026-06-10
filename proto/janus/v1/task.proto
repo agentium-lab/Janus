@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/protobuf/timestamp.proto";
+import "janus/v1/common.proto";
+
+message CreateTaskRequest {
+  string tenant_id = 1;
+  TaskEnvelope envelope = 2;
+}
+
+message GetTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+}
+
+message CancelTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string reason = 3;
+}
+
+message ReplayTaskRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  string target_mailbox_id = 3;
+}
+
+service TaskService {
+  rpc CreateTask(CreateTaskRequest) returns (Task);
+  rpc GetTask(GetTaskRequest) returns (Task);
+  rpc CancelTask(CancelTaskRequest) returns (Task);
+  rpc ReplayTask(ReplayTaskRequest) returns (Task);
+}

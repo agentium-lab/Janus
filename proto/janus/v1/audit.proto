@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+message JanusEvent {
+  string event_id = 1;
+  string event_type = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  string tenant_id = 4;
+  string trace_id = 5;
+  string task_id = 6;
+  string source_agent = 7;
+  string target_agent = 8;
+  string actor_type = 9;
+  string actor_id = 10;
+  google.protobuf.Struct payload = 11;
+}
+
+message ListEventsRequest {
+  string tenant_id = 1;
+  string event_type = 2;
+  string task_id = 3;
+  string trace_id = 4;
+  google.protobuf.Timestamp start_time = 5;
+  google.protobuf.Timestamp end_time = 6;
+  int32 page_size = 7;
+  string page_token = 8;
+}
+
+message ListEventsResponse {
+  repeated JanusEvent events = 1;
+  string next_page_token = 2;
+}
+
+message GetTraceRequest {
+  string tenant_id = 1;
+  string trace_id = 2;
+}
+
+message GetTraceResponse {
+  repeated JanusEvent events = 1;
+}
+
+message ListTaskEventsRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+  int32 page_size = 3;
+  string page_token = 4;
+}
+
+message ListTaskEventsResponse {
+  repeated JanusEvent events = 1;
+  string next_page_token = 2;
+}
+
+service AuditService {
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
+  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
+  rpc ListTaskEvents(ListTaskEventsRequest) returns (ListTaskEventsResponse);
+}

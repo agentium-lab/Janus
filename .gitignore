@@ -1,0 +1,24 @@
+# Binaries
+/bin/
+*.exe
+
+# Proto generated
+proto/gen/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Environment
+.env
+
+# Build output
+/dist/
+
+# Test
+coverage.out
+*.test
