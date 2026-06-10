@@ -78,6 +78,26 @@ type EventIterator interface {
 	Close() error
 }
 
+// HeartbeatDriver abstracts heartbeat storage and offline detection.
+// Default implementation: Redis. Future: Valkey, Dragonfly, etc.
+type HeartbeatDriver interface {
+	// Ping records an agent heartbeat with TTL.
+	Ping(ctx context.Context, tenantID, agentID string) error
+
+	// GetLastHeartbeat returns the last heartbeat timestamp for an agent.
+	// Returns nil if no heartbeat found (key expired or never set).
+	GetLastHeartbeat(ctx context.Context, tenantID, agentID string) (*time.Time, error)
+
+	// ScanExpired returns agent IDs whose heartbeats have expired within a tenant.
+	ScanExpired(ctx context.Context, tenantID string) ([]string, error)
+
+	// Remove deletes a heartbeat entry.
+	Remove(ctx context.Context, tenantID, agentID string) error
+
+	// Close releases resources.
+	Close() error
+}
+
 // QueueEventDriver is the abstraction over the message/event backend.
 // Default implementation: NATS JetStream. Future: Pulsar, Kafka, etc.
 type QueueEventDriver interface {
