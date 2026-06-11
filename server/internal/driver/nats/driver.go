@@ -350,6 +350,23 @@ func (d *Driver) Conn() *nats.Conn {
 	return d.nc
 }
 
+func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent) (*nats.Subscription, error) {
+	sub, err := d.nc.Subscribe("janus.*.events.>", func(msg *nats.Msg) {
+		var event core.JanusEvent
+		if err := json.Unmarshal(msg.Data, &event); err != nil {
+			return
+		}
+		select {
+		case ch <- event:
+		default:
+		}
+	})
+	if err != nil {
+		return nil, fmt.Errorf("subscribe events: %w", err)
+	}
+	return sub, nil
+}
+
 func (d *Driver) StorePending(ref core.DeliveryRef, msg jetstream.Msg) {
 	d.mu.Lock()
 	defer d.mu.Unlock()

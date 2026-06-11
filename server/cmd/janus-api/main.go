@@ -77,6 +77,10 @@ func main() {
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 
 	eventCh := make(chan core.JanusEvent, 256)
+	_, err = natsDrv.SubscribeEvents(context.Background(), eventCh)
+	if err != nil {
+		log.Fatalf("subscribe events: %v", err)
+	}
 	broadcaster := handler.NewFanoutBroadcaster(eventCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
 

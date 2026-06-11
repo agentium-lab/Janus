@@ -464,3 +464,89 @@ func TestDriver_EnsureMailboxDuplicate(t *testing.T) {
 		TenantID: "acme", MailboxID: "mb1",
 	}))
 }
+
+func TestDriver_SubscribeEvents(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	require.NoError(t, d.EnsureTenant(ctx, "acme"))
+
+	ch := make(chan core.JanusEvent, 16)
+	sub, err := d.SubscribeEvents(ctx, ch)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
+		EventID:   "evt_sub_1",
+		EventType: core.EventTaskCreated,
+		TenantID:  "acme",
+		TaskID:    "task_sub_1",
+		Payload:   []byte(`{"status":"created"}`),
+	}))
+
+	select {
+	case event := <-ch:
+		assert.Equal(t, "evt_sub_1", event.EventID)
+		assert.Equal(t, core.EventTaskCreated, event.EventType)
+		assert.Equal(t, "acme", event.TenantID)
+		assert.Equal(t, "task_sub_1", event.TaskID)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for subscribed event")
+	}
+}
+
+func TestDriver_SubscribeEvents_MultiTenant(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	require.NoError(t, d.EnsureTenant(ctx, "t1"))
+	require.NoError(t, d.EnsureTenant(ctx, "t2"))
+
+	ch := make(chan core.JanusEvent, 16)
+	sub, err := d.SubscribeEvents(ctx, ch)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
+		EventID: "e1", EventType: core.EventTaskCreated, TenantID: "t1", TaskID: "task1",
+	}))
+	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
+		EventID: "e2", EventType: core.EventTaskStarted, TenantID: "t2", TaskID: "task2",
+	}))
+
+	received := map[string]string{}
+	for i := 0; i < 2; i++ {
+		select {
+		case e := <-ch:
+			received[e.EventID] = e.TenantID
+		case <-time.After(3 * time.Second):
+			t.Fatal("timeout")
+		}
+	}
+	assert.Equal(t, "t1", received["e1"])
+	assert.Equal(t, "t2", received["e2"])
+}
+
+func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	require.NoError(t, d.EnsureTenant(ctx, "acme"))
+
+	ch := make(chan core.JanusEvent, 16)
+	sub, err := d.SubscribeEvents(ctx, ch)
+	require.NoError(t, err)
+	defer sub.Unsubscribe()
+
+	nc := d.Conn()
+	err = nc.Publish("janus.acme.events.task.created", []byte("not-json"))
+	require.NoError(t, err)
+
+	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
+		EventID: "good", EventType: core.EventTaskCreated, TenantID: "acme",
+	}))
+
+	select {
+	case e := <-ch:
+		assert.Equal(t, "good", e.EventID)
+	case <-time.After(3 * time.Second):
+		t.Fatal("should receive good event after bad JSON is dropped")
+	}
+}
