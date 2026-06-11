@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 )
 
 type PullResult struct {
@@ -47,6 +48,8 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	if tenantID == "" || mailboxID == "" || agentID == "" {
 		return nil, fmt.Errorf("tenant id, mailbox id, and agent id are required")
 	}
+
+	ctx = natsdriver.ContextWithTenant(ctx, tenantID)
 
 	decision, err := s.policySvc.Evaluate(ctx, core.PolicyInput{
 		TenantID: tenantID,

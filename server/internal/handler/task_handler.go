@@ -65,13 +65,18 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		priority = core.PriorityNormal
 	}
 
+	mailboxID := req.MailboxID
+	if mailboxID == "" && core.TargetType(req.TargetType) == core.TargetTypeMailbox {
+		mailboxID = req.TargetValue
+	}
+
 	task := core.Task{
 		TenantID:       tenantID,
 		ID:             req.ID,
 		SourceAgent:    req.SourceAgent,
 		TargetType:     core.TargetType(req.TargetType),
 		TargetValue:    req.TargetValue,
-		MailboxID:      req.MailboxID,
+		MailboxID:      mailboxID,
 		IdempotencyKey: req.IdempotencyKey,
 		Priority:       priority,
 		Status:         core.TaskStatusCreated,
