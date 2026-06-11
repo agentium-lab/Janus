@@ -272,7 +272,7 @@ func TestDispatchService_StartTask_Success(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		AgentID: "agent-1", LeaseID: "lease-abc", Status: "claimed",
+		AgentID: "agent-1", LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "claimed",
 	}}
 
 	err := svc.StartTask(ctx, "acme", "task-1", "lease-abc")
@@ -290,7 +290,7 @@ func TestDispatchService_StartTask_LeaseMismatch(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		AgentID: "agent-1", LeaseID: "lease-abc", Status: "claimed",
+		AgentID: "agent-1", LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "claimed",
 	}}
 
 	err := svc.StartTask(ctx, "acme", "task-1", "wrong-lease")
@@ -312,7 +312,7 @@ func TestDispatchService_TaskHeartbeat_Success(t *testing.T) {
 
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.TaskHeartbeat(ctx, "acme", "task-1", "lease-abc")
@@ -325,7 +325,7 @@ func TestDispatchService_TaskHeartbeat_LeaseMismatch(t *testing.T) {
 
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.TaskHeartbeat(ctx, "acme", "task-1", "wrong")
@@ -346,7 +346,7 @@ func TestDispatchService_AckTask_Success(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	usage := &core.TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
@@ -366,7 +366,7 @@ func TestDispatchService_AckTask_NoUsage(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.AckTask(ctx, "acme", "task-1", "lease-abc", "", nil)
@@ -381,7 +381,7 @@ func TestDispatchService_AckTask_LeaseMismatch(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.AckTask(ctx, "acme", "task-1", "wrong", "", nil)
@@ -408,7 +408,7 @@ func TestDispatchService_NackTask_Retriable(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	taskErr := &core.TaskError{Code: "TIMEOUT", Message: "agent timed out"}
@@ -428,7 +428,7 @@ func TestDispatchService_NackTask_NonRetriable(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", false, &core.TaskError{Code: "FATAL", Message: "unrecoverable"})
@@ -453,7 +453,7 @@ func TestDispatchService_NackTask_RetriesExhausted(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 5,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", true, nil)
@@ -468,7 +468,7 @@ func TestDispatchService_NackTask_LeaseMismatch(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "wrong", false, nil)
@@ -490,7 +490,7 @@ func TestDispatchService_NackTask_NoError(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", false, nil)
@@ -534,7 +534,7 @@ func TestDispatchService_NackTask_NoMailbox(t *testing.T) {
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
-		LeaseID: "lease-abc", Status: "running",
+		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", true, nil)

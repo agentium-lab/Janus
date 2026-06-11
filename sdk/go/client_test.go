@@ -22,6 +22,24 @@ func newTestClient(t *testing.T, handler http.Handler) *Client {
 func testMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
+	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"id": "test-tenant"})
+	})
+
+	mux.HandleFunc("/v1/tenants/test-tenant/mailboxes", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]string{"id": "mb-1"})
+	})
+
 	mux.HandleFunc("/v1/tenants/test-tenant/agents", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.NotFound(w, r)
@@ -95,6 +113,18 @@ func testMux() *http.ServeMux {
 	})
 
 	return mux
+}
+
+func TestClient_CreateTenant(t *testing.T) {
+	c := newTestClient(t, testMux())
+	err := c.CreateTenant(context.Background(), "test-tenant", "Test")
+	require.NoError(t, err)
+}
+
+func TestClient_CreateMailbox(t *testing.T) {
+	c := newTestClient(t, testMux())
+	err := c.CreateMailbox(context.Background(), "mb-1", "agent-1")
+	require.NoError(t, err)
 }
 
 func TestClient_RegisterAgent(t *testing.T) {
