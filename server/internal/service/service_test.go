@@ -2,11 +2,11 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -34,11 +34,11 @@ func (m *mockTenantRepo) GetName(_ context.Context, id string) (string, error) {
 		return "", m.err
 	}
 	if m.tenants == nil {
-		return "", sql.ErrNoRows
+		return "", pgx.ErrNoRows
 	}
 	name, ok := m.tenants[id]
 	if !ok {
-		return "", sql.ErrNoRows
+		return "", pgx.ErrNoRows
 	}
 	return name, nil
 }

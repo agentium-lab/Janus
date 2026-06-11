@@ -2,21 +2,21 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
-func insertTestTenant(t *testing.T, db *sql.DB, id string) {
-	_, err := db.Exec("INSERT INTO tenants (id, name) VALUES ($1, $2)", id, "Tenant "+id)
+func insertTestTenant(t *testing.T, pool *pgxpool.Pool, id string) {
+	_, err := pool.Exec(context.Background(), "INSERT INTO tenants (id, name) VALUES ($1, $2)", id, "Tenant "+id)
 	require.NoError(t, err)
 }
 
 func TestTenantRepo_CreateAndGet(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewTenantRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewTenantRepository(pool)
 	ctx := context.Background()
 
 	err := repo.Create(ctx, "acme", "Acme Corp")
@@ -30,9 +30,9 @@ func TestTenantRepo_CreateAndGet(t *testing.T) {
 }
 
 func TestTenantRepo_CreateDuplicate(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewTenantRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewTenantRepository(pool)
 	ctx := context.Background()
 
 	err := repo.Create(ctx, "acme", "Acme Corp")

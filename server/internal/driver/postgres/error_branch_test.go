@@ -2,11 +2,11 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -14,21 +14,21 @@ import (
 )
 
 func TestAgentRepo_GetNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	_, err := repo.Get(ctx, "acme", "nonexistent")
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, pgx.ErrNoRows, err)
 }
 
 func TestAgentRepo_ListEmpty(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agents, err := repo.List(ctx, "acme")
@@ -37,10 +37,10 @@ func TestAgentRepo_ListEmpty(t *testing.T) {
 }
 
 func TestAgentRepo_ListByStatusEmpty(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agents, err := repo.ListByStatus(ctx, "acme", core.AgentStatusDegraded)
@@ -49,10 +49,10 @@ func TestAgentRepo_ListByStatusEmpty(t *testing.T) {
 }
 
 func TestAgentRepo_WithNullFields(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agent := core.Agent{
@@ -74,21 +74,130 @@ func TestAgentRepo_WithNullFields(t *testing.T) {
 	assert.Nil(t, got.LastHeartbeatAt)
 }
 
+func TestAgentRepo_ListNullFieldsViaList(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
+	ctx := context.Background()
+
+	require.NoError(t, repo.Register(ctx, core.Agent{
+		ID: "minimal", TenantID: "acme", DisplayName: "Minimal Agent",
+		Protocol: core.ProtocolA2A, Status: core.AgentStatusOnline, MaxConcurrency: 1,
+	}))
+	require.NoError(t, repo.Register(ctx, core.Agent{
+		ID: "full", TenantID: "acme", DisplayName: "Full Agent",
+		Protocol: core.ProtocolA2A, Status: core.AgentStatusOffline, MaxConcurrency: 4,
+		Endpoint: "https://example.com", Description: "desc", RPM: 100, TPM: 500,
+	}))
+
+	all, err := repo.List(ctx, "acme")
+	require.NoError(t, err)
+	require.Len(t, all, 2)
+
+	var minimal, full *core.Agent
+	for _, a := range all {
+		if a.ID == "minimal" {
+			minimal = a
+		} else {
+			full = a
+		}
+	}
+	require.NotNil(t, minimal)
+	require.NotNil(t, full)
+
+	assert.Equal(t, "", minimal.Endpoint)
+	assert.Equal(t, "", minimal.Description)
+	assert.Equal(t, 0, minimal.RPM)
+	assert.Equal(t, 0, minimal.TPM)
+	assert.Nil(t, minimal.LastHeartbeatAt)
+
+	assert.Equal(t, "https://example.com", full.Endpoint)
+	assert.Equal(t, "desc", full.Description)
+	assert.Equal(t, 100, full.RPM)
+	assert.Equal(t, 500, full.TPM)
+}
+
+func TestTaskRepo_NullFieldsInScan(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
+	ctx := context.Background()
+
+	task := makeTestTask("acme", "task_minimal")
+	task.IdempotencyKey = ""
+	task.MailboxID = ""
+	require.NoError(t, repo.Create(ctx, task))
+
+	got, err := repo.Get(ctx, "acme", "task_minimal")
+	require.NoError(t, err)
+	assert.Equal(t, "", got.IdempotencyKey)
+	assert.Equal(t, "", got.MailboxID)
+	assert.Equal(t, "", got.ResultRef)
+	assert.Nil(t, got.Error)
+}
+
+func TestTaskRepo_WithErrorJSON(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
+	ctx := context.Background()
+
+	task := makeTestTask("acme", "task_err")
+	require.NoError(t, repo.Create(ctx, task))
+	require.NoError(t, repo.UpdateStatus(ctx, "acme", "task_err", core.TaskStatusRunning, 0))
+
+	_, err := pool.Exec(ctx,
+		`UPDATE tasks SET error = $1 WHERE tenant_id = $2 AND id = $3`,
+		`{"code":"TIMEOUT","message":"agent timed out"}`, "acme", "task_err",
+	)
+	require.NoError(t, err)
+
+	got, err := repo.Get(ctx, "acme", "task_err")
+	require.NoError(t, err)
+	require.NotNil(t, got.Error)
+	assert.Equal(t, "TIMEOUT", got.Error.Code)
+	assert.Equal(t, "agent timed out", got.Error.Message)
+}
+
+func TestTaskRepo_NullFieldsViaListByStatus(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
+	ctx := context.Background()
+
+	task := makeTestTask("acme", "task_list_null")
+	task.IdempotencyKey = ""
+	task.MailboxID = ""
+	require.NoError(t, repo.Create(ctx, task))
+
+	tasks, err := repo.ListByStatus(ctx, "acme", core.TaskStatusCreated, 10)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "", tasks[0].IdempotencyKey)
+	assert.Equal(t, "", tasks[0].MailboxID)
+	assert.Equal(t, "", tasks[0].ResultRef)
+	assert.Nil(t, tasks[0].Error)
+}
+
 func TestTaskRepo_GetNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	_, err := repo.Get(ctx, "acme", "nonexistent")
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, pgx.ErrNoRows, err)
 }
 
 func TestTaskRepo_WithDeadlineAndTTL(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	deadline := time.Date(2026, 12, 31, 23, 59, 59, 0, time.UTC)
@@ -124,12 +233,12 @@ func TestTaskRepo_WithDeadlineAndTTL(t *testing.T) {
 }
 
 func TestTaskRepo_WithMailboxAndResult(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	agentRepo := NewAgentRepository(db)
-	mailboxRepo := NewMailboxRepository(db)
-	taskRepo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	agentRepo := NewAgentRepository(pool)
+	mailboxRepo := NewMailboxRepository(pool)
+	taskRepo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	require.NoError(t, agentRepo.Register(ctx, core.Agent{
@@ -154,10 +263,10 @@ func TestTaskRepo_WithMailboxAndResult(t *testing.T) {
 }
 
 func TestTaskRepo_ListByStatusEmpty(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	tasks, err := repo.ListByStatus(ctx, "acme", core.TaskStatusRunning, 10)
@@ -166,10 +275,10 @@ func TestTaskRepo_ListByStatusEmpty(t *testing.T) {
 }
 
 func TestTaskRepo_DuplicateID(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := makeTestTask("acme", "task_dup")
@@ -180,19 +289,19 @@ func TestTaskRepo_DuplicateID(t *testing.T) {
 }
 
 func TestMailboxRepo_GetNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewMailboxRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewMailboxRepository(pool)
 	ctx := context.Background()
 
 	_, err := repo.Get(ctx, "acme", "nonexistent")
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, pgx.ErrNoRows, err)
 }
 
 func TestMailboxRepo_ListByAgentEmpty(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewMailboxRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewMailboxRepository(pool)
 	ctx := context.Background()
 
 	mailboxes, err := repo.ListByAgent(ctx, "acme", "nonexistent")
@@ -201,19 +310,19 @@ func TestMailboxRepo_ListByAgentEmpty(t *testing.T) {
 }
 
 func TestTenantRepo_GetNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewTenantRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewTenantRepository(pool)
 	ctx := context.Background()
 
 	_, err := repo.GetName(ctx, "nonexistent")
-	assert.Equal(t, sql.ErrNoRows, err)
+	assert.Equal(t, pgx.ErrNoRows, err)
 }
 
 func TestAgentRepo_UpdateStatusNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	err := repo.UpdateStatus(ctx, "acme", "nonexistent", core.AgentStatusOffline)
@@ -221,9 +330,9 @@ func TestAgentRepo_UpdateStatusNotFound(t *testing.T) {
 }
 
 func TestAgentRepo_UpdateHeartbeatNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	err := repo.UpdateHeartbeat(ctx, "acme", "nonexistent")
@@ -231,9 +340,9 @@ func TestAgentRepo_UpdateHeartbeatNotFound(t *testing.T) {
 }
 
 func TestTaskRepo_UpdateStatusNotFound(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	err := repo.UpdateStatus(ctx, "acme", "nonexistent", core.TaskStatusQueued, 0)
@@ -241,10 +350,10 @@ func TestTaskRepo_UpdateStatusNotFound(t *testing.T) {
 }
 
 func TestAgentRepo_ListMultipleWithHeartbeats(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	for i := 0; i < 5; i++ {
@@ -265,10 +374,10 @@ func TestAgentRepo_ListMultipleWithHeartbeats(t *testing.T) {
 }
 
 func TestTaskRepo_FullLifecycle(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := makeTestTask("acme", "task_lifecycle")

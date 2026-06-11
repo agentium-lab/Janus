@@ -2,8 +2,9 @@ package service
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -32,7 +33,7 @@ func (s *TenantService) Get(ctx context.Context, id string) (*core.Tenant, error
 	}
 	name, err := s.repo.GetName(ctx, id)
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == pgx.ErrNoRows {
 			return nil, fmt.Errorf("tenant %s not found", id)
 		}
 		return nil, fmt.Errorf("get tenant: %w", err)

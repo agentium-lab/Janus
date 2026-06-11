@@ -3,7 +3,6 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,23 +16,23 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/agentium-lab/Janus/core"
 
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/service"
-
-	"github.com/agentium-lab/Janus/core"
 )
 
 const testTenant = "e2e-tenant"
 
 var (
-	db       *sql.DB
+	pool     *pgxpool.Pool
 	server   *httptest.Server
 	natsDrv  *natsdriver.Driver
 	redisDrv *redisdriver.Driver
@@ -45,19 +44,20 @@ func TestMain(m *testing.M) {
 	redisAddr := envOr("JANUS_REDIS_ADDR", "localhost:6379")
 	migrationPath := envOr("JANUS_MIGRATION_PATH", "../../../migrations/")
 
+	ctx := context.Background()
 	var err error
 
-	db, err = sql.Open("postgres", pgDSN)
+	pool, err = pgxpool.New(ctx, pgDSN)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "pg open: %v\n", err)
+		fmt.Fprintf(os.Stderr, "pgx pool open: %v\n", err)
 		os.Exit(1)
 	}
-	if err := db.Ping(); err != nil {
+	if err := pool.Ping(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "pg ping: %v (is postgres running?)\n", err)
 		os.Exit(1)
 	}
 
-	cleanDB(db)
+	cleanDB(pool)
 
 	mi, err := migrate.New("file://"+migrationPath, pgDSN)
 	if err != nil {
@@ -82,21 +82,34 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	tenantRepo := pgdriver.NewTenantRepository(db)
-	agentRepo := pgdriver.NewAgentRepository(db)
-	taskRepo := pgdriver.NewTaskRepository(db)
-	mailboxRepo := pgdriver.NewMailboxRepository(db)
+	tenantRepo := pgdriver.NewTenantRepository(pool)
+	agentRepo := pgdriver.NewAgentRepository(pool)
+	taskRepo := pgdriver.NewTaskRepository(pool)
+	mailboxRepo := pgdriver.NewMailboxRepository(pool)
+	attemptRepo := pgdriver.NewTaskAttemptRepository(pool)
+	budgetRepo := pgdriver.NewBudgetRepository(pool)
+	policyRuleRepo := pgdriver.NewPolicyRuleRepository(pool)
+	eventRepo := pgdriver.NewEventRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	taskSvc := service.NewTaskService(taskRepo, natsDrv)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
+	policySvc := service.NewPolicyService(policyRuleRepo)
+	budgetSvc := service.NewBudgetService(budgetRepo)
+	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
+	eventSvc := service.NewEventService(eventRepo)
+
+	dispatchH := handler.NewDispatchHandler(&e2eDispatchAdapter{svc: dispatchSvc})
+	auditH := handler.NewAuditHandler(&e2eAuditAdapter{svc: eventSvc})
 
 	mux := newTestRouter(
 		handler.NewTenantHandler(tenantSvc),
 		handler.NewAgentHandler(agentSvc),
 		handler.NewTaskHandler(taskSvc),
 		handler.NewMailboxHandler(mailboxSvc),
+		dispatchH,
+		auditH,
 	)
 
 	server = httptest.NewServer(mux)
@@ -107,7 +120,7 @@ func TestMain(m *testing.M) {
 	server.Close()
 	natsDrv.Close()
 	redisDrv.Close()
-	db.Close()
+	pool.Close()
 	os.Exit(code)
 }
 
@@ -128,9 +141,9 @@ func TestE2E_TenantCreateAndGet(t *testing.T) {
 
 func TestE2E_AgentRegisterAndGet(t *testing.T) {
 	body := map[string]interface{}{
-		"id":             "agent-1",
-		"display_name":   "Test Agent",
-		"protocol":       "a2a",
+		"id":           "agent-1",
+		"display_name": "Test Agent",
+		"protocol":     "a2a",
 	}
 	resp := mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/agents", body)
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
@@ -220,22 +233,13 @@ func TestE2E_TaskCreateAndGet(t *testing.T) {
 }
 
 func TestE2E_TaskLifecycle(t *testing.T) {
-	resp := mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks/task-1/start", nil)
+	resp := mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks/task-1/complete", nil)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	resp = mustRequest(t, "GET", "/v1/tenants/"+testTenant+"/tasks/task-1", nil)
 	defer resp.Body.Close()
 	var task map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&task)
-	assert.Equal(t, "running", task["status"])
-
-	resp = mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks/task-1/complete", nil)
-	defer resp.Body.Close()
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-
-	resp = mustRequest(t, "GET", "/v1/tenants/"+testTenant+"/tasks/task-1", nil)
-	defer resp.Body.Close()
 	json.NewDecoder(resp.Body).Decode(&task)
 	assert.Equal(t, "completed", task["status"])
 }
@@ -261,9 +265,6 @@ func TestE2E_TaskFail(t *testing.T) {
 	resp := mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks", body)
 	resp.Body.Close()
 	assert.Equal(t, http.StatusCreated, resp.StatusCode)
-
-	resp = mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks/task-2/start", nil)
-	resp.Body.Close()
 
 	failBody := map[string]string{"code": "TIMEOUT", "message": "agent timed out"}
 	resp = mustRequest(t, "POST", "/v1/tenants/"+testTenant+"/tasks/task-2/fail", failBody)
@@ -415,7 +416,7 @@ func mustRequest(t *testing.T, method, path string, body interface{}) *http.Resp
 	return resp
 }
 
-func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler) http.Handler {
+func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
@@ -430,6 +431,8 @@ func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler,
 		p := r.URL.Path
 
 		switch {
+		case hasSeg(p, "pull"):
+			postOnly(w, r, dispatchH.Pull)
 		case hasSeg(p, "mailboxes") && lastIs(p, "mailboxes"):
 			postOnly(w, r, mailboxH.Create)
 		case hasSeg(p, "mailboxes"):
@@ -444,15 +447,25 @@ func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler,
 			} else {
 				agentH.List(w, r)
 			}
-		case hasSfx(p, "/start"):
-			postOnly(w, r, taskH.Start)
 		case hasSfx(p, "/complete"):
 			postOnly(w, r, taskH.Complete)
 		case hasSfx(p, "/fail"):
 			postOnly(w, r, taskH.Fail)
 		case hasSfx(p, "/cancel"):
 			postOnly(w, r, taskH.Cancel)
-		case hasSeg(p, "tasks") && !lastIs(p, "tasks"):
+		case hasSfx(p, "/replay"):
+			postOnly(w, r, taskH.Replay)
+		case hasSfx(p, "/start"):
+			postOnly(w, r, dispatchH.Start)
+		case hasSfx(p, "/heartbeat"):
+			postOnly(w, r, dispatchH.Heartbeat)
+		case hasSfx(p, "/ack"):
+			postOnly(w, r, dispatchH.Ack)
+		case hasSfx(p, "/nack"):
+			postOnly(w, r, dispatchH.Nack)
+		case hasSeg(p, "tasks") && hasSfx(p, "/events"):
+			getOnly(w, r, auditH.QueryByTask)
+		case hasSeg(p, "tasks") && !lastIs(p, "tasks") && !hasSeg(p, "events"):
 			getOnly(w, r, taskH.Get)
 		case lastIs(p, "tasks"):
 			postOnly(w, r, taskH.Create)
@@ -509,7 +522,8 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func cleanDB(db *sql.DB) {
+func cleanDB(pool *pgxpool.Pool) {
+	ctx := context.Background()
 	tables := []string{
 		"schema_migrations",
 		"outbox_events",
@@ -527,6 +541,57 @@ func cleanDB(db *sql.DB) {
 		"tenants",
 	}
 	for _, t := range tables {
-		db.Exec("DROP TABLE IF EXISTS " + t + " CASCADE")
+		pool.Exec(ctx, "DROP TABLE IF EXISTS "+t+" CASCADE")
 	}
+}
+
+type e2eDispatchAdapter struct {
+	svc *service.DispatchService
+}
+
+func (a *e2eDispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*handler.ServicePullResult, error) {
+	res, err := a.svc.PullTask(ctx, tenantID, mailboxID, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if res == nil {
+		return nil, nil
+	}
+	return &handler.ServicePullResult{
+		Task:      res.Task,
+		LeaseID:   res.LeaseID,
+		ExpiresAt: res.ExpiresAt,
+	}, nil
+}
+
+func (a *e2eDispatchAdapter) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return a.svc.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *e2eDispatchAdapter) TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return a.svc.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *e2eDispatchAdapter) AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {
+	return a.svc.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (a *e2eDispatchAdapter) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
+	return a.svc.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
+type e2eAuditAdapter struct {
+	svc *service.EventService
+}
+
+func (a *e2eAuditAdapter) QueryByTask(ctx context.Context, tenantID, taskID string, limit int) (interface{}, error) {
+	return a.svc.QueryByTask(ctx, tenantID, taskID, limit)
+}
+
+func (a *e2eAuditAdapter) QueryByTrace(ctx context.Context, tenantID, traceID string, limit int) (interface{}, error) {
+	return a.svc.QueryByTrace(ctx, tenantID, traceID, limit)
+}
+
+func (a *e2eAuditAdapter) QueryByTenant(ctx context.Context, tenantID string, limit int) (interface{}, error) {
+	return []struct{}{}, nil
 }

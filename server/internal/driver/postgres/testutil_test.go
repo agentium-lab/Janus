@@ -1,14 +1,14 @@
 package postgres
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
 
-	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/require"
 )
 
@@ -37,20 +37,23 @@ func testDSN() string {
 	return fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, dbname)
 }
 
-func openTestDB(t *testing.T) *sql.DB {
-	db, err := sql.Open("pgx", testDSN())
+func openTestDB(t *testing.T) *pgxpool.Pool {
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, testDSN())
 	require.NoError(t, err)
-	t.Cleanup(func() { db.Close() })
-	return db
+	t.Cleanup(func() { pool.Close() })
+	require.NoError(t, pool.Ping(ctx))
+	return pool
 }
 
-func runMigration(t *testing.T, db *sql.DB) {
+func runMigration(t *testing.T, pool *pgxpool.Pool) {
+	ctx := context.Background()
 	up, err := os.ReadFile(filepath.Join(repoRoot(), "migrations", "000001_initial_schema.up.sql"))
 	require.NoError(t, err)
-	_, err = db.Exec(string(up))
+	_, err = pool.Exec(ctx, string(up))
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		down, _ := os.ReadFile(filepath.Join(repoRoot(), "migrations", "000001_initial_schema.down.sql"))
-		db.Exec(string(down))
+		pool.Exec(ctx, string(down))
 	})
 }

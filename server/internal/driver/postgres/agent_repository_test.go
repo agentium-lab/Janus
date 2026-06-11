@@ -12,10 +12,10 @@ import (
 )
 
 func TestAgentRepo_RegisterAndGet(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agent := core.Agent{
@@ -43,10 +43,10 @@ func TestAgentRepo_RegisterAndGet(t *testing.T) {
 }
 
 func TestAgentRepo_RegisterDuplicate(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agent := core.Agent{
@@ -59,10 +59,10 @@ func TestAgentRepo_RegisterDuplicate(t *testing.T) {
 }
 
 func TestAgentRepo_UpdateStatus(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agent := core.Agent{
@@ -80,10 +80,10 @@ func TestAgentRepo_UpdateStatus(t *testing.T) {
 }
 
 func TestAgentRepo_UpdateHeartbeat(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	agent := core.Agent{
@@ -103,10 +103,10 @@ func TestAgentRepo_UpdateHeartbeat(t *testing.T) {
 }
 
 func TestAgentRepo_List(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewAgentRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewAgentRepository(pool)
 	ctx := context.Background()
 
 	for _, a := range []core.Agent{

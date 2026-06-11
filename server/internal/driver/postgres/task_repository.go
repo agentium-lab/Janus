@@ -2,33 +2,32 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"fmt"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
 )
 
 type TaskRepository struct {
-	db *sql.DB
+	pool *pgxpool.Pool
 }
 
-func NewTaskRepository(db *sql.DB) *TaskRepository {
-	return &TaskRepository{db: db}
+func NewTaskRepository(pool *pgxpool.Pool) *TaskRepository {
+	return &TaskRepository{pool: pool}
 }
 
 func (r *TaskRepository) Create(ctx context.Context, task core.Task) error {
-	envelopeJSON, err := json.Marshal(task.Envelope)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
+	envelopeJSON, _ := json.Marshal(task.Envelope)
 
 	var deadline interface{}
 	if task.Deadline != nil {
 		deadline = *task.Deadline
 	}
 
-	_, err = r.db.ExecContext(ctx,
+	_, err := r.pool.Exec(ctx,
 		`INSERT INTO tasks (tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		  mailbox_id, status, priority, deadline, ttl_seconds, envelope, attempt_count)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
@@ -44,14 +43,14 @@ func (r *TaskRepository) Create(ctx context.Context, task core.Task) error {
 func (r *TaskRepository) Get(ctx context.Context, tenantID, taskID string) (*core.Task, error) {
 	var t core.Task
 	var status, priority, targetType, targetValue string
-	var idempotencyKey, mailboxID, resultRef sql.NullString
-	var deadline sql.NullTime
-	var ttlSeconds sql.NullInt32
+	var idempotencyKey, mailboxID, resultRef *string
+	var deadline *time.Time
+	var ttlSeconds *int
 	var envelopeJSON []byte
 	var errorJSON []byte
-	var completedAt sql.NullTime
+	var completedAt *time.Time
 
-	err := r.db.QueryRowContext(ctx,
+	err := r.pool.QueryRow(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
 		        result_ref, error, attempt_count, created_at, updated_at, completed_at
@@ -66,22 +65,24 @@ func (r *TaskRepository) Get(ctx context.Context, tenantID, taskID string) (*cor
 		return nil, err
 	}
 
-	t.IdempotencyKey = idempotencyKey.String
+	if idempotencyKey != nil {
+		t.IdempotencyKey = *idempotencyKey
+	}
 	t.TargetType = core.TargetType(targetType)
 	t.TargetValue = targetValue
-	t.MailboxID = mailboxID.String
+	if mailboxID != nil {
+		t.MailboxID = *mailboxID
+	}
 	t.Status = core.TaskStatus(status)
 	t.Priority = core.Priority(priority)
-	t.ResultRef = resultRef.String
-	if deadline.Valid {
-		t.Deadline = &deadline.Time
+	if resultRef != nil {
+		t.ResultRef = *resultRef
 	}
-	if ttlSeconds.Valid {
-		t.TTLSeconds = int(ttlSeconds.Int32)
+	t.Deadline = deadline
+	if ttlSeconds != nil {
+		t.TTLSeconds = *ttlSeconds
 	}
-	if completedAt.Valid {
-		t.CompletedAt = &completedAt.Time
-	}
+	t.CompletedAt = completedAt
 	if errorJSON != nil {
 		var taskErr core.TaskError
 		_ = json.Unmarshal(errorJSON, &taskErr)
@@ -94,7 +95,7 @@ func (r *TaskRepository) Get(ctx context.Context, tenantID, taskID string) (*cor
 
 func (r *TaskRepository) GetByIdempotencyKey(ctx context.Context, tenantID, key string) (*core.Task, error) {
 	var taskID string
-	err := r.db.QueryRowContext(ctx,
+	err := r.pool.QueryRow(ctx,
 		"SELECT id FROM tasks WHERE tenant_id = $1 AND idempotency_key = $2",
 		tenantID, key,
 	).Scan(&taskID)
@@ -106,7 +107,7 @@ func (r *TaskRepository) GetByIdempotencyKey(ctx context.Context, tenantID, key 
 
 func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error {
 	if attemptIncrement > 0 {
-		_, err := r.db.ExecContext(ctx,
+		_, err := r.pool.Exec(ctx,
 			`UPDATE tasks SET status = $1, attempt_count = attempt_count + $2, updated_at = now()
 			 WHERE tenant_id = $3 AND id = $4`,
 			string(status), attemptIncrement, tenantID, taskID,
@@ -115,7 +116,7 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID stri
 	}
 
 	if status == core.TaskStatusCompleted {
-		_, err := r.db.ExecContext(ctx,
+		_, err := r.pool.Exec(ctx,
 			`UPDATE tasks SET status = $1, updated_at = now(), completed_at = now()
 			 WHERE tenant_id = $2 AND id = $3`,
 			string(status), tenantID, taskID,
@@ -123,7 +124,7 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID stri
 		return err
 	}
 
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.pool.Exec(ctx,
 		`UPDATE tasks SET status = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
 		string(status), tenantID, taskID,
 	)
@@ -131,7 +132,7 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID stri
 }
 
 func (r *TaskRepository) ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
 		        result_ref, error, attempt_count, created_at, updated_at, completed_at
@@ -146,17 +147,17 @@ func (r *TaskRepository) ListByStatus(ctx context.Context, tenantID string, stat
 	return scanTasks(rows)
 }
 
-func scanTasks(rows *sql.Rows) ([]*core.Task, error) {
+func scanTasks(rows pgx.Rows) ([]*core.Task, error) {
 	var tasks []*core.Task
 	for rows.Next() {
 		var t core.Task
 		var status, priority, targetType, targetValue string
-		var idempotencyKey, mailboxID, resultRef sql.NullString
-		var deadline sql.NullTime
-		var ttlSeconds sql.NullInt32
+		var idempotencyKey, mailboxID, resultRef *string
+		var deadline *time.Time
+		var ttlSeconds *int
 		var envelopeJSON []byte
 		var errorJSON []byte
-		var completedAt sql.NullTime
+		var completedAt *time.Time
 
 		err := rows.Scan(
 			&t.TenantID, &t.ID, &idempotencyKey, &t.SourceAgent, &targetType, &targetValue,
@@ -166,22 +167,24 @@ func scanTasks(rows *sql.Rows) ([]*core.Task, error) {
 		if err != nil {
 			return nil, err
 		}
-		t.IdempotencyKey = idempotencyKey.String
+		if idempotencyKey != nil {
+			t.IdempotencyKey = *idempotencyKey
+		}
 		t.TargetType = core.TargetType(targetType)
 		t.TargetValue = targetValue
-		t.MailboxID = mailboxID.String
+		if mailboxID != nil {
+			t.MailboxID = *mailboxID
+		}
 		t.Status = core.TaskStatus(status)
 		t.Priority = core.Priority(priority)
-		t.ResultRef = resultRef.String
-		if deadline.Valid {
-			t.Deadline = &deadline.Time
+		if resultRef != nil {
+			t.ResultRef = *resultRef
 		}
-		if ttlSeconds.Valid {
-			t.TTLSeconds = int(ttlSeconds.Int32)
+		t.Deadline = deadline
+		if ttlSeconds != nil {
+			t.TTLSeconds = *ttlSeconds
 		}
-		if completedAt.Valid {
-			t.CompletedAt = &completedAt.Time
-		}
+		t.CompletedAt = completedAt
 		if errorJSON != nil {
 			var taskErr core.TaskError
 			_ = json.Unmarshal(errorJSON, &taskErr)
@@ -198,4 +201,11 @@ func nilIfEmpty(s string) interface{} {
 		return nil
 	}
 	return s
+}
+
+func nilIfZero(v int) interface{} {
+	if v == 0 {
+		return nil
+	}
+	return v
 }

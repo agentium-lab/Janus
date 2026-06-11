@@ -34,6 +34,24 @@ type MailboxRepo interface {
 	ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error)
 }
 
+type TaskAttemptRepo interface {
+	Create(ctx context.Context, attempt core.TaskAttempt) error
+	GetLatest(ctx context.Context, tenantID, taskID string) (*core.TaskAttempt, error)
+	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) error
+	UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error
+}
+
+type BudgetRepo interface {
+	Upsert(ctx context.Context, spec core.BudgetSpec) error
+	Get(ctx context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]*core.BudgetSpec, error)
+}
+
+type PolicyRuleRepo interface {
+	Create(ctx context.Context, rule core.PolicyRule) error
+	ListActive(ctx context.Context, tenantID string) ([]*core.PolicyRule, error)
+}
+
 type QueueDriver interface {
 	core.QueueEventDriver
 }

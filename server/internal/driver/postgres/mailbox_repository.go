@@ -2,27 +2,25 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
 )
 
 type MailboxRepository struct {
-	db *sql.DB
+	pool *pgxpool.Pool
 }
 
-func NewMailboxRepository(db *sql.DB) *MailboxRepository {
-	return &MailboxRepository{db: db}
+func NewMailboxRepository(pool *pgxpool.Pool) *MailboxRepository {
+	return &MailboxRepository{pool: pool}
 }
 
 func (r *MailboxRepository) Create(ctx context.Context, mb core.Mailbox) error {
-	retryJSON, err := json.Marshal(mb.RetryPolicy)
-	if err != nil {
-		return err
-	}
+	retryJSON, _ := json.Marshal(mb.RetryPolicy)
 
-	_, err = r.db.ExecContext(ctx,
+	_, err := r.pool.Exec(ctx,
 		`INSERT INTO mailboxes (tenant_id, id, agent_id, status, priority, max_concurrency,
 		  ack_wait_seconds, max_deliver, retention_seconds, retry_policy)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -37,7 +35,7 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 	var status, priority string
 	var retryJSON []byte
 
-	err := r.db.QueryRowContext(ctx,
+	err := r.pool.QueryRow(ctx,
 		`SELECT tenant_id, id, agent_id, status, priority, max_concurrency,
 		        ack_wait_seconds, max_deliver, retention_seconds, retry_policy,
 		        created_at, updated_at
@@ -59,7 +57,7 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 }
 
 func (r *MailboxRepository) ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, agent_id, status, priority, max_concurrency,
 		        ack_wait_seconds, max_deliver, retention_seconds, retry_policy,
 		        created_at, updated_at

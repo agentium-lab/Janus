@@ -160,6 +160,10 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
+func (h *TaskHandler) Replay(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "replay not yet implemented"})
+}
+
 func tenantAndTaskFromPath(path string) (string, string) {
 	parts := strings.Split(path, "/")
 	tenantID := ""

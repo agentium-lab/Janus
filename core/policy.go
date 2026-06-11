@@ -1,6 +1,10 @@
 package core
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+	"time"
+)
 
 // PolicyDecisionType represents the outcome of a policy evaluation.
 type PolicyDecisionType string
@@ -54,4 +58,16 @@ type PolicyDecision struct {
 // Implementations: BuiltinPolicyEngine (MVP), OPAPolicyEngine (enterprise).
 type PolicyEngine interface {
 	Evaluate(ctx context.Context, input PolicyInput) (PolicyDecision, error)
+}
+
+type PolicyRule struct {
+	TenantID  string          `json:"tenant_id"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Status    string          `json:"status"`
+	Priority  int             `json:"priority"`
+	Condition json.RawMessage `json:"condition"`
+	Action    json.RawMessage `json:"action"`
+	CreatedAt time.Time       `json:"created_at"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }

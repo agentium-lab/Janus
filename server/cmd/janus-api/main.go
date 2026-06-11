@@ -1,7 +1,7 @@
 package main
 
 import (
-	"database/sql"
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,8 +14,9 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
-	_ "github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/config"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
@@ -31,8 +32,8 @@ func main() {
 		runMigration(cfg)
 	}
 
-	db := mustOpenDB(cfg)
-	defer db.Close()
+	pool := mustOpenPool(cfg)
+	defer pool.Close()
 
 	natsDrv, err := natsdriver.NewDriver(natsdriver.Config{URL: cfg.NATS.URL})
 	if err != nil {
@@ -50,23 +51,32 @@ func main() {
 	}
 	defer redisDrv.Close()
 
-	tenantRepo := pgdriver.NewTenantRepository(db)
-	agentRepo := pgdriver.NewAgentRepository(db)
-	taskRepo := pgdriver.NewTaskRepository(db)
-	mailboxRepo := pgdriver.NewMailboxRepository(db)
+	tenantRepo := pgdriver.NewTenantRepository(pool)
+	agentRepo := pgdriver.NewAgentRepository(pool)
+	taskRepo := pgdriver.NewTaskRepository(pool)
+	mailboxRepo := pgdriver.NewMailboxRepository(pool)
+	attemptRepo := pgdriver.NewTaskAttemptRepository(pool)
+	budgetRepo := pgdriver.NewBudgetRepository(pool)
+	policyRuleRepo := pgdriver.NewPolicyRuleRepository(pool)
+	eventRepo := pgdriver.NewEventRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	taskSvc := service.NewTaskService(taskRepo, natsDrv)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
+	policySvc := service.NewPolicyService(policyRuleRepo)
+	budgetSvc := service.NewBudgetService(budgetRepo)
+	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
+	eventSvc := service.NewEventService(eventRepo)
 
 	tenantH := handler.NewTenantHandler(tenantSvc)
 	agentH := handler.NewAgentHandler(agentSvc)
 	taskH := handler.NewTaskHandler(taskSvc)
 	mailboxH := handler.NewMailboxHandler(mailboxSvc)
+	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
+	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH)
-
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH)
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	log.Printf("janus-api listening on %s", addr)
 
@@ -98,19 +108,25 @@ func runMigration(cfg *config.Config) {
 	log.Println("migration completed")
 }
 
-func mustOpenDB(cfg *config.Config) *sql.DB {
-	db, err := sql.Open("postgres", cfg.Postgres.ConnStr())
+func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
+	ctx := context.Background()
+	poolConfig, err := pgxpool.ParseConfig(cfg.Postgres.DSN())
 	if err != nil {
-		log.Fatalf("db open: %v", err)
+		log.Fatalf("pgx pool config: %v", err)
 	}
-	db.SetMaxOpenConns(cfg.Postgres.MaxConns)
-	if err := db.Ping(); err != nil {
-		log.Fatalf("db ping: %v", err)
+	poolConfig.MaxConns = int32(cfg.Postgres.MaxConns)
+
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
+	if err != nil {
+		log.Fatalf("pgx pool open: %v", err)
 	}
-	return db
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("pgx pool ping: %v", err)
+	}
+	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
@@ -125,20 +141,18 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		p := r.URL.Path
 
 		switch {
+		case hasSegment(p, "pull"):
+			postOnly(w, r, dispatchH.Pull)
+		case hasSegment(p, "traces") && hasSegment(p, "traces"):
+			getOnly(w, r, auditH.QueryByTrace)
+		case hasSegment(p, "mailboxes") && hasSuffix(p, "/mailboxes"):
+			postOnly(w, r, mailboxH.Create)
 		case hasSegment(p, "mailboxes"):
-			dispatchMailbox(w, r, mailboxH)
-		case hasSegment(p, "agents") && hasSegment(p, "heartbeat"):
-			if r.Method == http.MethodPost {
-				agentH.Heartbeat(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			getOnly(w, r, mailboxH.Get)
+		case hasSegment(p, "heartbeat") && hasSegment(p, "agents"):
+			postOnly(w, r, agentH.Heartbeat)
 		case hasSegment(p, "agents") && !hasLastSegment(p, "agents"):
-			if r.Method == http.MethodGet {
-				agentH.Get(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			getOnly(w, r, agentH.Get)
 		case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
 			if r.Method == http.MethodPost {
 				agentH.Register(w, r)
@@ -146,41 +160,29 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 				agentH.List(w, r)
 			}
 		case hasSegment(p, "tasks") && hasSuffix(p, "/start"):
-			if r.Method == http.MethodPost {
-				taskH.Start(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		case hasSegment(p, "tasks") && hasSuffix(p, "/complete"):
-			if r.Method == http.MethodPost {
-				taskH.Complete(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		case hasSegment(p, "tasks") && hasSuffix(p, "/fail"):
-			if r.Method == http.MethodPost {
-				taskH.Fail(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			postOnly(w, r, dispatchH.Start)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/heartbeat"):
+			postOnly(w, r, dispatchH.Heartbeat)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/ack"):
+			postOnly(w, r, dispatchH.Ack)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/nack"):
+			postOnly(w, r, dispatchH.Nack)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/cancel"):
-			if r.Method == http.MethodPost {
-				taskH.Cancel(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			postOnly(w, r, taskH.Cancel)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/replay"):
+			postOnly(w, r, taskH.Replay)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/complete"):
+			postOnly(w, r, taskH.Complete)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/fail"):
+			postOnly(w, r, taskH.Fail)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/events"):
+			getOnly(w, r, auditH.QueryByTask)
 		case hasSegment(p, "tasks") && !hasLastSegment(p, "tasks"):
-			if r.Method == http.MethodGet {
-				taskH.Get(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		case hasSegment(p, "tasks"):
-			if r.Method == http.MethodPost {
-				taskH.Create(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
+			getOnly(w, r, taskH.Get)
+		case hasSegment(p, "tasks") && hasLastSegment(p, "tasks"):
+			postOnly(w, r, taskH.Create)
+		case hasSegment(p, "events"):
+			getOnly(w, r, auditH.QueryByTenant)
 		default:
 			if r.Method == http.MethodGet {
 				tenantH.Get(w, r)
@@ -191,6 +193,22 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 	})
 
 	return mux
+}
+
+func postOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
+	if r.Method == http.MethodPost {
+		fn(w, r)
+	} else {
+		http.NotFound(w, r)
+	}
+}
+
+func getOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
+	if r.Method == http.MethodGet {
+		fn(w, r)
+	} else {
+		http.NotFound(w, r)
+	}
 }
 
 func hasSegment(path, seg string) bool {
@@ -211,19 +229,53 @@ func hasSuffix(path, suffix string) bool {
 	return strings.HasSuffix(strings.TrimRight(path, "/"), suffix)
 }
 
-func dispatchMailbox(w http.ResponseWriter, r *http.Request, h *handler.MailboxHandler) {
-	p := r.URL.Path
-	if hasLastSegment(p, "mailboxes") {
-		if r.Method == http.MethodPost {
-			h.Create(w, r)
-		} else {
-			http.NotFound(w, r)
-		}
-		return
+type dispatchAdapter struct {
+	svc *service.DispatchService
+}
+
+func (a *dispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*handler.ServicePullResult, error) {
+	res, err := a.svc.PullTask(ctx, tenantID, mailboxID, agentID)
+	if err != nil {
+		return nil, err
 	}
-	if r.Method == http.MethodGet {
-		h.Get(w, r)
-	} else {
-		http.NotFound(w, r)
+	if res == nil {
+		return nil, nil
 	}
+	return &handler.ServicePullResult{
+		Task:      res.Task,
+		LeaseID:   res.LeaseID,
+		ExpiresAt: res.ExpiresAt,
+	}, nil
+}
+
+func (a *dispatchAdapter) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return a.svc.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *dispatchAdapter) TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return a.svc.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *dispatchAdapter) AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {
+	return a.svc.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (a *dispatchAdapter) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
+	return a.svc.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
+type auditAdapter struct {
+	svc *service.EventService
+}
+
+func (a *auditAdapter) QueryByTask(ctx context.Context, tenantID, taskID string, limit int) (interface{}, error) {
+	return a.svc.QueryByTask(ctx, tenantID, taskID, limit)
+}
+
+func (a *auditAdapter) QueryByTrace(ctx context.Context, tenantID, traceID string, limit int) (interface{}, error) {
+	return a.svc.QueryByTrace(ctx, tenantID, traceID, limit)
+}
+
+func (a *auditAdapter) QueryByTenant(ctx context.Context, tenantID string, limit int) (interface{}, error) {
+	return []struct{}{}, nil
 }

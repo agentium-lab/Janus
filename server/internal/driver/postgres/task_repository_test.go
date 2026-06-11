@@ -12,10 +12,10 @@ import (
 )
 
 func TestTaskRepo_CreateAndGet(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := core.Task{
@@ -49,10 +49,10 @@ func TestTaskRepo_CreateAndGet(t *testing.T) {
 }
 
 func TestTaskRepo_GetByIdempotencyKey(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := core.Task{
@@ -84,10 +84,10 @@ func TestTaskRepo_GetByIdempotencyKey(t *testing.T) {
 }
 
 func TestTaskRepo_UpdateStatus(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := makeTestTask("acme", "task_001")
@@ -102,10 +102,10 @@ func TestTaskRepo_UpdateStatus(t *testing.T) {
 }
 
 func TestTaskRepo_IncrementAttempt(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := makeTestTask("acme", "task_001")
@@ -120,10 +120,10 @@ func TestTaskRepo_IncrementAttempt(t *testing.T) {
 }
 
 func TestTaskRepo_Complete(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	task := makeTestTask("acme", "task_001")
@@ -139,10 +139,10 @@ func TestTaskRepo_Complete(t *testing.T) {
 }
 
 func TestTaskRepo_ListByStatus(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	repo := NewTaskRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	repo := NewTaskRepository(pool)
 	ctx := context.Background()
 
 	for i, status := range []core.TaskStatus{core.TaskStatusCreated, core.TaskStatusCreated, core.TaskStatusQueued} {

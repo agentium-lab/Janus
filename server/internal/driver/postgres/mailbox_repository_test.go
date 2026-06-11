@@ -11,11 +11,11 @@ import (
 )
 
 func TestMailboxRepo_CreateAndGet(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	agentRepo := NewAgentRepository(db)
-	repo := NewMailboxRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	agentRepo := NewAgentRepository(pool)
+	repo := NewMailboxRepository(pool)
 	ctx := context.Background()
 
 	require.NoError(t, agentRepo.Register(ctx, core.Agent{
@@ -51,11 +51,11 @@ func TestMailboxRepo_CreateAndGet(t *testing.T) {
 }
 
 func TestMailboxRepo_ListByAgent(t *testing.T) {
-	db := openTestDB(t)
-	runMigration(t, db)
-	insertTestTenant(t, db, "acme")
-	agentRepo := NewAgentRepository(db)
-	repo := NewMailboxRepository(db)
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	agentRepo := NewAgentRepository(pool)
+	repo := NewMailboxRepository(pool)
 	ctx := context.Background()
 
 	require.NoError(t, agentRepo.Register(ctx, core.Agent{
