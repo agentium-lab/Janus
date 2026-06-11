@@ -8,11 +8,13 @@ import (
 
 type Config struct {
 	HTTPPort   int
+	GRPCPort   int
 	Postgres   PostgresConfig
 	NATS       NATSConfig
 	Redis      RedisConfig
 	Migration  MigrationConfig
 	Heartbeat  HeartbeatConfig
+	Auth       AuthConfig
 }
 
 type PostgresConfig struct {
@@ -49,6 +51,10 @@ type HeartbeatConfig struct {
 	TTL             string
 }
 
+type AuthConfig struct {
+	Enabled bool
+}
+
 func (p PostgresConfig) ConnStr() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		p.Host, p.Port, p.User, p.Password, p.Database)
@@ -81,6 +87,9 @@ func Load() *Config {
 		Heartbeat: HeartbeatConfig{
 			SweeperInterval: getEnv("JANUS_HB_SWEEPER_INTERVAL", "30s"),
 			TTL:             getEnv("JANUS_HB_TTL", "60s"),
+		},
+		Auth: AuthConfig{
+			Enabled: getEnvBool("JANUS_AUTH_ENABLED", false),
 		},
 	}
 }

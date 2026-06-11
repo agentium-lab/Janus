@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,8 +16,10 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
+	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/config"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
@@ -85,10 +88,25 @@ func main() {
 	wsH := handler.NewWebSocketHandler(broadcaster)
 
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH)
+
+	var handler http.Handler = mux
+	if cfg.Auth.Enabled {
+		pgDB, err := sql.Open("pgx", cfg.Postgres.DSN())
+		if err != nil {
+			log.Fatalf("auth db open: %v", err)
+		}
+		defer pgDB.Close()
+		validator := auth.NewAPIKeyValidator(pgDB)
+		handler = auth.Middleware(validator)(mux)
+		log.Println("api key authentication enabled")
+	} else {
+		log.Println("WARNING: authentication disabled (JANUS_AUTH_ENABLED=false)")
+	}
+
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	log.Printf("janus-api listening on %s", addr)
 
-	srv := &http.Server{Addr: addr, Handler: mux}
+	srv := &http.Server{Addr: addr, Handler: handler}
 
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
