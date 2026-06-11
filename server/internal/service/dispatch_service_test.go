@@ -172,6 +172,14 @@ func (m *mockDispatchMailboxRepo) ListByAgent(_ context.Context, tenantID, agent
 	return nil, nil
 }
 
+func (m *mockDispatchMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockDispatchMailboxRepo) UpdateStatus(_ context.Context, tenantID, mailboxID string, status core.MailboxStatus) error {
+	return nil
+}
+
 func newTestDispatchSvc() (*DispatchService, *mockDispatchQueueDriver, *mockDispatchTaskRepo, *mockDispatchAttemptRepo) {
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}

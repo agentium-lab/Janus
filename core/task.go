@@ -126,11 +126,15 @@ type PolicyContext struct {
 
 // ContextRef represents a reference to external context.
 type ContextRef struct {
-	Type          string `json:"type"`
-	URI           string `json:"uri"`
-	Hash          string `json:"hash,omitempty"`
-	Classification string `json:"classification,omitempty"`
-	ExpiresAt     string `json:"expires_at,omitempty"`
+	TenantID       string   `json:"tenant_id,omitempty"`
+	ID             string   `json:"id,omitempty"`
+	Type           string   `json:"type"`
+	URI            string   `json:"uri"`
+	Hash           string   `json:"hash,omitempty"`
+	Classification string   `json:"classification,omitempty"`
+	AccessScope    []string `json:"access_scope,omitempty"`
+	ExpiresAt      string   `json:"expires_at,omitempty"`
+	CreatedAt      string   `json:"created_at,omitempty"`
 }
 
 // Payload represents the business payload of a task.

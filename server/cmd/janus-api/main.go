@@ -29,7 +29,10 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/heartbeat"
+	_ "github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
@@ -75,7 +78,7 @@ func main() {
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
-	budgetSvc := service.NewBudgetService(budgetRepo)
+	budgetSvc := service.NewBudgetService(budgetRepo).WithRateLimiter(redisDrv)
 	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
@@ -128,6 +131,7 @@ func main() {
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw)
 
 	combined := http.NewServeMux()
+	combined.Handle("/metrics", promhttp.Handler())
 	combined.Handle("/v1/", gwMux)
 	combined.Handle("/", mux)
 

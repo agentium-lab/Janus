@@ -130,6 +130,23 @@ func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.Agent
 	return scanAgents(rows)
 }
 
+func (r *AgentRepository) FindByCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT DISTINCT a.id, a.tenant_id, a.display_name, a.protocol, a.endpoint, a.status, a.description,
+		        a.max_concurrency, a.rpm, a.tpm, a.created_at, a.updated_at, a.last_heartbeat_at
+		 FROM agents a
+		 JOIN agent_capabilities ac ON a.tenant_id = ac.tenant_id AND a.id = ac.agent_id
+		 WHERE a.tenant_id = $1 AND ac.capability = $2 AND a.status = 'online'
+		 ORDER BY a.id`,
+		tenantID, capability,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgents(rows)
+}
+
 func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 	var agents []*core.Agent
 	for rows.Next() {

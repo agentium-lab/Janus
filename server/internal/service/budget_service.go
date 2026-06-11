@@ -14,9 +14,15 @@ type BudgetUsageRepo interface {
 	GetDailyUsage(ctx context.Context, tenantID, scopeType, scopeID string) (tokens int, costUSD float64, taskCount int, err error)
 }
 
+type RateLimiter interface {
+	CheckRPM(ctx context.Context, tenantID, scopeType, scopeID string, limit int) error
+	CheckTPM(ctx context.Context, tenantID, scopeType, scopeID string, limit, tokenCount int) error
+}
+
 type BudgetService struct {
-	repo     BudgetRepo
-	usageRepo BudgetUsageRepo
+	repo        BudgetRepo
+	usageRepo   BudgetUsageRepo
+	rateLimiter RateLimiter
 }
 
 func NewBudgetService(repo BudgetRepo) *BudgetService {
@@ -25,6 +31,11 @@ func NewBudgetService(repo BudgetRepo) *BudgetService {
 
 func NewBudgetServiceWithUsage(repo BudgetRepo, usageRepo BudgetUsageRepo) *BudgetService {
 	return &BudgetService{repo: repo, usageRepo: usageRepo}
+}
+
+func (s *BudgetService) WithRateLimiter(rl RateLimiter) *BudgetService {
+	s.rateLimiter = rl
+	return s
 }
 
 func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID string, currentRunning int) error {
@@ -57,6 +68,31 @@ func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID 
 }
 
 func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, budget *core.Budget) error {
+	if s.rateLimiter != nil {
+		agentBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+		if agentBudget != nil {
+			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "agent", agentID, agentBudget.RPM); err != nil {
+				return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+			}
+			if budget != nil {
+				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "agent", agentID, agentBudget.TPM, budget.MaxTokens); err != nil {
+					return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+				}
+			}
+		}
+		tenantBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+		if tenantBudget != nil {
+			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "tenant", tenantID, tenantBudget.RPM); err != nil {
+				return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+			}
+			if budget != nil {
+				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "tenant", tenantID, tenantBudget.TPM, budget.MaxTokens); err != nil {
+					return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+				}
+			}
+		}
+	}
+
 	if s.usageRepo == nil {
 		return nil
 	}

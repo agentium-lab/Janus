@@ -154,6 +154,17 @@ func (m *mockAgentRepo) ListByStatus(_ context.Context, tenantID string, status 
 	return result, nil
 }
 
+func (m *mockAgentRepo) ListAllByStatus(_ context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	return m.ListByStatus(nil, "", status)
+}
+
+func (m *mockAgentRepo) FindByCapability(_ context.Context, tenantID, capability string) ([]*core.Agent, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return nil, nil
+}
+
 type mockHeartbeatDriver struct {
 	pings map[string]bool
 	err   error
@@ -347,6 +358,14 @@ func (m *mockMailboxRepo) ListByAgent(_ context.Context, tenantID, agentID strin
 		}
 	}
 	return result, nil
+}
+
+func (m *mockMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockMailboxRepo) UpdateStatus(_ context.Context, tenantID, mailboxID string, status core.MailboxStatus) error {
+	return nil
 }
 
 type mockTaskRepo struct {
@@ -839,6 +858,14 @@ func (m *mockAgentRepoFailOn) ListByStatus(_ context.Context, tenantID string, s
 		}
 	}
 	return result, nil
+}
+
+func (m *mockAgentRepoFailOn) ListAllByStatus(_ context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	return m.ListByStatus(nil, "", status)
+}
+
+func (m *mockAgentRepoFailOn) FindByCapability(_ context.Context, tenantID, capability string) ([]*core.Agent, error) {
+	return nil, nil
 }
 
 func TestAgentService_RegisterSetOnlineError(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 type TaskService struct {
@@ -86,9 +87,17 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 
 	if s.outboxRepo != nil && s.pool != nil {
-		return nil, s.createWithOutbox(ctx, task)
+		err := s.createWithOutbox(ctx, task)
+		if err == nil {
+			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+		}
+		return nil, err
 	}
-	return nil, s.createDirect(ctx, task)
+	err := s.createDirect(ctx, task)
+	if err == nil {
+		metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+	}
+	return nil, err
 }
 
 func (s *TaskService) createWithOutbox(ctx context.Context, task core.Task) error {
@@ -251,6 +260,7 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, status, attemptInc); err != nil {
 		return fmt.Errorf("update task status to %s: %w", status, err)
 	}
+	recordTaskMetric(tenantID, status)
 	return s.publishEvent(ctx, core.JanusEvent{
 		EventType: eventType,
 		TenantID:  tenantID,
@@ -274,6 +284,17 @@ func (e *IdempotentError) Error() string {
 func mustMarshal(v interface{}) []byte {
 	b, _ := json.Marshal(v)
 	return b
+}
+
+func recordTaskMetric(tenantID string, status core.TaskStatus) {
+	switch status {
+	case core.TaskStatusCompleted:
+		metrics.TasksCompleted.WithLabelValues(tenantID).Inc()
+	case core.TaskStatusFailed:
+		metrics.TasksFailed.WithLabelValues(tenantID).Inc()
+	case core.TaskStatusDeadLettered:
+		metrics.TasksDeadLettered.WithLabelValues(tenantID).Inc()
+	}
 }
 
 func ulid() string {

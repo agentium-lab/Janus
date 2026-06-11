@@ -15,10 +15,12 @@ type TenantRepo interface {
 type AgentRepo interface {
 	Register(ctx context.Context, agent core.Agent) error
 	Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error)
-	UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error
-	UpdateHeartbeat(ctx context.Context, tenantID, agentID string) error
 	List(ctx context.Context, tenantID string) ([]*core.Agent, error)
 	ListByStatus(ctx context.Context, tenantID string, status core.AgentStatus) ([]*core.Agent, error)
+	ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error)
+	UpdateHeartbeat(ctx context.Context, tenantID, agentID string) error
+	UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error
+	FindByCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error)
 }
 
 type TaskRepo interface {
@@ -34,6 +36,8 @@ type MailboxRepo interface {
 	Create(ctx context.Context, mailbox core.Mailbox) error
 	Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error)
 	ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error)
+	Backlog(ctx context.Context, tenantID, mailboxID string) (int, error)
+	UpdateStatus(ctx context.Context, tenantID, mailboxID string, status core.MailboxStatus) error
 }
 
 type TaskAttemptRepo interface {

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -88,4 +89,24 @@ func (r *MailboxRepository) ListByAgent(ctx context.Context, tenantID, agentID s
 		mailboxes = append(mailboxes, &mb)
 	}
 	return mailboxes, rows.Err()
+}
+
+func (r *MailboxRepository) Backlog(ctx context.Context, tenantID, mailboxID string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE tenant_id = $1 AND mailbox_id = $2 AND status IN ('queued', 'retry_scheduled')`,
+		tenantID, mailboxID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("backlog count: %w", err)
+	}
+	return count, nil
+}
+
+func (r *MailboxRepository) UpdateStatus(ctx context.Context, tenantID, mailboxID string, status core.MailboxStatus) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE mailboxes SET status = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		string(status), tenantID, mailboxID,
+	)
+	return err
 }

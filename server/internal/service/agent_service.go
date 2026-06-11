@@ -99,3 +99,13 @@ func (s *AgentService) ListByStatus(ctx context.Context, tenantID string, status
 	}
 	return s.agentRepo.ListByStatus(ctx, tenantID, status)
 }
+
+func (s *AgentService) ResolveCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error) {
+	if tenantID == "" {
+		return nil, fmt.Errorf("tenant id is required")
+	}
+	if capability == "" {
+		return nil, fmt.Errorf("capability is required")
+	}
+	return s.agentRepo.FindByCapability(ctx, tenantID, capability)
+}

@@ -90,3 +90,24 @@ func (s *MailboxService) ListByAgent(ctx context.Context, tenantID, agentID stri
 	}
 	return s.mailboxRepo.ListByAgent(ctx, tenantID, agentID)
 }
+
+func (s *MailboxService) Backlog(ctx context.Context, tenantID, mailboxID string) (int, error) {
+	if tenantID == "" || mailboxID == "" {
+		return 0, fmt.Errorf("tenant id and mailbox id are required")
+	}
+	return s.mailboxRepo.Backlog(ctx, tenantID, mailboxID)
+}
+
+func (s *MailboxService) Pause(ctx context.Context, tenantID, mailboxID string) error {
+	if tenantID == "" || mailboxID == "" {
+		return fmt.Errorf("tenant id and mailbox id are required")
+	}
+	return s.mailboxRepo.UpdateStatus(ctx, tenantID, mailboxID, core.MailboxStatusPaused)
+}
+
+func (s *MailboxService) Resume(ctx context.Context, tenantID, mailboxID string) error {
+	if tenantID == "" || mailboxID == "" {
+		return fmt.Errorf("tenant id and mailbox id are required")
+	}
+	return s.mailboxRepo.UpdateStatus(ctx, tenantID, mailboxID, core.MailboxStatusActive)
+}

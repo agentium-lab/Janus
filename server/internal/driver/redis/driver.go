@@ -117,6 +117,43 @@ func (d *Driver) Client() *go_redis.Client {
 	return d.rdb
 }
 
+func (d *Driver) CheckRPM(ctx context.Context, tenantID, scopeType, scopeID string, limit int) error {
+	if limit <= 0 {
+		return nil
+	}
+	key := fmt.Sprintf("ratelimit:rpm:%s:%s:%s:%s", tenantID, scopeType, scopeID, time.Now().UTC().Truncate(time.Minute).Format("200601021504"))
+	count, err := d.rdb.Incr(ctx, key).Result()
+	if err != nil {
+		return fmt.Errorf("rpm check: %w", err)
+	}
+	if count == 1 {
+		d.rdb.Expire(ctx, key, 2*time.Minute)
+	}
+	if int(count) > limit {
+		return fmt.Errorf("rpm limit exceeded: %d > %d for %s/%s/%s", count, limit, tenantID, scopeType, scopeID)
+	}
+	return nil
+}
+
+func (d *Driver) CheckTPM(ctx context.Context, tenantID, scopeType, scopeID string, limit, tokenCount int) error {
+	if limit <= 0 || tokenCount <= 0 {
+		return nil
+	}
+	key := fmt.Sprintf("ratelimit:tpm:%s:%s:%s", tenantID, scopeType, scopeID)
+	added, err := d.rdb.IncrBy(ctx, key, int64(tokenCount)).Result()
+	if err != nil {
+		return fmt.Errorf("tpm check: %w", err)
+	}
+	ttl, _ := d.rdb.TTL(ctx, key).Result()
+	if ttl < 0 {
+		d.rdb.Expire(ctx, key, 2*time.Minute)
+	}
+	if int(added) > limit {
+		return fmt.Errorf("tpm limit exceeded: %d > %d for %s/%s/%s", added, limit, tenantID, scopeType, scopeID)
+	}
+	return nil
+}
+
 func heartbeatKey(tenantID, agentID string) string {
 	return fmt.Sprintf("%s%s:%s", heartbeatKeyPrefix, tenantID, agentID)
 }
