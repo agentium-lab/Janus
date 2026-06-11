@@ -22,6 +22,7 @@ import (
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/config"
+	grpcserver "github.com/agentium-lab/Janus/server/internal/grpc"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
@@ -100,6 +101,14 @@ func main() {
 	retrySched := retry.NewScheduler(pool)
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
+
+	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, agentSvc, taskSvc, dispatchSvc)
+	go func() {
+		if err := grpcSrv.Start(); err != nil {
+			log.Fatalf("grpc: %v", err)
+		}
+	}()
+	defer grpcSrv.Stop()
 
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH, a2aGw)
 

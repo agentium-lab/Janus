@@ -1,6 +1,4 @@
 version: v2
-modules:
-  - path: janus/v1
 lint:
   use:
     - DEFAULT
