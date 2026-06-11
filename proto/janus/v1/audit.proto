@@ -6,6 +6,7 @@ option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/struct.proto";
+import "google/api/annotations.proto";
 
 message JanusEvent {
   string event_id = 1;
@@ -59,7 +60,13 @@ message ListTaskEventsResponse {
 }
 
 service AuditService {
-  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse);
-  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse);
-  rpc ListTaskEvents(ListTaskEventsRequest) returns (ListTaskEventsResponse);
+  rpc ListEvents(ListEventsRequest) returns (ListEventsResponse) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/events" };
+  }
+  rpc GetTrace(GetTraceRequest) returns (GetTraceResponse) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/traces/{trace_id}" };
+  }
+  rpc ListTaskEvents(ListTaskEventsRequest) returns (ListTaskEventsResponse) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/tasks/{task_id}/events" };
+  }
 }

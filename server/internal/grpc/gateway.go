@@ -23,6 +23,9 @@ func RegisterGateway(ctx context.Context, grpcAddr string) (http.Handler, error)
 	if err := pb.RegisterDispatchServiceHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
 	}
+	if err := pb.RegisterAuditServiceHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
+		return nil, err
+	}
 
 	return mux, nil
 }

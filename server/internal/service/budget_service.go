@@ -61,13 +61,27 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 		return nil
 	}
 
-	if budget != nil && budget.MaxCostUSD > 0 {
+	tenantBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+	if tenantBudget != nil && tenantBudget.DailyCostUSD > 0 {
+		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeTenant), tenantID)
+		if err != nil {
+			return err
+		}
+		if dailyCost >= tenantBudget.DailyCostUSD {
+			return &core.BackpressureError{
+				Reason:  core.ReasonDailyBudgetExceeded,
+				Message: fmt.Sprintf("tenant %s: daily cost $%.2f >= limit $%.2f", tenantID, dailyCost, tenantBudget.DailyCostUSD),
+			}
+		}
+	}
+
+	agentBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+	if agentBudget != nil && agentBudget.DailyCostUSD > 0 {
 		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeAgent), agentID)
 		if err != nil {
 			return err
 		}
-		agentBudget, berr := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
-		if berr == nil && agentBudget.DailyCostUSD > 0 && dailyCost >= agentBudget.DailyCostUSD {
+		if dailyCost >= agentBudget.DailyCostUSD {
 			return &core.BackpressureError{
 				Reason:  core.ReasonDailyBudgetExceeded,
 				Message: fmt.Sprintf("agent %s: daily cost $%.2f >= limit $%.2f", agentID, dailyCost, agentBudget.DailyCostUSD),

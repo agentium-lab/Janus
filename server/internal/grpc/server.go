@@ -14,11 +14,12 @@ type Server struct {
 	addr       string
 }
 
-func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService) *Server {
+func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService) *Server {
 	s := grpc.NewServer()
 	pb.RegisterAgentServiceServer(s, NewAgentServiceServer(agentSvc))
 	pb.RegisterTaskServiceServer(s, NewTaskServiceServer(taskSvc))
 	pb.RegisterDispatchServiceServer(s, NewDispatchServiceServer(dispatchSvc))
+	pb.RegisterAuditServiceServer(s, NewAuditServiceServer(eventSvc))
 	return &Server{
 		grpcServer: s,
 		addr:       fmt.Sprintf(":%d", port),

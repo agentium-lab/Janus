@@ -7,6 +7,7 @@
 package janusv1
 
 import (
+	_ "github.com/agentium-lab/Janus/proto/gen/google/api"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	structpb "google.golang.org/protobuf/types/known/structpb"
@@ -519,7 +520,7 @@ var File_janus_v1_audit_proto protoreflect.FileDescriptor
 
 const file_janus_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x14janus/v1/audit.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x84\x03\n" +
+	"\x14janus/v1/audit.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/protobuf/struct.proto\x1a\x1cgoogle/api/annotations.proto\"\x84\x03\n" +
 	"\n" +
 	"JanusEvent\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\tR\aeventId\x12\x1d\n" +
@@ -564,12 +565,12 @@ const file_janus_v1_audit_proto_rawDesc = "" +
 	"page_token\x18\x04 \x01(\tR\tpageToken\"n\n" +
 	"\x16ListTaskEventsResponse\x12,\n" +
 	"\x06events\x18\x01 \x03(\v2\x14.janus.v1.JanusEventR\x06events\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\xef\x01\n" +
-	"\fAuditService\x12G\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken2\x83\x03\n" +
+	"\fAuditService\x12o\n" +
 	"\n" +
-	"ListEvents\x12\x1b.janus.v1.ListEventsRequest\x1a\x1c.janus.v1.ListEventsResponse\x12A\n" +
-	"\bGetTrace\x12\x19.janus.v1.GetTraceRequest\x1a\x1a.janus.v1.GetTraceResponse\x12S\n" +
-	"\x0eListTaskEvents\x12\x1f.janus.v1.ListTaskEventsRequest\x1a .janus.v1.ListTaskEventsResponseB\x95\x01\n" +
+	"ListEvents\x12\x1b.janus.v1.ListEventsRequest\x1a\x1c.janus.v1.ListEventsResponse\"&\x82\xd3\xe4\x93\x02 \x12\x1e/v1/tenants/{tenant_id}/events\x12t\n" +
+	"\bGetTrace\x12\x19.janus.v1.GetTraceRequest\x1a\x1a.janus.v1.GetTraceResponse\"1\x82\xd3\xe4\x93\x02+\x12)/v1/tenants/{tenant_id}/traces/{trace_id}\x12\x8b\x01\n" +
+	"\x0eListTaskEvents\x12\x1f.janus.v1.ListTaskEventsRequest\x1a .janus.v1.ListTaskEventsResponse\"6\x82\xd3\xe4\x93\x020\x12./v1/tenants/{tenant_id}/tasks/{task_id}/eventsB\x95\x01\n" +
 	"\fcom.janus.v1B\n" +
 	"AuditProtoP\x01Z8github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1\xa2\x02\x03JXX\xaa\x02\bJanus.V1\xca\x02\bJanus\\V1\xe2\x02\x14Janus\\V1\\GPBMetadata\xea\x02\tJanus::V1b\x06proto3"
 

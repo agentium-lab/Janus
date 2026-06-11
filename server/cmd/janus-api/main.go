@@ -28,6 +28,7 @@ import (
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
 	"github.com/agentium-lab/Janus/server/internal/handler"
+	"github.com/agentium-lab/Janus/server/internal/heartbeat"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
@@ -106,7 +107,11 @@ func main() {
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 
-	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, agentSvc, taskSvc, dispatchSvc)
+	hbSweeper := heartbeat.NewSweeper(redisDrv, agentRepo, 30*time.Second)
+	go hbSweeper.Start(context.Background())
+	defer hbSweeper.Stop()
+
+	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, agentSvc, taskSvc, dispatchSvc, eventSvc)
 	go func() {
 		if err := grpcSrv.Start(); err != nil {
 			log.Fatalf("grpc: %v", err)
@@ -114,9 +119,19 @@ func main() {
 	}()
 	defer grpcSrv.Stop()
 
+	grpcAddr := fmt.Sprintf("localhost:%d", cfg.GRPCPort)
+	gwMux, err := grpcserver.RegisterGateway(context.Background(), grpcAddr)
+	if err != nil {
+		log.Fatalf("grpc-gateway: %v", err)
+	}
+
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw)
 
-	var handler http.Handler = mux
+	combined := http.NewServeMux()
+	combined.Handle("/v1/", gwMux)
+	combined.Handle("/", mux)
+
+	var handler http.Handler = combined
 	if cfg.Auth.Enabled {
 		pgDB, err := sql.Open("pgx", cfg.Postgres.DSN())
 		if err != nil {

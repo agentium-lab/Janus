@@ -116,6 +116,20 @@ func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, sta
 	return scanAgents(rows)
 }
 
+func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, tenant_id, display_name, protocol, endpoint, status, description,
+		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
+		 FROM agents WHERE status = $1 ORDER BY id`,
+		string(status),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanAgents(rows)
+}
+
 func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 	var agents []*core.Agent
 	for rows.Next() {
