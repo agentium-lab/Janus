@@ -274,6 +274,18 @@ func (m *mockTaskService) Fail(_ context.Context, tenantID, taskID string, taskE
 	return m.err
 }
 func (m *mockTaskService) Cancel(_ context.Context, tenantID, taskID string) error { return m.err }
+func (m *mockTaskService) Block(_ context.Context, tenantID, taskID, reason string) error {
+	return m.err
+}
+func (m *mockTaskService) Unblock(_ context.Context, tenantID, taskID string) error {
+	return m.err
+}
+func (m *mockTaskService) Replay(_ context.Context, tenantID, taskID string) (*core.Task, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &core.Task{TenantID: tenantID, ID: taskID, Status: core.TaskStatusQueued}, nil
+}
 func (m *mockTaskService) ListByStatus(_ context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
 	return nil, nil
 }
@@ -379,6 +391,22 @@ func TestTaskHandler_StartError(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+func TestTaskHandler_CompleteError(t *testing.T) {
+	h := NewTaskHandler(&mockTaskService{err: fmt.Errorf("already completed")})
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/complete", nil)
+	w := httptest.NewRecorder()
+	h.Complete(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestTaskHandler_CancelError(t *testing.T) {
+	h := NewTaskHandler(&mockTaskService{err: fmt.Errorf("not cancellable")})
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/cancel", nil)
+	w := httptest.NewRecorder()
+	h.Cancel(w, req)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 type mockMailboxService struct {
 	mailboxes map[string]*core.Mailbox
 	err       error
@@ -408,6 +436,10 @@ func (m *mockMailboxService) Get(_ context.Context, tenantID, mailboxID string) 
 
 func (m *mockMailboxService) ListByAgent(_ context.Context, tenantID, agentID string) ([]*core.Mailbox, error) {
 	return nil, nil
+}
+
+func (m *mockMailboxService) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
+	return m.err
 }
 
 func TestMailboxHandler_Create(t *testing.T) {

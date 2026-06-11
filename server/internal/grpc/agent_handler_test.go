@@ -185,3 +185,43 @@ func TestAgentServiceServer_UpdateAgent_Status(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "offline", resp.Status)
 }
+
+func TestAgentServiceServer_UpdateAgent_Error(t *testing.T) {
+	mock := &mockAgentService{err: assert.AnError}
+	s := &AgentServiceServer{svc: mock}
+
+	status := "offline"
+	_, err := s.UpdateAgent(context.Background(), &pb.UpdateAgentRequest{
+		TenantId: "acme", AgentId: "agent-1", Status: &status,
+	})
+	assert.Error(t, err)
+}
+
+func TestAgentServiceServer_UpdateAgent_GetError(t *testing.T) {
+	mock := &mockAgentService{err: assert.AnError}
+	s := &AgentServiceServer{svc: mock}
+
+	_, err := s.UpdateAgent(context.Background(), &pb.UpdateAgentRequest{
+		TenantId: "acme", AgentId: "agent-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestAgentServiceServer_Heartbeat_Error(t *testing.T) {
+	mock := &mockAgentService{err: assert.AnError}
+	s := &AgentServiceServer{svc: mock}
+
+	_, err := s.Heartbeat(context.Background(), &pb.HeartbeatRequest{
+		TenantId: "acme", AgentId: "agent-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestAgentServiceServer_ListAgents_Error(t *testing.T) {
+	mock := &mockAgentService{err: assert.AnError}
+	s := &AgentServiceServer{svc: mock}
+
+	_, err := s.ListAgents(context.Background(), &pb.ListAgentsRequest{TenantId: "acme"})
+ 	assert.Error(t, err)
+ }
+

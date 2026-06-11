@@ -1,18 +1,27 @@
 package a2a
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
-	"github.com/agentium-lab/Janus/server/internal/service"
+	"github.com/agentium-lab/Janus/core"
 )
 
-type Gateway struct {
-	agentSvc   *service.AgentService
-	taskSvc    *service.TaskService
+type AgentRegistrar interface {
+	Register(ctx context.Context, agent core.Agent) error
 }
 
-func NewGateway(agentSvc *service.AgentService, taskSvc *service.TaskService) *Gateway {
+type TaskCreator interface {
+	Create(ctx context.Context, task core.Task) (*core.Task, error)
+}
+
+type Gateway struct {
+	agentSvc AgentRegistrar
+	taskSvc  TaskCreator
+}
+
+func NewGateway(agentSvc AgentRegistrar, taskSvc TaskCreator) *Gateway {
 	return &Gateway{agentSvc: agentSvc, taskSvc: taskSvc}
 }
 
@@ -74,11 +83,7 @@ func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 
 	task := MessageToTask(req, tenantID, sourceAgent, mailboxID)
 	if _, err := g.taskSvc.Create(r.Context(), task); err != nil {
-		status := http.StatusInternalServerError
-		if _, ok := err.(*service.IdempotentError); ok {
-			status = http.StatusConflict
-		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, status)
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
 

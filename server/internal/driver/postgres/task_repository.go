@@ -258,6 +258,65 @@ func nilIfEmpty(s string) interface{} {
 	return s
 }
 
+func (r *TaskRepository) ResetForReplay(ctx context.Context, tenantID, taskID string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET status = 'created', attempt_count = 0, result_ref = NULL,
+		        error = NULL, completed_at = NULL, retry_at = NULL, updated_at = now()
+		 WHERE tenant_id = $1 AND id = $2`,
+		tenantID, taskID,
+	)
+	return err
+}
+
+func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailboxID string, limit int) ([]*core.Task, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	if mailboxID != "" {
+		rows, err := r.pool.Query(ctx,
+			`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
+			        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
+			        result_ref, error, attempt_count, created_at, updated_at, completed_at
+			 FROM tasks WHERE tenant_id = $1 AND mailbox_id = $2 AND status = 'dead_lettered'
+			 ORDER BY updated_at DESC LIMIT $3`,
+			tenantID, mailboxID, limit,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		return scanTasks(rows)
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
+		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
+		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		 FROM tasks WHERE tenant_id = $1 AND status = 'dead_lettered'
+		 ORDER BY updated_at DESC LIMIT $2`,
+		tenantID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTasks(rows)
+}
+
+func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET status = 'expired', updated_at = now()
+		 WHERE status NOT IN ('completed','dead_lettered','expired','cancelled')
+		   AND (
+		     (deadline IS NOT NULL AND deadline < now())
+		     OR (ttl_seconds IS NOT NULL AND ttl_seconds > 0
+		         AND created_at + (ttl_seconds || ' seconds')::interval < now())
+		   )`)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func nilIfZero(v int) interface{} {
 	if v == 0 {
 		return nil

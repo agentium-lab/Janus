@@ -11,6 +11,7 @@ type MailboxService interface {
 	Create(ctx context.Context, mailbox core.Mailbox) error
 	Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error)
 	ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error)
+	UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error
 }
 
 type MailboxHandler struct {
@@ -66,4 +67,49 @@ func (h *MailboxHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, mailbox)
+}
+
+func (h *MailboxHandler) Update(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromPath(r.URL.Path)
+	mailboxID := lastSegment(r.URL.Path)
+
+	var req struct {
+		MaxConcurrency   *int `json:"max_concurrency"`
+		ACKWaitSeconds   *int `json:"ack_wait_seconds"`
+		MaxDeliver       *int `json:"max_deliver"`
+		RetentionSeconds *int `json:"retention_seconds"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	mailbox, err := h.svc.Get(r.Context(), tenantID, mailboxID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	mc := mailbox.MaxConcurrency
+	aw := mailbox.ACKWaitSeconds
+	md := mailbox.MaxDeliver
+	rs := mailbox.RetentionSeconds
+	if req.MaxConcurrency != nil {
+		mc = *req.MaxConcurrency
+	}
+	if req.ACKWaitSeconds != nil {
+		aw = *req.ACKWaitSeconds
+	}
+	if req.MaxDeliver != nil {
+		md = *req.MaxDeliver
+	}
+	if req.RetentionSeconds != nil {
+		rs = *req.RetentionSeconds
+	}
+
+	if err := h.svc.UpdateConfig(r.Context(), tenantID, mailboxID, mc, aw, md, rs); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"id": mailboxID, "status": "updated"})
 }

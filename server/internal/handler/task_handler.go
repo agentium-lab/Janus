@@ -15,6 +15,9 @@ type TaskService interface {
 	Complete(ctx context.Context, tenantID, taskID string) error
 	Fail(ctx context.Context, tenantID, taskID string, taskErr *core.TaskError) error
 	Cancel(ctx context.Context, tenantID, taskID string) error
+	Block(ctx context.Context, tenantID, taskID, reason string) error
+	Unblock(ctx context.Context, tenantID, taskID string) error
+	Replay(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
 }
 
@@ -165,7 +168,35 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Replay(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "replay not yet implemented"})
+	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	result, err := h.svc.Replay(r.Context(), tenantID, taskID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *TaskHandler) Block(w http.ResponseWriter, r *http.Request) {
+	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	var req struct {
+		Reason string `json:"reason"`
+	}
+	_ = readJSON(r, &req)
+	if err := h.svc.Block(r.Context(), tenantID, taskID, req.Reason); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "blocked"})
+}
+
+func (h *TaskHandler) Unblock(w http.ResponseWriter, r *http.Request) {
+	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	if err := h.svc.Unblock(r.Context(), tenantID, taskID); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
 }
 
 func tenantAndTaskFromPath(path string) (string, string) {

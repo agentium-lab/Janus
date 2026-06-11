@@ -189,3 +189,225 @@ func TestBudgetService_CheckConcurrency_RepoError(t *testing.T) {
 	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 0)
 	assert.NoError(t, err)
 }
+
+type mockRateLimiter struct {
+	rpmErr error
+	tpmErr error
+}
+
+func (m *mockRateLimiter) CheckRPM(_ context.Context, _, _, _ string, _ int) error {
+	return m.rpmErr
+}
+
+func (m *mockRateLimiter) CheckTPM(_ context.Context, _, _, _ string, _, _ int) error {
+	return m.tpmErr
+}
+
+func TestBudgetService_Reserve_RPMExceeded(t *testing.T) {
+	repo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:agent:agent-1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", RPM: 10},
+		},
+	}
+	svc := NewBudgetService(repo).WithRateLimiter(&mockRateLimiter{
+		rpmErr: fmt.Errorf("rpm limit exceeded"),
+	})
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", &core.Budget{MaxTokens: 1000})
+	require.Error(t, err)
+	var bpErr *core.BackpressureError
+	require.ErrorAs(t, err, &bpErr)
+	assert.Equal(t, core.ReasonModelRPMExceeded, bpErr.Reason)
+}
+
+func TestBudgetService_Reserve_TPMExceeded(t *testing.T) {
+	repo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:agent:agent-1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", TPM: 100},
+		},
+	}
+	svc := NewBudgetService(repo).WithRateLimiter(&mockRateLimiter{
+		tpmErr: fmt.Errorf("tpm limit exceeded"),
+	})
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", &core.Budget{MaxTokens: 1000})
+	require.Error(t, err)
+	var bpErr *core.BackpressureError
+	require.ErrorAs(t, err, &bpErr)
+	assert.Equal(t, core.ReasonTenantTPMExceeded, bpErr.Reason)
+}
+
+func TestBudgetService_Reserve_NoRateLimiter(t *testing.T) {
+	svc := NewBudgetService(&mockBudgetRepo{})
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Reserve_TenantRPMExceeded(t *testing.T) {
+	repo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:tenant:acme": {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", RPM: 5},
+		},
+	}
+	svc := NewBudgetService(repo).WithRateLimiter(&mockRateLimiter{
+		rpmErr: fmt.Errorf("tenant rpm exceeded"),
+	})
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	require.Error(t, err)
+}
+
+type mockBudgetUsageRepo struct {
+	dailyTokens int
+	dailyCost   float64
+	dailyTasks  int
+	reserveErr  error
+	settleErr   error
+	releaseErr  error
+}
+
+func (m *mockBudgetUsageRepo) ReserveTask(_ context.Context, _, _, _ string) error {
+	return m.reserveErr
+}
+
+func (m *mockBudgetUsageRepo) SettleUsage(_ context.Context, _, _, _ string, _ int, _ float64) error {
+	return m.settleErr
+}
+
+func (m *mockBudgetUsageRepo) ReleaseTask(_ context.Context, _, _, _ string) error {
+	return m.releaseErr
+}
+
+func (m *mockBudgetUsageRepo) GetDailyUsage(_ context.Context, _, _, _ string) (int, float64, int, error) {
+	return m.dailyTokens, m.dailyCost, m.dailyTasks, nil
+}
+
+func TestBudgetService_NewWithUsage(t *testing.T) {
+	svc := NewBudgetServiceWithUsage(&mockBudgetRepo{}, &mockBudgetUsageRepo{})
+	assert.NotNil(t, svc)
+}
+
+func TestBudgetService_Reserve_WithUsageRepo(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Reserve_DailyCostExceeded_Tenant(t *testing.T) {
+	repo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:tenant:acme": {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", DailyCostUSD: 10.0},
+		},
+	}
+	usageRepo := &mockBudgetUsageRepo{dailyCost: 15.0}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	require.Error(t, err)
+	var bpErr *core.BackpressureError
+	require.ErrorAs(t, err, &bpErr)
+	assert.Equal(t, core.ReasonDailyBudgetExceeded, bpErr.Reason)
+}
+
+func TestBudgetService_Reserve_DailyCostExceeded_Agent(t *testing.T) {
+	repo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:agent:agent-1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", DailyCostUSD: 5.0},
+		},
+	}
+	usageRepo := &mockBudgetUsageRepo{dailyCost: 8.0}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	require.Error(t, err)
+	var bpErr *core.BackpressureError
+	require.ErrorAs(t, err, &bpErr)
+	assert.Equal(t, core.ReasonDailyBudgetExceeded, bpErr.Reason)
+}
+
+func TestBudgetService_Reserve_ReserveError(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{reserveErr: fmt.Errorf("redis down")}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Reserve(ctx, "acme", "agent-1", nil)
+	assert.Error(t, err)
+}
+
+func TestBudgetService_Settle(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Settle(ctx, "acme", "agent-1", &core.TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150})
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Settle_NilUsage(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Settle(ctx, "acme", "agent-1", nil)
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Settle_NoUsageRepo(t *testing.T) {
+	svc := NewBudgetService(&mockBudgetRepo{})
+	ctx := context.Background()
+
+	err := svc.Settle(ctx, "acme", "agent-1", &core.TokenUsage{TotalTokens: 100})
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Settle_Error(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{settleErr: fmt.Errorf("db error")}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Settle(ctx, "acme", "agent-1", &core.TokenUsage{TotalTokens: 100})
+	assert.Error(t, err)
+}
+
+func TestBudgetService_Release(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Release(ctx, "acme", "agent-1")
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Release_NoUsageRepo(t *testing.T) {
+	svc := NewBudgetService(&mockBudgetRepo{})
+	ctx := context.Background()
+
+	err := svc.Release(ctx, "acme", "agent-1")
+	assert.NoError(t, err)
+}
+
+func TestBudgetService_Release_Error(t *testing.T) {
+	repo := &mockBudgetRepo{}
+	usageRepo := &mockBudgetUsageRepo{releaseErr: fmt.Errorf("db error")}
+	svc := NewBudgetServiceWithUsage(repo, usageRepo)
+	ctx := context.Background()
+
+	err := svc.Release(ctx, "acme", "agent-1")
+	assert.Error(t, err)
+}

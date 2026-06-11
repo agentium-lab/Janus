@@ -33,6 +33,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/agentium-lab/Janus/server/internal/expiry"
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
@@ -94,6 +95,9 @@ func main() {
 	approvalH := handler.NewApprovalHandler(approvalSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
+	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
+	dlqH := handler.NewDLQHandler(dlqSvc)
+
 	eventCh := make(chan core.JanusEvent, 256)
 	_, err = natsDrv.SubscribeEvents(context.Background(), eventCh)
 	if err != nil {
@@ -114,6 +118,10 @@ func main() {
 	go hbSweeper.Start(context.Background())
 	defer hbSweeper.Stop()
 
+	expiryScanner := expiry.NewScanner(taskRepo, 30*time.Second)
+	go expiryScanner.Start(context.Background())
+	defer expiryScanner.Stop()
+
 	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, agentSvc, taskSvc, dispatchSvc, eventSvc)
 	go func() {
 		if err := grpcSrv.Start(); err != nil {
@@ -128,7 +136,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw, dlqH)
 
 	combined := http.NewServeMux()
 	combined.Handle("/metrics", promhttp.Handler())
@@ -198,7 +206,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -216,12 +224,20 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		p := r.URL.Path
 
 		switch {
+		case hasSegment(p, "dlq") && hasSuffix(p, "/replay"):
+			postOnly(w, r, dlqH.Replay)
+		case hasSegment(p, "dlq") && hasSuffix(p, "/discard"):
+			postOnly(w, r, dlqH.Discard)
+		case hasSegment(p, "dlq") && r.Method == http.MethodGet:
+			dlqH.Query(w, r)
 		case hasSegment(p, "pull"):
 			postOnly(w, r, dispatchH.Pull)
 		case hasSegment(p, "traces"):
 			getOnly(w, r, auditH.QueryByTrace)
 		case hasSegment(p, "mailboxes") && hasSuffix(p, "/mailboxes"):
 			postOnly(w, r, mailboxH.Create)
+		case hasSegment(p, "mailboxes") && r.Method == http.MethodPatch:
+			mailboxH.Update(w, r)
 		case hasSegment(p, "mailboxes"):
 			getOnly(w, r, mailboxH.Get)
 		case hasSegment(p, "heartbeat") && hasSegment(p, "agents"):
@@ -244,6 +260,10 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, dispatchH.Nack)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/cancel"):
 			postOnly(w, r, taskH.Cancel)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/block"):
+			postOnly(w, r, taskH.Block)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/unblock"):
+			postOnly(w, r, taskH.Unblock)
 		case hasSegment(p, "approvals") && hasSuffix(p, "/approve"):
 			postOnly(w, r, approvalH.Approve)
 		case hasSegment(p, "approvals") && hasSuffix(p, "/reject"):

@@ -110,3 +110,13 @@ func (r *MailboxRepository) UpdateStatus(ctx context.Context, tenantID, mailboxI
 	)
 	return err
 }
+
+func (r *MailboxRepository) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE mailboxes SET max_concurrency = $3, ack_wait_seconds = $4,
+		        max_deliver = $5, retention_seconds = $6, updated_at = now()
+		 WHERE tenant_id = $1 AND id = $2`,
+		tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds,
+	)
+	return err
+}

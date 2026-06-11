@@ -50,4 +50,16 @@ var (
 	AgentOnline = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "janus_agent_online",
 	}, []string{"tenant_id"})
+
+	QueueBacklog = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "janus_queue_backlog",
+	}, []string{"tenant_id", "mailbox_id"})
+
+	AgentHeartbeatLag = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "janus_agent_heartbeat_lag_seconds",
+	}, []string{"tenant_id", "agent_id"})
+
+	TasksExpired = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "janus_tasks_expired_total",
+	}, []string{"tenant_id"})
 )

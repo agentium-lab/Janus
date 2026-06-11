@@ -142,5 +142,5 @@ func TestTaskHandler_Replay(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Replay(w, req)
 
-	assert.Equal(t, http.StatusNotImplemented, w.Code)
+	assert.Equal(t, http.StatusOK, w.Code)
 }

@@ -9,9 +9,14 @@ import (
 	"google.golang.org/grpc"
 )
 
+type listenFunc func(network, addr string) (net.Listener, error)
+
+var defaultListen listenFunc = net.Listen
+
 type Server struct {
 	grpcServer *grpc.Server
 	addr       string
+	listen     listenFunc
 }
 
 func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService) *Server {
@@ -23,11 +28,12 @@ func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, d
 	return &Server{
 		grpcServer: s,
 		addr:       fmt.Sprintf(":%d", port),
+		listen:     defaultListen,
 	}
 }
 
 func (s *Server) Start() error {
-	lis, err := net.Listen("tcp", s.addr)
+	lis, err := s.listen("tcp", s.addr)
 	if err != nil {
 		return fmt.Errorf("grpc listen: %w", err)
 	}

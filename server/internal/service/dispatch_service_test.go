@@ -180,6 +180,10 @@ func (m *mockDispatchMailboxRepo) UpdateStatus(_ context.Context, tenantID, mail
 	return nil
 }
 
+func (m *mockDispatchMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
+	return nil
+}
+
 func newTestDispatchSvc() (*DispatchService, *mockDispatchQueueDriver, *mockDispatchTaskRepo, *mockDispatchAttemptRepo) {
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}

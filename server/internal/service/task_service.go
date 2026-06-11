@@ -243,6 +243,72 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID string) error
 	return s.transition(ctx, tenantID, taskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0)
 }
 
+func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string) error {
+	if tenantID == "" || taskID == "" {
+		return fmt.Errorf("tenant id and task id are required")
+	}
+	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusBlocked, 0); err != nil {
+		return fmt.Errorf("block task: %w", err)
+	}
+	return s.publishEvent(ctx, core.JanusEvent{
+		EventType: core.EventTaskBlocked,
+		TenantID:  tenantID,
+		TaskID:    taskID,
+		Payload:   mustMarshal(map[string]string{"reason": reason}),
+	})
+}
+
+func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) error {
+	return s.transition(ctx, tenantID, taskID, core.TaskStatusRunning, core.EventTaskStarted, 0)
+}
+
+func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*core.Task, error) {
+	if tenantID == "" || taskID == "" {
+		return nil, fmt.Errorf("tenant id and task id are required")
+	}
+
+	task, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("get task: %w", err)
+	}
+	if !task.Status.IsTerminal() {
+		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
+	}
+
+	repo, ok := s.taskRepo.(*postgres.TaskRepository)
+	if !ok {
+		return nil, fmt.Errorf("replay requires postgres task repository")
+	}
+	if err := repo.ResetForReplay(ctx, tenantID, taskID); err != nil {
+		return nil, fmt.Errorf("reset task: %w", err)
+	}
+
+	if task.MailboxID != "" {
+		payload, _ := json.Marshal(task.Envelope)
+		if err := s.queueDriver.PublishTask(ctx, core.TaskMessage{
+			TenantID:  tenantID,
+			MailboxID: task.MailboxID,
+			TaskID:    taskID,
+			Priority:  task.Priority,
+			Payload:   payload,
+		}); err != nil {
+			return nil, fmt.Errorf("re-publish to queue: %w", err)
+		}
+		_ = s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusQueued, 0)
+	}
+
+	metrics.TasksCreated.WithLabelValues(tenantID).Inc()
+	_ = s.publishEvent(ctx, core.JanusEvent{
+		EventType:   core.EventTaskCreated,
+		TenantID:    tenantID,
+		TaskID:      taskID,
+		SourceAgent: task.SourceAgent,
+		Payload:     mustMarshal(map[string]string{"status": "replayed"}),
+	})
+
+	return s.taskRepo.Get(ctx, tenantID, taskID)
+}
+
 func (s *TaskService) ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
 	if tenantID == "" {
 		return nil, fmt.Errorf("tenant id is required")

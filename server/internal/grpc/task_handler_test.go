@@ -50,6 +50,18 @@ func (m *mockTaskService) Cancel(_ context.Context, tenantID, taskID string) err
 	return nil
 }
 
+func (m *mockTaskService) Replay(_ context.Context, tenantID, taskID string) (*core.Task, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	key := tenantID + ":" + taskID
+	if t, ok := m.tasks[key]; ok {
+		t.Status = core.TaskStatusQueued
+		return t, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
+
 func makeTestTask(tenantID, id string) *core.Task {
 	return &core.Task{
 		TenantID:   tenantID,
@@ -159,11 +171,44 @@ func TestTaskServiceServer_ReplayTask(t *testing.T) {
 	s := &TaskServiceServer{svc: mock}
 
 	resp, err := s.ReplayTask(context.Background(), &pb.ReplayTaskRequest{
-		TenantId:        "acme",
-		TaskId:          "task-1",
-		TargetMailboxId: "mb-2",
+		TenantId: "acme",
+		TaskId:   "task-1",
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "mb-2", resp.MailboxId)
+	assert.Equal(t, "queued", resp.Status)
 	assert.Equal(t, "agent-1", resp.SourceAgent)
+}
+
+func TestTaskServiceServer_CreateTask_Error(t *testing.T) {
+	mock := &mockTaskService{err: assert.AnError}
+	s := &TaskServiceServer{svc: mock}
+
+	_, err := s.CreateTask(context.Background(), &pb.CreateTaskRequest{
+		TenantId: "acme",
+		Envelope: &pb.TaskEnvelope{
+			TaskId: "task-1", TenantId: "acme", SourceAgent: "agent-1",
+			Target: &pb.Target{Type: "agent", Value: "agent-2"},
+		},
+	})
+	assert.Error(t, err)
+}
+
+func TestTaskServiceServer_CancelTask_Error(t *testing.T) {
+	mock := &mockTaskService{err: assert.AnError}
+	s := &TaskServiceServer{svc: mock}
+
+	_, err := s.CancelTask(context.Background(), &pb.CancelTaskRequest{
+		TenantId: "acme", TaskId: "task-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestTaskServiceServer_ReplayTask_Error(t *testing.T) {
+	mock := &mockTaskService{err: assert.AnError}
+	s := &TaskServiceServer{svc: mock}
+
+	_, err := s.ReplayTask(context.Background(), &pb.ReplayTaskRequest{
+		TenantId: "acme", TaskId: "task-1",
+	})
+	assert.Error(t, err)
 }

@@ -95,3 +95,14 @@ func TestContextRefService_GetAndDetach(t *testing.T) {
 		t.Error("expected error after detach")
 	}
 }
+
+func TestContextRefService_ListByTask(t *testing.T) {
+	svc := NewContextRefService(newMockContextRefRepo())
+	refs, err := svc.ListByTask(context.Background(), "t1", "task-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(refs) != 0 {
+		t.Errorf("expected empty, got %d", len(refs))
+	}
+}

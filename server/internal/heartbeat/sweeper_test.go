@@ -121,3 +121,56 @@ func TestSweeper_NoOnlineAgents(t *testing.T) {
 		t.Fatalf("expected 0 updates, got %d", len(status.updates))
 	}
 }
+
+func TestSweeper_StartStop(t *testing.T) {
+	scanner := &mockHBScanner{expired: map[string][]string{}}
+	status := &mockAgentStatus{online: nil}
+
+	s := NewSweeper(scanner, status, 50*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go s.Start(ctx)
+	time.Sleep(100 * time.Millisecond)
+	s.Stop()
+}
+
+func TestSweeper_ExpiredNotOnline(t *testing.T) {
+	scanner := &mockHBScanner{
+		expired: map[string][]string{
+			"t1": {"offline-agent"},
+		},
+	}
+	status := &mockAgentStatus{
+		online: []*core.Agent{
+			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
+		},
+	}
+
+	s := NewSweeper(scanner, status, 10*time.Second)
+	s.sweep(context.Background())
+
+	if len(status.updates) != 0 {
+		t.Fatalf("expected 0 updates (expired agent not online), got %d", len(status.updates))
+	}
+}
+
+func TestSweeper_ScanExpiredEmptyForTenant(t *testing.T) {
+	scanner := &mockHBScanner{
+		expired: map[string][]string{
+			"t1": {},
+		},
+	}
+	status := &mockAgentStatus{
+		online: []*core.Agent{
+			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
+		},
+	}
+
+	s := NewSweeper(scanner, status, 10*time.Second)
+	s.sweep(context.Background())
+
+	if len(status.updates) != 0 {
+		t.Fatalf("expected 0 updates, got %d", len(status.updates))
+	}
+}

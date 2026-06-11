@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -361,11 +362,18 @@ func (m *mockMailboxRepo) ListByAgent(_ context.Context, tenantID, agentID strin
 }
 
 func (m *mockMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
 	return 0, nil
 }
 
 func (m *mockMailboxRepo) UpdateStatus(_ context.Context, tenantID, mailboxID string, status core.MailboxStatus) error {
-	return nil
+	return m.err
+}
+
+func (m *mockMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
+	return m.err
 }
 
 type mockTaskRepo struct {
@@ -911,6 +919,87 @@ _, err := svc.Create(context.Background(), core.Task{
 	assert.Contains(t, err.Error(), "publish created event")
 }
 
+func TestTaskService_CreateQueuePublishError(t *testing.T) {
+	taskRepo := &mockTaskRepo{}
+	qd := &mockQueueDriverFailPublish{err: fmt.Errorf("nats down")}
+	svc := NewTaskService(taskRepo, qd, nil, nil)
+	_, err := svc.Create(context.Background(), core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "publish to queue")
+}
+
+type mockQueueDriverFailPublish struct {
+	err error
+}
+
+func (m *mockQueueDriverFailPublish) PublishTask(_ context.Context, _ core.TaskMessage) error {
+	return m.err
+}
+func (m *mockQueueDriverFailPublish) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+	return nil, nil
+}
+func (m *mockQueueDriverFailPublish) AckTask(_ context.Context, _ core.DeliveryRef) error        { return nil }
+func (m *mockQueueDriverFailPublish) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+	return nil
+}
+func (m *mockQueueDriverFailPublish) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
+	return nil
+}
+func (m *mockQueueDriverFailPublish) PublishEvent(_ context.Context, _ core.JanusEvent) error     { return nil }
+func (m *mockQueueDriverFailPublish) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
+	return nil, nil
+}
+func (m *mockQueueDriverFailPublish) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (m *mockQueueDriverFailPublish) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error    { return nil }
+func (m *mockQueueDriverFailPublish) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
+func (m *mockQueueDriverFailPublish) Close() error                                                { return nil }
+
+func TestTaskService_CreateUpdateQueuedError(t *testing.T) {
+	taskRepo := &mockTaskRepoFailUpdate{}
+	qd := &mockQueueDriver{}
+	svc := NewTaskService(taskRepo, qd, nil, nil)
+	_, err := svc.Create(context.Background(), core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "update to queued")
+}
+
+type mockTaskRepoFailUpdate struct {
+	tasks map[string]*core.Task
+}
+
+func (m *mockTaskRepoFailUpdate) Create(_ context.Context, task core.Task) error {
+	if m.tasks == nil {
+		m.tasks = make(map[string]*core.Task)
+	}
+	m.tasks[task.TenantID+":"+task.ID] = &task
+	return nil
+}
+func (m *mockTaskRepoFailUpdate) Get(_ context.Context, tenantID, taskID string) (*core.Task, error) {
+	t, ok := m.tasks[tenantID+":"+taskID]
+	if !ok {
+		return nil, fmt.Errorf("not found")
+	}
+	return t, nil
+}
+func (m *mockTaskRepoFailUpdate) GetByIdempotencyKey(_ context.Context, _, _ string) (*core.Task, error) {
+	return nil, fmt.Errorf("not found")
+}
+func (m *mockTaskRepoFailUpdate) UpdateStatus(_ context.Context, _, _ string, _ core.TaskStatus, _ int) error {
+	return fmt.Errorf("update fail")
+}
+func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error { return nil }
+func (m *mockTaskRepoFailUpdate) ListByStatus(_ context.Context, _ string, _ core.TaskStatus, _ int) ([]*core.Task, error) {
+	return nil, nil
+}
+
 func TestTaskService_TransitionUpdateError(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("update fail")}, &mockQueueDriver{}, nil, nil)
 	err := svc.Start(context.Background(), "acme", "t1")
@@ -928,5 +1017,202 @@ func TestTaskService_ListByStatusDefault(t *testing.T) {
 func TestMailboxService_GetNotFound(t *testing.T) {
 	svc := NewMailboxService(&mockMailboxRepo{}, nil)
 	_, err := svc.Get(context.Background(), "acme", "nonexistent")
+	assert.Error(t, err)
+}
+
+func TestAgentService_ResolveCapability(t *testing.T) {
+	agentRepo := &mockAgentRepo{agents: map[string]*core.Agent{
+		"acme:a1": {ID: "a1", TenantID: "acme", Status: core.AgentStatusOnline},
+	}}
+	svc := NewAgentService(agentRepo, nil, nil, nil)
+	ctx := context.Background()
+
+	agents, err := svc.ResolveCapability(ctx, "acme", "review")
+	require.NoError(t, err)
+	assert.Empty(t, agents)
+}
+
+func TestAgentService_ResolveCapability_Validation(t *testing.T) {
+	svc := NewAgentService(&mockAgentRepo{}, nil, nil, nil)
+	ctx := context.Background()
+
+	_, err := svc.ResolveCapability(ctx, "", "review")
+	assert.EqualError(t, err, "tenant id is required")
+
+	_, err = svc.ResolveCapability(ctx, "acme", "")
+	assert.EqualError(t, err, "capability is required")
+}
+
+func TestMailboxService_Backlog(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	count, err := svc.Backlog(ctx, "acme", "mb1")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestMailboxService_Backlog_Validation(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	_, err := svc.Backlog(ctx, "", "mb1")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+
+	_, err = svc.Backlog(ctx, "acme", "")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+}
+
+func TestMailboxService_Pause(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	err := svc.Pause(ctx, "acme", "mb1")
+	require.NoError(t, err)
+}
+
+func TestMailboxService_Pause_Validation(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	err := svc.Pause(ctx, "", "mb1")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+
+	err = svc.Pause(ctx, "acme", "")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+}
+
+func TestMailboxService_Resume(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	err := svc.Resume(ctx, "acme", "mb1")
+	require.NoError(t, err)
+}
+
+func TestMailboxService_Resume_Validation(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, nil)
+	ctx := context.Background()
+
+	err := svc.Resume(ctx, "", "mb1")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+
+	err = svc.Resume(ctx, "acme", "")
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+}
+
+func TestTaskService_WithPolicy(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	result := svc.WithPolicy(NewPolicyService(&mockPolicyRuleRepo{}))
+	assert.Same(t, svc, result)
+}
+
+func TestTaskService_CreateWithPolicyDenied(t *testing.T) {
+	policySvc := NewPolicyService(&mockPolicyRuleRepo{
+		rules: []*core.PolicyRule{
+			{
+				TenantID: "acme", ID: "deny-all", Status: "active", Priority: 1,
+				Condition: json.RawMessage(`{"actor.type":"agent"}`),
+				Action:    json.RawMessage(`{"decision":"deny"}`),
+			},
+		},
+	})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil).WithPolicy(policySvc)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "policy denied")
+}
+
+func TestTaskService_CreateWithPolicyApprovalRequired(t *testing.T) {
+	policySvc := NewPolicyService(&mockPolicyRuleRepo{
+		rules: []*core.PolicyRule{
+			{
+				TenantID: "acme", ID: "require-approval", Status: "active", Priority: 1,
+				Condition: json.RawMessage(`{"actor.type":"agent"}`),
+				Action:    json.RawMessage(`{"decision":"approval_required"}`),
+			},
+		},
+	})
+	taskRepo := &mockTaskRepo{}
+	qd := &mockQueueDriver{}
+	svc := NewTaskService(taskRepo, qd, nil, nil).WithPolicy(policySvc)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	require.NoError(t, err)
+	got, _ := svc.Get(ctx, "acme", "t1")
+	assert.Equal(t, core.TaskStatusApprovalPending, got.Status)
+}
+
+func TestTaskService_CreateWithPolicyAllow(t *testing.T) {
+	policySvc := NewPolicyService(&mockPolicyRuleRepo{})
+	taskRepo := &mockTaskRepo{}
+	qd := &mockQueueDriver{}
+	svc := NewTaskService(taskRepo, qd, nil, nil).WithPolicy(policySvc)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	require.NoError(t, err)
+	got, _ := svc.Get(ctx, "acme", "t1")
+	assert.Equal(t, core.TaskStatusQueued, got.Status)
+}
+
+func TestTaskService_CreateWithPolicyError(t *testing.T) {
+	policySvc := NewPolicyService(&mockPolicyRuleRepo{err: fmt.Errorf("policy db down")})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil).WithPolicy(policySvc)
+	ctx := context.Background()
+
+	_, err := svc.Create(ctx, core.Task{
+		TenantID: "acme", ID: "t1", SourceAgent: "a",
+		TargetType: core.TargetTypeCapability, TargetValue: "r",
+		Envelope: makeTestEnvelope("t1", "acme"),
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "policy check")
+}
+
+func TestMailboxService_Backlog_RepoError(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{err: fmt.Errorf("db down")}, nil)
+	ctx := context.Background()
+
+	_, err := svc.Backlog(ctx, "acme", "mb1")
+	assert.Error(t, err)
+}
+
+func TestMailboxService_Pause_RepoError(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{err: fmt.Errorf("db down")}, nil)
+	ctx := context.Background()
+
+	err := svc.Pause(ctx, "acme", "mb1")
+	assert.Error(t, err)
+}
+
+func TestMailboxService_Resume_RepoError(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{err: fmt.Errorf("db down")}, nil)
+	ctx := context.Background()
+
+	err := svc.Resume(ctx, "acme", "mb1")
+	assert.Error(t, err)
+}
+
+func TestAgentService_ResolveCapability_RepoError(t *testing.T) {
+	svc := NewAgentService(&mockAgentRepo{err: fmt.Errorf("db down")}, nil, nil, nil)
+	ctx := context.Background()
+
+	_, err := svc.ResolveCapability(ctx, "acme", "review")
 	assert.Error(t, err)
 }

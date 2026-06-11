@@ -111,3 +111,10 @@ func (s *MailboxService) Resume(ctx context.Context, tenantID, mailboxID string)
 	}
 	return s.mailboxRepo.UpdateStatus(ctx, tenantID, mailboxID, core.MailboxStatusActive)
 }
+
+func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
+	if tenantID == "" || mailboxID == "" {
+		return fmt.Errorf("tenant id and mailbox id are required")
+	}
+	return s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds)
+}

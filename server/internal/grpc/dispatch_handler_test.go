@@ -159,3 +159,53 @@ func TestDispatchServiceServer_Error(t *testing.T) {
 	})
 	assert.Error(t, err)
 }
+
+func TestDispatchServiceServer_StartTask_Error(t *testing.T) {
+	mock := &mockDispatchService{err: assert.AnError}
+	s := &DispatchServiceServer{svc: mock}
+
+	_, err := s.StartTask(context.Background(), &pb.StartTaskRequest{
+		TenantId: "acme", TaskId: "task-1", LeaseId: "lease-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestDispatchServiceServer_TaskHeartbeat_Error(t *testing.T) {
+	mock := &mockDispatchService{err: assert.AnError}
+	s := &DispatchServiceServer{svc: mock}
+
+	_, err := s.TaskHeartbeat(context.Background(), &pb.TaskHeartbeatRequest{
+		TenantId: "acme", TaskId: "task-1", LeaseId: "lease-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestDispatchServiceServer_AckTask_Error(t *testing.T) {
+	mock := &mockDispatchService{err: assert.AnError}
+	s := &DispatchServiceServer{svc: mock}
+
+	_, err := s.AckTask(context.Background(), &pb.AckTaskRequest{
+		TenantId: "acme", TaskId: "task-1", LeaseId: "lease-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestDispatchServiceServer_NackTask_Error(t *testing.T) {
+	mock := &mockDispatchService{err: assert.AnError}
+	s := &DispatchServiceServer{svc: mock}
+
+	_, err := s.NackTask(context.Background(), &pb.NackTaskRequest{
+		TenantId: "acme", TaskId: "task-1", LeaseId: "lease-1",
+	})
+	assert.Error(t, err)
+}
+
+func TestDispatchServiceServer_NackTask_NoError(t *testing.T) {
+	mock := &mockDispatchService{}
+	s := &DispatchServiceServer{svc: mock}
+
+	_, err := s.NackTask(context.Background(), &pb.NackTaskRequest{
+		TenantId: "acme", TaskId: "task-1", LeaseId: "lease-1", Retriable: false,
+	})
+	require.NoError(t, err)
+}

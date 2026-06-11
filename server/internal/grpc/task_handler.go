@@ -12,6 +12,7 @@ type taskService interface {
 	Create(ctx context.Context, task core.Task) (*core.Task, error)
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	Cancel(ctx context.Context, tenantID, taskID string) error
+	Replay(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 }
 
 type TaskServiceServer struct {
@@ -55,25 +56,9 @@ func (s *TaskServiceServer) CancelTask(ctx context.Context, req *pb.CancelTaskRe
 }
 
 func (s *TaskServiceServer) ReplayTask(ctx context.Context, req *pb.ReplayTaskRequest) (*pb.Task, error) {
-	task, err := s.svc.Get(ctx, req.TenantId, req.TaskId)
+	result, err := s.svc.Replay(ctx, req.TenantId, req.TaskId)
 	if err != nil {
 		return nil, err
 	}
-	replay := core.Task{
-		TenantID:       task.TenantID,
-		ID:             "",
-		IdempotencyKey: "",
-		SourceAgent:    task.SourceAgent,
-		TargetType:     task.TargetType,
-		TargetValue:    task.TargetValue,
-		MailboxID:      req.TargetMailboxId,
-		Priority:       task.Priority,
-		TTLSeconds:     task.TTLSeconds,
-		Deadline:       task.Deadline,
-		Envelope:       task.Envelope,
-	}
-	if _, err = s.svc.Create(ctx, replay); err != nil {
-		return nil, err
-	}
-	return taskToProto(&replay), nil
+	return taskToProto(result), nil
 }
