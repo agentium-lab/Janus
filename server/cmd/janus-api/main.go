@@ -76,7 +76,11 @@ func main() {
 	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH)
+	eventCh := make(chan core.JanusEvent, 256)
+	broadcaster := handler.NewFanoutBroadcaster(eventCh)
+	wsH := handler.NewWebSocketHandler(broadcaster)
+
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH)
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	log.Printf("janus-api listening on %s", addr)
 
@@ -126,8 +130,10 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, wsH *handler.WebSocketHandler) http.Handler {
 	mux := http.NewServeMux()
+
+	mux.HandleFunc("/ws", wsH.ServeHTTP)
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
