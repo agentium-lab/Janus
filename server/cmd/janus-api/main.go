@@ -25,6 +25,7 @@ import (
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
+	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/service"
@@ -81,6 +82,7 @@ func main() {
 	mailboxH := handler.NewMailboxHandler(mailboxSvc)
 	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
+	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
 	eventCh := make(chan core.JanusEvent, 256)
 	_, err = natsDrv.SubscribeEvents(context.Background(), eventCh)
@@ -94,7 +96,7 @@ func main() {
 	go outboxPub.Start(context.Background(), 500*time.Millisecond)
 	defer outboxPub.Stop()
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH, a2aGw)
 
 	var handler http.Handler = mux
 	if cfg.Auth.Enabled {
@@ -159,10 +161,11 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, wsH *handler.WebSocketHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
+	mux.Handle("/a2a/", a2aGw)
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
