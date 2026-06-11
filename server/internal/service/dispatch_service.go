@@ -88,6 +88,10 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, fmt.Errorf("get task %s: %w", delivery.TaskID, err)
 	}
 
+	if err := s.budgetSvc.Reserve(ctx, tenantID, agentID, task.Envelope.Budget); err != nil {
+		return nil, err
+	}
+
 	leaseID := generateLeaseID()
 	expiresAt := time.Now().Add(300 * time.Second)
 
@@ -192,6 +196,8 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		return fmt.Errorf("complete task: %w", err)
 	}
 
+	_ = s.budgetSvc.Settle(ctx, tenantID, attempt.AgentID, usage)
+
 	if attempt.DeliveryRef != "" {
 		if err := s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef)); err != nil {
 			_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
@@ -231,6 +237,8 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	if taskErr != nil {
 		errJSON, _ = encodeJSON(taskErr)
 	}
+
+	_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
 
 	if attempt.DeliveryRef != "" {
 		reason := core.NackNonRetriable
