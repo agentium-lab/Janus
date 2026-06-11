@@ -5,6 +5,7 @@ package janus.v1;
 option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
 
 import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
 import "janus/v1/common.proto";
 
 message AgentCapability {
@@ -83,9 +84,19 @@ message GetAgentRequest {
 }
 
 service AgentService {
-  rpc RegisterAgent(RegisterAgentRequest) returns (Agent);
-  rpc UpdateAgent(UpdateAgentRequest) returns (Agent);
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
-  rpc GetAgent(GetAgentRequest) returns (Agent);
+  rpc RegisterAgent(RegisterAgentRequest) returns (Agent) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/agents" body: "*" };
+  }
+  rpc UpdateAgent(UpdateAgentRequest) returns (Agent) {
+    option (google.api.http) = { patch: "/v1/tenants/{tenant_id}/agents/{agent_id}" body: "*" };
+  }
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/agents/{agent_id}/heartbeat" body: "*" };
+  }
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/agents" };
+  }
+  rpc GetAgent(GetAgentRequest) returns (Agent) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/agents/{agent_id}" };
+  }
 }

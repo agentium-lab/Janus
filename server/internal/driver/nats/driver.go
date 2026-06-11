@@ -92,6 +92,23 @@ func (d *Driver) PublishTask(ctx context.Context, msg core.TaskMessage) error {
 	return nil
 }
 
+func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
+	subject := dlqSubject(msg.TenantID, msg.MailboxID)
+
+	nmsg := nats.NewMsg(subject)
+	nmsg.Data = msg.Payload
+	nmsg.Header.Set("JANUS-Task-ID", msg.TaskID)
+	nmsg.Header.Set("JANUS-Tenant-ID", msg.TenantID)
+	nmsg.Header.Set("JANUS-Mailbox-ID", msg.MailboxID)
+	nmsg.Header.Set("JANUS-DLQ-Error", string(errPayload))
+
+	_, err := d.js.PublishMsg(ctx, nmsg)
+	if err != nil {
+		return fmt.Errorf("publish dlq to %s: %w", subject, err)
+	}
+	return nil
+}
+
 func (d *Driver) FetchTasks(ctx context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	tenantID := tenantFromCtx(ctx)
 	consumerKey := consumerName(tenantID, mailbox)

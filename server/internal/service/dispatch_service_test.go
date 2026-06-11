@@ -41,6 +41,10 @@ func (m *mockDispatchQueueDriver) NackTask(_ context.Context, ref core.DeliveryR
 	return nil
 }
 
+func (m *mockDispatchQueueDriver) PublishDLQ(_ context.Context, msg core.TaskMessage, errPayload []byte) error {
+	return nil
+}
+
 func (m *mockDispatchQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	m.events = append(m.events, event)
 	return nil

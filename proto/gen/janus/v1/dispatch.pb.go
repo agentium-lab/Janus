@@ -7,6 +7,7 @@
 package janusv1
 
 import (
+	_ "github.com/agentium-lab/Janus/proto/gen/google/api"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	durationpb "google.golang.org/protobuf/types/known/durationpb"
@@ -615,7 +616,7 @@ var File_janus_v1_dispatch_proto protoreflect.FileDescriptor
 
 const file_janus_v1_dispatch_proto_rawDesc = "" +
 	"\n" +
-	"\x17janus/v1/dispatch.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x15janus/v1/common.proto\"\xa8\x01\n" +
+	"\x17janus/v1/dispatch.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1egoogle/protobuf/duration.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x15janus/v1/common.proto\"\xa8\x01\n" +
 	"\x0fPullTaskRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x1d\n" +
 	"\n" +
@@ -654,13 +655,13 @@ const file_janus_v1_dispatch_proto_rawDesc = "" +
 	"\blease_id\x18\x03 \x01(\tR\aleaseId\x12\x1c\n" +
 	"\tretriable\x18\x04 \x01(\bR\tretriable\x12)\n" +
 	"\x05error\x18\x05 \x01(\v2\x13.janus.v1.TaskErrorR\x05error\"\x12\n" +
-	"\x10NackTaskResponse2\xef\x02\n" +
-	"\x0fDispatchService\x12A\n" +
-	"\bPullTask\x12\x19.janus.v1.PullTaskRequest\x1a\x1a.janus.v1.PullTaskResponse\x12D\n" +
-	"\tStartTask\x12\x1a.janus.v1.StartTaskRequest\x1a\x1b.janus.v1.StartTaskResponse\x12P\n" +
-	"\rTaskHeartbeat\x12\x1e.janus.v1.TaskHeartbeatRequest\x1a\x1f.janus.v1.TaskHeartbeatResponse\x12>\n" +
-	"\aAckTask\x12\x18.janus.v1.AckTaskRequest\x1a\x19.janus.v1.AckTaskResponse\x12A\n" +
-	"\bNackTask\x12\x19.janus.v1.NackTaskRequest\x1a\x1a.janus.v1.NackTaskResponseB\x98\x01\n" +
+	"\x10NackTaskResponse2\x9a\x05\n" +
+	"\x0fDispatchService\x12\x81\x01\n" +
+	"\bPullTask\x12\x19.janus.v1.PullTaskRequest\x1a\x1a.janus.v1.PullTaskResponse\">\x82\xd3\xe4\x93\x028:\x01*\"3/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}/pull\x12~\n" +
+	"\tStartTask\x12\x1a.janus.v1.StartTaskRequest\x1a\x1b.janus.v1.StartTaskResponse\"8\x82\xd3\xe4\x93\x022:\x01*\"-/v1/tenants/{tenant_id}/tasks/{task_id}/start\x12\x8e\x01\n" +
+	"\rTaskHeartbeat\x12\x1e.janus.v1.TaskHeartbeatRequest\x1a\x1f.janus.v1.TaskHeartbeatResponse\"<\x82\xd3\xe4\x93\x026:\x01*\"1/v1/tenants/{tenant_id}/tasks/{task_id}/heartbeat\x12v\n" +
+	"\aAckTask\x12\x18.janus.v1.AckTaskRequest\x1a\x19.janus.v1.AckTaskResponse\"6\x82\xd3\xe4\x93\x020:\x01*\"+/v1/tenants/{tenant_id}/tasks/{task_id}/ack\x12z\n" +
+	"\bNackTask\x12\x19.janus.v1.NackTaskRequest\x1a\x1a.janus.v1.NackTaskResponse\"7\x82\xd3\xe4\x93\x021:\x01*\",/v1/tenants/{tenant_id}/tasks/{task_id}/nackB\x98\x01\n" +
 	"\fcom.janus.v1B\rDispatchProtoP\x01Z8github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1\xa2\x02\x03JXX\xaa\x02\bJanus.V1\xca\x02\bJanus\\V1\xe2\x02\x14Janus\\V1\\GPBMetadata\xea\x02\tJanus::V1b\x06proto3"
 
 var (

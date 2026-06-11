@@ -73,7 +73,7 @@ func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task := MessageToTask(req, tenantID, sourceAgent, mailboxID)
-	if err := g.taskSvc.Create(r.Context(), task); err != nil {
+	if _, err := g.taskSvc.Create(r.Context(), task); err != nil {
 		status := http.StatusInternalServerError
 		if _, ok := err.(*service.IdempotentError); ok {
 			status = http.StatusConflict

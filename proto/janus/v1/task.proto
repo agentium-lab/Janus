@@ -5,6 +5,7 @@ package janus.v1;
 option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
 
 import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
 import "janus/v1/common.proto";
 
 message CreateTaskRequest {
@@ -30,8 +31,16 @@ message ReplayTaskRequest {
 }
 
 service TaskService {
-  rpc CreateTask(CreateTaskRequest) returns (Task);
-  rpc GetTask(GetTaskRequest) returns (Task);
-  rpc CancelTask(CancelTaskRequest) returns (Task);
-  rpc ReplayTask(ReplayTaskRequest) returns (Task);
+  rpc CreateTask(CreateTaskRequest) returns (Task) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks" body: "*" };
+  }
+  rpc GetTask(GetTaskRequest) returns (Task) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/tasks/{task_id}" };
+  }
+  rpc CancelTask(CancelTaskRequest) returns (Task) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/cancel" body: "*" };
+  }
+  rpc ReplayTask(ReplayTaskRequest) returns (Task) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/replay" body: "*" };
+  }
 }

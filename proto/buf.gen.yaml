@@ -13,3 +13,6 @@ plugins:
     opt:
       - paths=source_relative
       - require_unimplemented_servers=false
+  - local: protoc-gen-grpc-gateway
+    out: gen
+    opt: paths=source_relative

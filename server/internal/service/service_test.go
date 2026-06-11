@@ -210,6 +210,10 @@ func (m *mockQueueDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core
 	return nil
 }
 
+func (m *mockQueueDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
+	return nil
+}
+
 func (m *mockQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	if m.err != nil {
 		return m.err
@@ -439,7 +443,7 @@ func TestTaskService_Create(t *testing.T) {
 	svc := NewTaskService(taskRepo, qd, nil, nil)
 	ctx := context.Background()
 
-	err := svc.Create(ctx, core.Task{
+	_, err := svc.Create(ctx, core.Task{
 		TenantID:    "acme",
 		ID:          "task-1",
 		SourceAgent: "agent-a",
@@ -468,7 +472,7 @@ func TestTaskService_CreateNoMailbox(t *testing.T) {
 	svc := NewTaskService(taskRepo, qd, nil, nil)
 	ctx := context.Background()
 
-	err := svc.Create(ctx, core.Task{
+	_, err := svc.Create(ctx, core.Task{
 		TenantID:    "acme",
 		ID:          "task-2",
 		SourceAgent: "agent-a",
@@ -487,10 +491,14 @@ func TestTaskService_CreateValidation(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
-	assert.EqualError(t, svc.Create(ctx, core.Task{ID: "x"}), "tenant id is required")
-	assert.EqualError(t, svc.Create(ctx, core.Task{TenantID: "acme"}), "task id is required")
-	assert.EqualError(t, svc.Create(ctx, core.Task{TenantID: "acme", ID: "x"}), "source agent is required")
-	assert.EqualError(t, svc.Create(ctx, core.Task{TenantID: "acme", ID: "x", SourceAgent: "a"}), "target type is required")
+	_, err := svc.Create(ctx, core.Task{ID: "x"})
+	assert.EqualError(t, err, "tenant id is required")
+	_, err = svc.Create(ctx, core.Task{TenantID: "acme"})
+	assert.EqualError(t, err, "task id is required")
+	_, err = svc.Create(ctx, core.Task{TenantID: "acme", ID: "x"})
+	assert.EqualError(t, err, "source agent is required")
+	_, err = svc.Create(ctx, core.Task{TenantID: "acme", ID: "x", SourceAgent: "a"})
+	assert.EqualError(t, err, "target type is required")
 }
 
 func TestTaskService_Idempotency(t *testing.T) {
@@ -500,15 +508,14 @@ func TestTaskService_Idempotency(t *testing.T) {
 	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
-	err := svc.Create(ctx, core.Task{
+	result, err := svc.Create(ctx, core.Task{
 		TenantID: "acme", ID: "task-2", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		IdempotencyKey: "key-1",
 		Envelope: makeTestEnvelope("task-2", "acme"),
 	})
-	assert.Error(t, err)
-	var idempotentErr *IdempotentError
-	assert.ErrorAs(t, err, &idempotentErr)
+	require.NoError(t, err)
+	assert.Equal(t, "task-1", result.ID)
 }
 
 func TestTaskService_Lifecycle(t *testing.T) {
@@ -701,7 +708,7 @@ func TestTaskService_TransitionValidation(t *testing.T) {
 
 func TestTaskService_CreateRepoError(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("db down")}, &mockQueueDriver{}, nil, nil)
-	err := svc.Create(context.Background(), core.Task{
+_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		Envelope: makeTestEnvelope("t1", "acme"),
@@ -714,7 +721,7 @@ func TestTaskService_CreateQueueError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("nats down")}
 	svc := NewTaskService(taskRepo, qd, nil, nil)
-	err := svc.Create(context.Background(), core.Task{
+_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
@@ -868,7 +875,7 @@ func TestTaskService_CreateEventError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("event fail")}
 	svc := NewTaskService(taskRepo, qd, nil, nil)
-	err := svc.Create(context.Background(), core.Task{
+_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		Envelope: makeTestEnvelope("t1", "acme"),

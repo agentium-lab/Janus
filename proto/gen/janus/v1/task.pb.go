@@ -7,6 +7,7 @@
 package janusv1
 
 import (
+	_ "github.com/agentium-lab/Janus/proto/gen/google/api"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	_ "google.golang.org/protobuf/types/known/timestamppb"
@@ -250,7 +251,7 @@ var File_janus_v1_task_proto protoreflect.FileDescriptor
 
 const file_janus_v1_task_proto_rawDesc = "" +
 	"\n" +
-	"\x13janus/v1/task.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x15janus/v1/common.proto\"d\n" +
+	"\x13janus/v1/task.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x15janus/v1/common.proto\"d\n" +
 	"\x11CreateTaskRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x122\n" +
 	"\benvelope\x18\x02 \x01(\v2\x16.janus.v1.TaskEnvelopeR\benvelope\"F\n" +
@@ -264,15 +265,15 @@ const file_janus_v1_task_proto_rawDesc = "" +
 	"\x11ReplayTaskRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x17\n" +
 	"\atask_id\x18\x02 \x01(\tR\x06taskId\x12*\n" +
-	"\x11target_mailbox_id\x18\x03 \x01(\tR\x0ftargetMailboxId2\xf3\x01\n" +
-	"\vTaskService\x129\n" +
+	"\x11target_mailbox_id\x18\x03 \x01(\tR\x0ftargetMailboxId2\xc4\x03\n" +
+	"\vTaskService\x12c\n" +
 	"\n" +
-	"CreateTask\x12\x1b.janus.v1.CreateTaskRequest\x1a\x0e.janus.v1.Task\x123\n" +
-	"\aGetTask\x12\x18.janus.v1.GetTaskRequest\x1a\x0e.janus.v1.Task\x129\n" +
+	"CreateTask\x12\x1b.janus.v1.CreateTaskRequest\x1a\x0e.janus.v1.Task\"(\x82\xd3\xe4\x93\x02\":\x01*\"\x1d/v1/tenants/{tenant_id}/tasks\x12d\n" +
+	"\aGetTask\x12\x18.janus.v1.GetTaskRequest\x1a\x0e.janus.v1.Task\"/\x82\xd3\xe4\x93\x02)\x12'/v1/tenants/{tenant_id}/tasks/{task_id}\x12t\n" +
 	"\n" +
-	"CancelTask\x12\x1b.janus.v1.CancelTaskRequest\x1a\x0e.janus.v1.Task\x129\n" +
+	"CancelTask\x12\x1b.janus.v1.CancelTaskRequest\x1a\x0e.janus.v1.Task\"9\x82\xd3\xe4\x93\x023:\x01*\"./v1/tenants/{tenant_id}/tasks/{task_id}/cancel\x12t\n" +
 	"\n" +
-	"ReplayTask\x12\x1b.janus.v1.ReplayTaskRequest\x1a\x0e.janus.v1.TaskB\x94\x01\n" +
+	"ReplayTask\x12\x1b.janus.v1.ReplayTaskRequest\x1a\x0e.janus.v1.Task\"9\x82\xd3\xe4\x93\x023:\x01*\"./v1/tenants/{tenant_id}/tasks/{task_id}/replayB\x94\x01\n" +
 	"\fcom.janus.v1B\tTaskProtoP\x01Z8github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1\xa2\x02\x03JXX\xaa\x02\bJanus.V1\xca\x02\bJanus\\V1\xe2\x02\x14Janus\\V1\\GPBMetadata\xea\x02\tJanus::V1b\x06proto3"
 
 var (

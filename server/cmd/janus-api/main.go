@@ -69,14 +69,17 @@ func main() {
 	eventRepo := pgdriver.NewEventRepo(pool)
 	outboxRepo := pgdriver.NewOutboxRepo(pool)
 
+	approvalRepo := pgdriver.NewApprovalRepo(pool)
+
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo)
-	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetService(budgetRepo)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc)
+	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	eventSvc := service.NewEventService(eventRepo)
+	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc)
 
 	tenantH := handler.NewTenantHandler(tenantSvc)
 	agentH := handler.NewAgentHandler(agentSvc)
@@ -84,6 +87,7 @@ func main() {
 	mailboxH := handler.NewMailboxHandler(mailboxSvc)
 	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
+	approvalH := handler.NewApprovalHandler(approvalSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
 	eventCh := make(chan core.JanusEvent, 256)
@@ -110,7 +114,7 @@ func main() {
 	}()
 	defer grpcSrv.Stop()
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH, a2aGw)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw)
 
 	var handler http.Handler = mux
 	if cfg.Auth.Enabled {
@@ -175,7 +179,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -221,6 +225,10 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, dispatchH.Nack)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/cancel"):
 			postOnly(w, r, taskH.Cancel)
+		case hasSegment(p, "approvals") && hasSuffix(p, "/approve"):
+			postOnly(w, r, approvalH.Approve)
+		case hasSegment(p, "approvals") && hasSuffix(p, "/reject"):
+			postOnly(w, r, approvalH.Reject)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/replay"):
 			postOnly(w, r, taskH.Replay)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/complete"):

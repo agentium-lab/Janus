@@ -7,6 +7,7 @@
 package janusv1
 
 import (
+	_ "github.com/agentium-lab/Janus/proto/gen/google/api"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
@@ -734,7 +735,7 @@ var File_janus_v1_agent_proto protoreflect.FileDescriptor
 
 const file_janus_v1_agent_proto_rawDesc = "" +
 	"\n" +
-	"\x14janus/v1/agent.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x15janus/v1/common.proto\"S\n" +
+	"\x14janus/v1/agent.proto\x12\bjanus.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x1cgoogle/api/annotations.proto\x1a\x15janus/v1/common.proto\"S\n" +
 	"\x0fAgentCapability\x12\x1e\n" +
 	"\n" +
 	"capability\x18\x01 \x01(\tR\n" +
@@ -809,14 +810,14 @@ const file_janus_v1_agent_proto_rawDesc = "" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"I\n" +
 	"\x0fGetAgentRequest\x12\x1b\n" +
 	"\ttenant_id\x18\x01 \x01(\tR\btenantId\x12\x19\n" +
-	"\bagent_id\x18\x02 \x01(\tR\aagentId2\xd5\x02\n" +
-	"\fAgentService\x12@\n" +
-	"\rRegisterAgent\x12\x1e.janus.v1.RegisterAgentRequest\x1a\x0f.janus.v1.Agent\x12<\n" +
-	"\vUpdateAgent\x12\x1c.janus.v1.UpdateAgentRequest\x1a\x0f.janus.v1.Agent\x12D\n" +
-	"\tHeartbeat\x12\x1a.janus.v1.HeartbeatRequest\x1a\x1b.janus.v1.HeartbeatResponse\x12G\n" +
+	"\bagent_id\x18\x02 \x01(\tR\aagentId2\xd2\x04\n" +
+	"\fAgentService\x12k\n" +
+	"\rRegisterAgent\x12\x1e.janus.v1.RegisterAgentRequest\x1a\x0f.janus.v1.Agent\")\x82\xd3\xe4\x93\x02#:\x01*\"\x1e/v1/tenants/{tenant_id}/agents\x12r\n" +
+	"\vUpdateAgent\x12\x1c.janus.v1.UpdateAgentRequest\x1a\x0f.janus.v1.Agent\"4\x82\xd3\xe4\x93\x02.:\x01*2)/v1/tenants/{tenant_id}/agents/{agent_id}\x12\x84\x01\n" +
+	"\tHeartbeat\x12\x1a.janus.v1.HeartbeatRequest\x1a\x1b.janus.v1.HeartbeatResponse\">\x82\xd3\xe4\x93\x028:\x01*\"3/v1/tenants/{tenant_id}/agents/{agent_id}/heartbeat\x12o\n" +
 	"\n" +
-	"ListAgents\x12\x1b.janus.v1.ListAgentsRequest\x1a\x1c.janus.v1.ListAgentsResponse\x126\n" +
-	"\bGetAgent\x12\x19.janus.v1.GetAgentRequest\x1a\x0f.janus.v1.AgentB\x95\x01\n" +
+	"ListAgents\x12\x1b.janus.v1.ListAgentsRequest\x1a\x1c.janus.v1.ListAgentsResponse\"&\x82\xd3\xe4\x93\x02 \x12\x1e/v1/tenants/{tenant_id}/agents\x12i\n" +
+	"\bGetAgent\x12\x19.janus.v1.GetAgentRequest\x1a\x0f.janus.v1.Agent\"1\x82\xd3\xe4\x93\x02+\x12)/v1/tenants/{tenant_id}/agents/{agent_id}B\x95\x01\n" +
 	"\fcom.janus.v1B\n" +
 	"AgentProtoP\x01Z8github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1\xa2\x02\x03JXX\xaa\x02\bJanus.V1\xca\x02\bJanus\\V1\xe2\x02\x14Janus\\V1\\GPBMetadata\xea\x02\tJanus::V1b\x06proto3"
 

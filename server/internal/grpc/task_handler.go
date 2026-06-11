@@ -9,7 +9,7 @@ import (
 )
 
 type taskService interface {
-	Create(ctx context.Context, task core.Task) error
+	Create(ctx context.Context, task core.Task) (*core.Task, error)
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	Cancel(ctx context.Context, tenantID, taskID string) error
 }
@@ -28,10 +28,7 @@ func (s *TaskServiceServer) CreateTask(ctx context.Context, req *pb.CreateTaskRe
 	if err != nil {
 		return nil, err
 	}
-	if err = s.svc.Create(ctx, task); err != nil {
-		return nil, err
-	}
-	result, err := s.svc.Get(ctx, req.TenantId, task.ID)
+	result, err := s.svc.Create(ctx, task)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +72,7 @@ func (s *TaskServiceServer) ReplayTask(ctx context.Context, req *pb.ReplayTaskRe
 		Deadline:       task.Deadline,
 		Envelope:       task.Envelope,
 	}
-	if err = s.svc.Create(ctx, replay); err != nil {
+	if _, err = s.svc.Create(ctx, replay); err != nil {
 		return nil, err
 	}
 	return taskToProto(&replay), nil

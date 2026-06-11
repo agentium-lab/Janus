@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -278,6 +279,16 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusDeadLettered, 0); err != nil {
 		return fmt.Errorf("dead letter: %w", err)
 	}
+
+	envelopeJSON, _ := json.Marshal(task.Envelope)
+	_ = s.queueDriver.PublishDLQ(ctx, core.TaskMessage{
+		TenantID:  tenantID,
+		MailboxID: task.MailboxID,
+		TaskID:    taskID,
+		Priority:  task.Priority,
+		Payload:   envelopeJSON,
+		Headers:   map[string]string{"attempt_count": fmt.Sprintf("%d", task.AttemptCount)},
+	}, errJSON)
 
 	_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
 		EventType: core.EventTaskDeadLettered,

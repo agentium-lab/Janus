@@ -57,6 +57,10 @@ func (m *mockDriver) NackTask(ctx context.Context, ref DeliveryRef, reason NackR
 	return nil
 }
 
+func (m *mockDriver) PublishDLQ(ctx context.Context, msg TaskMessage, errPayload []byte) error {
+	return nil
+}
+
 func (m *mockDriver) PublishEvent(ctx context.Context, event JanusEvent) error {
 	m.publishedEvents = append(m.publishedEvents, event)
 	return nil

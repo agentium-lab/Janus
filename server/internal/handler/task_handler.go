@@ -6,11 +6,10 @@ import (
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
-	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
 type TaskService interface {
-	Create(ctx context.Context, task core.Task) error
+	Create(ctx context.Context, task core.Task) (*core.Task, error)
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	Start(ctx context.Context, tenantID, taskID string) error
 	Complete(ctx context.Context, tenantID, taskID string) error
@@ -97,16 +96,16 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	if err := h.svc.Create(r.Context(), task); err != nil {
-		if _, ok := err.(*service.IdempotentError); ok {
-			writeJSON(w, http.StatusOK, map[string]string{"id": req.ID, "status": "existing"})
-			return
-		}
+	result, err := h.svc.Create(r.Context(), task)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	writeJSON(w, http.StatusCreated, map[string]string{"id": req.ID, "status": "created"})
+	if result != nil && result.ID == task.ID {
+		writeJSON(w, http.StatusCreated, map[string]string{"id": req.ID, "status": "created"})
+	} else {
+		writeJSON(w, http.StatusOK, map[string]string{"id": result.ID, "status": "existing"})
+	}
 }
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {

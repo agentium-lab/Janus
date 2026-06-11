@@ -17,6 +17,7 @@ type TaskService struct {
 	queueDriver QueueDriver
 	pool        *pgxpool.Pool
 	outboxRepo  *postgres.OutboxRepo
+	policySvc   *PolicyService
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -28,21 +29,26 @@ func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Po
 	}
 }
 
-func (s *TaskService) Create(ctx context.Context, task core.Task) error {
+func (s *TaskService) WithPolicy(policySvc *PolicyService) *TaskService {
+	s.policySvc = policySvc
+	return s
+}
+
+func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, error) {
 	if task.TenantID == "" {
-		return fmt.Errorf("tenant id is required")
+		return nil, fmt.Errorf("tenant id is required")
 	}
 	if task.ID == "" {
-		return fmt.Errorf("task id is required")
+		return nil, fmt.Errorf("task id is required")
 	}
 	if task.SourceAgent == "" {
-		return fmt.Errorf("source agent is required")
+		return nil, fmt.Errorf("source agent is required")
 	}
 	if task.TargetType == "" {
-		return fmt.Errorf("target type is required")
+		return nil, fmt.Errorf("target type is required")
 	}
 	if task.TargetValue == "" {
-		return fmt.Errorf("target value is required")
+		return nil, fmt.Errorf("target value is required")
 	}
 	if task.Status == "" {
 		task.Status = core.TaskStatusCreated
@@ -51,20 +57,38 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) error {
 		task.Priority = core.PriorityNormal
 	}
 	if err := task.Envelope.Validate(); err != nil {
-		return fmt.Errorf("envelope validation: %w", err)
+		return nil, fmt.Errorf("envelope validation: %w", err)
+	}
+
+	if s.policySvc != nil {
+		decision, err := s.policySvc.Evaluate(ctx, core.PolicyInput{
+			TenantID: task.TenantID,
+			Actor:    core.PolicyActor{Type: "agent", ID: task.SourceAgent},
+			Action:   "task.publish",
+			Resource: core.PolicyResource{Type: string(task.TargetType), Value: task.TargetValue},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("policy check: %w", err)
+		}
+		if decision.Decision == core.PolicyDecisionDeny {
+			return nil, fmt.Errorf("policy denied: %s", decision.Reason)
+		}
+		if decision.Decision == core.PolicyDecisionApprovalRequired {
+			task.Status = core.TaskStatusApprovalPending
+		}
 	}
 
 	if task.IdempotencyKey != "" {
 		existing, err := s.taskRepo.GetByIdempotencyKey(ctx, task.TenantID, task.IdempotencyKey)
 		if err == nil && existing != nil {
-			return &IdempotentError{ExistingTaskID: existing.ID}
+			return existing, nil
 		}
 	}
 
 	if s.outboxRepo != nil && s.pool != nil {
-		return s.createWithOutbox(ctx, task)
+		return nil, s.createWithOutbox(ctx, task)
 	}
-	return s.createDirect(ctx, task)
+	return nil, s.createDirect(ctx, task)
 }
 
 func (s *TaskService) createWithOutbox(ctx context.Context, task core.Task) error {

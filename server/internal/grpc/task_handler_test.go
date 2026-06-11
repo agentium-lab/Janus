@@ -17,15 +17,15 @@ type mockTaskService struct {
 	err   error
 }
 
-func (m *mockTaskService) Create(_ context.Context, task core.Task) error {
+func (m *mockTaskService) Create(_ context.Context, task core.Task) (*core.Task, error) {
 	if m.err != nil {
-		return m.err
+		return nil, m.err
 	}
 	if m.tasks == nil {
 		m.tasks = make(map[string]*core.Task)
 	}
 	m.tasks[task.TenantID+":"+task.ID] = &task
-	return nil
+	return &task, nil
 }
 
 func (m *mockTaskService) Get(_ context.Context, tenantID, taskID string) (*core.Task, error) {

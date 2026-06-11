@@ -106,6 +106,7 @@ type QueueEventDriver interface {
 	FetchTasks(ctx context.Context, mailbox string, opts FetchOptions) ([]TaskDelivery, error)
 	AckTask(ctx context.Context, ref DeliveryRef) error
 	NackTask(ctx context.Context, ref DeliveryRef, reason NackReason) error
+	PublishDLQ(ctx context.Context, msg TaskMessage, errPayload []byte) error
 
 	// Event operations
 	PublishEvent(ctx context.Context, event JanusEvent) error

@@ -6,6 +6,7 @@ option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/duration.proto";
+import "google/api/annotations.proto";
 import "janus/v1/common.proto";
 
 message PullTaskRequest {
@@ -62,9 +63,19 @@ message NackTaskRequest {
 message NackTaskResponse {}
 
 service DispatchService {
-  rpc PullTask(PullTaskRequest) returns (PullTaskResponse);
-  rpc StartTask(StartTaskRequest) returns (StartTaskResponse);
-  rpc TaskHeartbeat(TaskHeartbeatRequest) returns (TaskHeartbeatResponse);
-  rpc AckTask(AckTaskRequest) returns (AckTaskResponse);
-  rpc NackTask(NackTaskRequest) returns (NackTaskResponse);
+  rpc PullTask(PullTaskRequest) returns (PullTaskResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}/pull" body: "*" };
+  }
+  rpc StartTask(StartTaskRequest) returns (StartTaskResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/start" body: "*" };
+  }
+  rpc TaskHeartbeat(TaskHeartbeatRequest) returns (TaskHeartbeatResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/heartbeat" body: "*" };
+  }
+  rpc AckTask(AckTaskRequest) returns (AckTaskResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/ack" body: "*" };
+  }
+  rpc NackTask(NackTaskRequest) returns (NackTaskResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/tasks/{task_id}/nack" body: "*" };
+  }
 }
