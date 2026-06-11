@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Janus Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace; background: #0a0a0a; color: #e0e0e0; }
+.header { background: #141414; border-bottom: 1px solid #2a2a2a; padding: 12px 24px; display: flex; align-items: center; gap: 16px; }
+.header h1 { font-size: 18px; color: #60a5fa; }
+.header .status { font-size: 12px; color: #4ade80; margin-left: auto; }
+.container { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+.panel { background: #141414; border: 1px solid #2a2a2a; border-radius: 8px; overflow: hidden; }
+.panel-header { background: #1a1a1a; padding: 10px 16px; border-bottom: 1px solid #2a2a2a; font-size: 13px; font-weight: 600; color: #a0a0a0; text-transform: uppercase; letter-spacing: 0.5px; }
+.panel-body { padding: 12px 16px; max-height: 500px; overflow-y: auto; }
+.event { padding: 6px 0; border-bottom: 1px solid #1a1a1a; font-size: 13px; display: flex; gap: 12px; font-family: monospace; }
+.event .ts { color: #666; min-width: 80px; }
+.event .type { color: #60a5fa; min-width: 140px; }
+.event .task { color: #c084fc; min-width: 100px; }
+.event .detail { color: #888; }
+.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px 24px; }
+.stat-card { background: #141414; border: 1px solid #2a2a2a; border-radius: 8px; padding: 16px; text-align: center; }
+.stat-card .value { font-size: 28px; font-weight: 700; color: #60a5fa; }
+.stat-card .label { font-size: 11px; color: #666; margin-top: 4px; text-transform: uppercase; }
+.task-list { width: 100%; border-collapse: collapse; }
+.task-list th { text-align: left; font-size: 11px; color: #666; text-transform: uppercase; padding: 6px 12px; border-bottom: 1px solid #2a2a2a; }
+.task-list td { font-size: 13px; padding: 6px 12px; border-bottom: 1px solid #1a1a1a; font-family: monospace; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-queued { background: #1e3a5f; color: #60a5fa; }
+.badge-running { background: #1e3f2f; color: #4ade80; }
+.badge-completed { background: #1a1a2e; color: #a78bfa; }
+.badge-failed { background: #3f1e1e; color: #f87171; }
+.badge-cancelled { background: #2a2a2a; color: #888; }
+.empty { text-align: center; padding: 32px; color: #555; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <h1>Janus</h1>
+  <span>Dashboard</span>
+  <span class="status" id="conn-status">Connecting...</span>
+</div>
+<div class="stat-grid">
+  <div class="stat-card"><div class="value" id="stat-total">0</div><div class="label">Total Tasks</div></div>
+  <div class="stat-card"><div class="value" id="stat-queued">0</div><div class="label">Queued</div></div>
+  <div class="stat-card"><div class="value" id="stat-running">0</div><div class="label">Running</div></div>
+  <div class="stat-card"><div class="value" id="stat-completed">0</div><div class="label">Completed</div></div>
+</div>
+<div class="container">
+  <div class="panel">
+    <div class="panel-header">Live Events</div>
+    <div class="panel-body" id="events-panel"><div class="empty">Waiting for events...</div></div>
+  </div>
+  <div class="panel">
+    <div class="panel-header">Recent Tasks</div>
+    <div class="panel-body">
+      <table class="task-list">
+        <thead><tr><th>ID</th><th>Status</th><th>Source</th><th>Updated</th></tr></thead>
+        <tbody id="tasks-tbody"><tr><td colspan="4" class="empty">No tasks yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+<script>
+const stats = { total: 0, queued: 0, running: 0, completed: 0, failed: 0, cancelled: 0 };
+const tasks = {};
+const maxEvents = 100;
+const eventsEl = document.getElementById('events-panel');
+const tasksEl = document.getElementById('tasks-tbody');
+const statusEl = document.getElementById('conn-status');
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(proto + '//' + location.host + '/ws?tenant=' + (new URLSearchParams(location.search).get('tenant') || 'default'));
+  ws.onopen = () => { statusEl.textContent = 'Connected'; statusEl.style.color = '#4ade80'; };
+  ws.onclose = () => { statusEl.textContent = 'Disconnected'; statusEl.style.color = '#f87171'; setTimeout(connect, 3000); };
+  ws.onerror = () => {};
+  ws.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    addEvent(ev);
+    if (ev.task_id) updateTask(ev);
+    renderStats();
+  };
+}
+function addEvent(ev) {
+  const row = document.createElement('div');
+  row.className = 'event';
+  const ts = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString() : '--:--:--';
+  row.innerHTML = '<span class="ts">' + ts + '</span><span class="type">' + (ev.event_type || '') + '</span><span class="task">' + (ev.task_id || '') + '</span><span class="detail">' + (ev.source_agent || '') + '</span>';
+  if (eventsEl.querySelector('.empty')) eventsEl.innerHTML = '';
+  eventsEl.prepend(row);
+  while (eventsEl.children.length > maxEvents) eventsEl.removeChild(eventsEl.lastChild);
+}
+function updateTask(ev) {
+  const tid = ev.task_id;
+  if (!tasks[tid]) { tasks[tid] = { id: tid }; stats.total++; }
+  const m = ev.event_type.match(/task\.(\w+)/);
+  if (m) {
+    const st = m[1];
+    if (tasks[tid].status && tasks[tid].status !== st) { stats[tasks[tid].status] = Math.max(0, (stats[tasks[tid].status] || 0) - 1); }
+    tasks[tid].status = st;
+    stats[st] = (stats[st] || 0) + 1;
+  }
+  if (ev.source_agent) tasks[tid].source = ev.source_agent;
+  tasks[tid].updated = new Date(ev.timestamp || Date.now()).toLocaleTimeString();
+  renderTasks();
+}
+function renderStats() {
+  document.getElementById('stat-total').textContent = stats.total;
+  document.getElementById('stat-queued').textContent = stats.queued || 0;
+  document.getElementById('stat-running').textContent = stats.running || 0;
+  document.getElementById('stat-completed').textContent = stats.completed || 0;
+}
+function renderTasks() {
+  const sorted = Object.values(tasks).sort((a, b) => (b.updated || '').localeCompare(a.updated || '')).slice(0, 20);
+  tasksEl.innerHTML = sorted.map(t => {
+    const cls = 'badge badge-' + (t.status || 'queued');
+    return '<tr><td>' + (t.id || '').substring(0, 12) + '</td><td><span class="' + cls + '">' + (t.status || '-') + '</span></td><td>' + (t.source || '-') + '</td><td>' + (t.updated || '-') + '</td></tr>';
+  }).join('');
+}
+connect();
+</script>
+</body>
+</html>

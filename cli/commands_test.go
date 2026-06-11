@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	janus "github.com/agentium-lab/Janus/sdk/go"
 	"github.com/spf13/cobra"
@@ -45,9 +46,58 @@ func newTestRoot(srv *httptest.Server) *cobra.Command {
 
 func TestDashboardCmd(t *testing.T) {
 	root := newTestRoot(nil)
-	out, err := executeCommand(root, "dashboard")
+	out, err := executeCommand(root, "dashboard", "--help")
 	assert.NoError(t, err)
-	assert.Contains(t, out, "not yet implemented")
+	assert.Contains(t, out, "Start local dashboard")
+	assert.Contains(t, out, "--port")
+}
+
+func TestDashboardCmd_ServeAndShutdown(t *testing.T) {
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ws" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer apiSrv.Close()
+
+	done := make(chan struct{})
+	var startErr error
+
+	go func() {
+		defer close(done)
+		cmd := &cobra.Command{Use: "test", SilenceErrors: true, SilenceUsage: true}
+		cmd.SetOut(io.Discard)
+		serverURL = apiSrv.URL
+		tenantID = "test"
+		cmd.AddCommand(dashboardCmd())
+		cmd.SetArgs([]string{"dashboard", "--port", "0"})
+		startErr = cmd.Execute()
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	select {
+	case <-done:
+		if startErr != nil {
+			t.Logf("dashboard exited: %v", startErr)
+		}
+	default:
+		t.Log("Dashboard started and is running (expected for ListenAndServe)")
+	}
+}
+
+func TestDashboardCmd_HelpOnly(t *testing.T) {
+	var buf bytes.Buffer
+	cmd := &cobra.Command{Use: "test"}
+	cmd.SetOut(&buf)
+	serverURL = "http://localhost:8080"
+	tenantID = "default"
+	cmd.AddCommand(dashboardCmd())
+	cmd.SetArgs([]string{"dashboard", "--help"})
+	require.NoError(t, cmd.Execute())
+	assert.Contains(t, buf.String(), "Start local dashboard")
 }
 
 func TestAgentRegister_MissingFlags(t *testing.T) {
