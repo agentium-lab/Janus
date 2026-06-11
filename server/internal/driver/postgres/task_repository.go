@@ -40,6 +40,27 @@ func (r *TaskRepository) Create(ctx context.Context, task core.Task) error {
 	return err
 }
 
+func (r *TaskRepository) CreateTx(ctx context.Context, tx pgx.Tx, task core.Task) error {
+	envelopeJSON, _ := json.Marshal(task.Envelope)
+
+	var deadline interface{}
+	if task.Deadline != nil {
+		deadline = *task.Deadline
+	}
+
+	_, err := tx.Exec(ctx,
+		`INSERT INTO tasks (tenant_id, id, idempotency_key, source_agent, target_type, target_value,
+		  mailbox_id, status, priority, deadline, ttl_seconds, envelope, attempt_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		task.TenantID, task.ID, nilIfEmpty(task.IdempotencyKey),
+		task.SourceAgent, string(task.TargetType), task.TargetValue,
+		nilIfEmpty(task.MailboxID),
+		string(task.Status), string(task.Priority), deadline, task.TTLSeconds,
+		envelopeJSON, task.AttemptCount,
+	)
+	return err
+}
+
 func (r *TaskRepository) Get(ctx context.Context, tenantID, taskID string) (*core.Task, error) {
 	var t core.Task
 	var status, priority, targetType, targetValue string
@@ -125,6 +146,32 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID stri
 	}
 
 	_, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET status = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		string(status), tenantID, taskID,
+	)
+	return err
+}
+
+func (r *TaskRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error {
+	if attemptIncrement > 0 {
+		_, err := tx.Exec(ctx,
+			`UPDATE tasks SET status = $1, attempt_count = attempt_count + $2, updated_at = now()
+			 WHERE tenant_id = $3 AND id = $4`,
+			string(status), attemptIncrement, tenantID, taskID,
+		)
+		return err
+	}
+
+	if status == core.TaskStatusCompleted {
+		_, err := tx.Exec(ctx,
+			`UPDATE tasks SET status = $1, updated_at = now(), completed_at = now()
+			 WHERE tenant_id = $2 AND id = $3`,
+			string(status), tenantID, taskID,
+		)
+		return err
+	}
+
+	_, err := tx.Exec(ctx,
 		`UPDATE tasks SET status = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
 		string(status), tenantID, taskID,
 	)

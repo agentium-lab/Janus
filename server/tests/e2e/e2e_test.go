@@ -93,7 +93,7 @@ func TestMain(m *testing.M) {
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, nil, nil)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetService(budgetRepo)

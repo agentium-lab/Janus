@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -25,6 +26,7 @@ import (
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/handler"
+	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
@@ -62,10 +64,11 @@ func main() {
 	budgetRepo := pgdriver.NewBudgetRepository(pool)
 	policyRuleRepo := pgdriver.NewPolicyRuleRepository(pool)
 	eventRepo := pgdriver.NewEventRepo(pool)
+	outboxRepo := pgdriver.NewOutboxRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetService(budgetRepo)
@@ -86,6 +89,10 @@ func main() {
 	}
 	broadcaster := handler.NewFanoutBroadcaster(eventCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
+
+	outboxPub := outbox.NewPublisher(outboxRepo, natsDrv)
+	go outboxPub.Start(context.Background(), 500*time.Millisecond)
+	defer outboxPub.Stop()
 
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH)
 

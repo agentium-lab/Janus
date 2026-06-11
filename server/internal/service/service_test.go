@@ -425,7 +425,7 @@ func makeTestEnvelope(taskID, tenantID string) core.TaskEnvelope {
 func TestTaskService_Create(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{}
-	svc := NewTaskService(taskRepo, qd)
+	svc := NewTaskService(taskRepo, qd, nil, nil)
 	ctx := context.Background()
 
 	err := svc.Create(ctx, core.Task{
@@ -454,7 +454,7 @@ func TestTaskService_Create(t *testing.T) {
 func TestTaskService_CreateNoMailbox(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{}
-	svc := NewTaskService(taskRepo, qd)
+	svc := NewTaskService(taskRepo, qd, nil, nil)
 	ctx := context.Background()
 
 	err := svc.Create(ctx, core.Task{
@@ -473,7 +473,7 @@ func TestTaskService_CreateNoMailbox(t *testing.T) {
 }
 
 func TestTaskService_CreateValidation(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
 	assert.EqualError(t, svc.Create(ctx, core.Task{ID: "x"}), "tenant id is required")
@@ -486,7 +486,7 @@ func TestTaskService_Idempotency(t *testing.T) {
 	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
 		"acme:task-1": {ID: "task-1", TenantID: "acme", IdempotencyKey: "key-1"},
 	}}
-	svc := NewTaskService(taskRepo, &mockQueueDriver{})
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
 	err := svc.Create(ctx, core.Task{
@@ -505,7 +505,7 @@ func TestTaskService_Lifecycle(t *testing.T) {
 		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
 	}}
 	qd := &mockQueueDriver{}
-	svc := NewTaskService(taskRepo, qd)
+	svc := NewTaskService(taskRepo, qd, nil, nil)
 	ctx := context.Background()
 
 	require.NoError(t, svc.Start(ctx, "acme", "t1"))
@@ -521,7 +521,7 @@ func TestTaskService_Fail(t *testing.T) {
 	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
 		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning, AttemptCount: 0},
 	}}
-	svc := NewTaskService(taskRepo, &mockQueueDriver{})
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
 	require.NoError(t, svc.Fail(ctx, "acme", "t1", &core.TaskError{Code: "ERR", Message: "fail"}))
@@ -534,7 +534,7 @@ func TestTaskService_Cancel(t *testing.T) {
 	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
 		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
 	}}
-	svc := NewTaskService(taskRepo, &mockQueueDriver{})
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
 	require.NoError(t, svc.Cancel(ctx, "acme", "t1"))
@@ -548,7 +548,7 @@ func TestTaskService_ListByStatus(t *testing.T) {
 		"acme:t2": {ID: "t2", TenantID: "acme", Status: core.TaskStatusQueued},
 		"acme:t3": {ID: "t3", TenantID: "acme", Status: core.TaskStatusRunning},
 	}}
-	svc := NewTaskService(taskRepo, &mockQueueDriver{})
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 
 	tasks, err := svc.ListByStatus(ctx, "acme", core.TaskStatusQueued, 10)
@@ -671,25 +671,25 @@ func TestAgentService_RegisterHeartbeatError(t *testing.T) {
 }
 
 func TestTaskService_GetValidation(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	_, err := svc.Get(context.Background(), "", "x")
 	assert.EqualError(t, err, "tenant id and task id are required")
 }
 
 func TestTaskService_ListByStatusValidation(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	_, err := svc.ListByStatus(context.Background(), "", core.TaskStatusQueued, 0)
 	assert.EqualError(t, err, "tenant id is required")
 }
 
 func TestTaskService_TransitionValidation(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	err := svc.Start(context.Background(), "", "x")
 	assert.EqualError(t, err, "tenant id and task id are required")
 }
 
 func TestTaskService_CreateRepoError(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("db down")}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("db down")}, &mockQueueDriver{}, nil, nil)
 	err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
@@ -702,7 +702,7 @@ func TestTaskService_CreateRepoError(t *testing.T) {
 func TestTaskService_CreateQueueError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("nats down")}
-	svc := NewTaskService(taskRepo, qd)
+	svc := NewTaskService(taskRepo, qd, nil, nil)
 	err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
@@ -715,7 +715,7 @@ func TestTaskService_FailNoError(t *testing.T) {
 	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
 		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning, AttemptCount: 0},
 	}}
-	svc := NewTaskService(taskRepo, &mockQueueDriver{})
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	ctx := context.Background()
 	err := svc.Fail(ctx, "acme", "t1", nil)
 	require.NoError(t, err)
@@ -856,7 +856,7 @@ func TestTenantService_GetRepoError(t *testing.T) {
 func TestTaskService_CreateEventError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("event fail")}
-	svc := NewTaskService(taskRepo, qd)
+	svc := NewTaskService(taskRepo, qd, nil, nil)
 	err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
@@ -867,14 +867,14 @@ func TestTaskService_CreateEventError(t *testing.T) {
 }
 
 func TestTaskService_TransitionUpdateError(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("update fail")}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("update fail")}, &mockQueueDriver{}, nil, nil)
 	err := svc.Start(context.Background(), "acme", "t1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "update task status")
 }
 
 func TestTaskService_ListByStatusDefault(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{})
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
 	tasks, err := svc.ListByStatus(context.Background(), "acme", core.TaskStatusQueued, -1)
 	require.NoError(t, err)
 	assert.Len(t, tasks, 0)
