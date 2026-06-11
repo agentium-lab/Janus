@@ -50,16 +50,16 @@ func (p RetryPolicy) ExceedsMaxAttempts(attemptCount int) bool {
 }
 
 type Mailbox struct {
-	TenantID        string
-	ID              string
-	AgentID         string
-	Status          MailboxStatus
-	Priority        Priority
-	MaxConcurrency  int
-	ACKWaitSeconds  int
-	MaxDeliver      int
-	RetentionSeconds int
-	RetryPolicy     RetryPolicy
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	TenantID         string       `json:"tenant_id"`
+	ID               string       `json:"id"`
+	AgentID          string       `json:"agent_id"`
+	Status           MailboxStatus `json:"status"`
+	Priority         Priority     `json:"priority"`
+	MaxConcurrency   int          `json:"max_concurrency"`
+	ACKWaitSeconds   int          `json:"ack_wait_seconds"`
+	MaxDeliver       int          `json:"max_deliver"`
+	RetentionSeconds int          `json:"retention_seconds"`
+	RetryPolicy      RetryPolicy  `json:"retry_policy"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }

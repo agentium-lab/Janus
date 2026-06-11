@@ -22,3 +22,4 @@ proto/gen/
 # Test
 coverage.out
 *.test
+janus-api

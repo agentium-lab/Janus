@@ -166,24 +166,24 @@ type TaskEnvelope struct {
 
 // Task represents the current state of a task in Janus.
 type Task struct {
-	TenantID       string
-	ID             string
-	IdempotencyKey string
-	SourceAgent    string
-	TargetType     TargetType
-	TargetValue    string
-	MailboxID      string
-	Status         TaskStatus
-	Priority       Priority
-	Deadline       *time.Time
-	TTLSeconds     int
-	Envelope       TaskEnvelope
-	ResultRef      string
-	Error          *TaskError
-	AttemptCount   int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CompletedAt    *time.Time
+	TenantID       string        `json:"tenant_id"`
+	ID             string        `json:"id"`
+	IdempotencyKey string        `json:"idempotency_key,omitempty"`
+	SourceAgent    string        `json:"source_agent"`
+	TargetType     TargetType    `json:"target_type"`
+	TargetValue    string        `json:"target_value"`
+	MailboxID      string        `json:"mailbox_id"`
+	Status         TaskStatus    `json:"status"`
+	Priority       Priority      `json:"priority"`
+	Deadline       *time.Time    `json:"deadline,omitempty"`
+	TTLSeconds     int           `json:"ttl_seconds,omitempty"`
+	Envelope       TaskEnvelope  `json:"envelope"`
+	ResultRef      string        `json:"result_ref,omitempty"`
+	Error          *TaskError    `json:"error,omitempty"`
+	AttemptCount   int           `json:"attempt_count"`
+	CreatedAt      time.Time     `json:"created_at"`
+	UpdatedAt      time.Time     `json:"updated_at"`
+	CompletedAt    *time.Time    `json:"completed_at,omitempty"`
 }
 
 // TaskError represents error information for a failed task.

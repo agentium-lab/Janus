@@ -31,18 +31,18 @@ type AgentCapability struct {
 
 // Agent represents a registered agent in Janus.
 type Agent struct {
-	ID             string
-	TenantID       string
-	DisplayName    string
-	Protocol       AgentProtocol
-	Endpoint       string
-	Status         AgentStatus
-	Description    string
-	Capabilities   []AgentCapability
-	MaxConcurrency int
-	RPM            int
-	TPM            int
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	LastHeartbeatAt *time.Time
+	ID              string         `json:"id"`
+	TenantID        string         `json:"tenant_id"`
+	DisplayName     string         `json:"display_name"`
+	Protocol        AgentProtocol  `json:"protocol"`
+	Endpoint        string         `json:"endpoint"`
+	Status          AgentStatus    `json:"status"`
+	Description     string         `json:"description"`
+	Capabilities    []AgentCapability `json:"capabilities"`
+	MaxConcurrency  int            `json:"max_concurrency"`
+	RPM             int            `json:"rpm"`
+	TPM             int            `json:"tpm"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	LastHeartbeatAt *time.Time     `json:"last_heartbeat_at"`
 }

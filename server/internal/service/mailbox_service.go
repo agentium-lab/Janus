@@ -52,6 +52,10 @@ func (s *MailboxService) Create(ctx context.Context, mailbox core.Mailbox) error
 		return fmt.Errorf("create mailbox: %w", err)
 	}
 
+	if err := s.queueDriver.EnsureTenant(ctx, mailbox.TenantID); err != nil {
+		return fmt.Errorf("ensure tenant streams: %w", err)
+	}
+
 	if err := s.queueDriver.EnsureMailbox(ctx, core.MailboxSpec{
 		TenantID:         mailbox.TenantID,
 		MailboxID:        mailbox.ID,
