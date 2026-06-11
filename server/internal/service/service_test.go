@@ -587,7 +587,7 @@ func TestMailboxService_CreateDefaults(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	got, _ := mbRepo.mailboxes["acme:mb1"]
+	got := mbRepo.mailboxes["acme:mb1"]
 	assert.Equal(t, 1, got.MaxConcurrency)
 	assert.Equal(t, 300, got.ACKWaitSeconds)
 	assert.Equal(t, 5, got.MaxDeliver)

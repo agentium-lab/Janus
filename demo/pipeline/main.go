@@ -17,12 +17,11 @@ import (
 )
 
 type PipelineAgent struct {
-	id         string
-	name       string
-	mailbox    string
+	id          string
+	name        string
+	mailbox     string
 	nextMailbox string
-	client     *janus.Client
-	processor  func(taskID string, payload map[string]interface{}) map[string]interface{}
+	processor   func(taskID string, payload map[string]interface{}) map[string]interface{}
 }
 
 type PipelineResult struct {

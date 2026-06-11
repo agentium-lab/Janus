@@ -75,10 +75,6 @@ func readJSON(r *http.Request, v interface{}) error {
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
-func pathParam(path, prefix string) string {
-	return strings.TrimPrefix(path, prefix)
-}
-
 func tenantIDFromPath(path string) string {
 	parts := strings.Split(path, "/")
 	for i, p := range parts {

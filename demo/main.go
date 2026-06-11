@@ -22,7 +22,6 @@ type DemoAgent struct {
 	tenant   string
 	client   *janus.Client
 	mailbox  string
-	stop     chan struct{}
 	wg       sync.WaitGroup
 	onTask   func(task *core.Task) string
 }
@@ -65,8 +64,8 @@ func main() {
 
 	for _, a := range agents {
 		a := a
+		a.wg.Add(1)
 		go func() {
-			a.wg.Add(1)
 			defer a.wg.Done()
 			a.run(ctx)
 		}()

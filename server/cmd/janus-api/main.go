@@ -153,7 +153,7 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		switch {
 		case hasSegment(p, "pull"):
 			postOnly(w, r, dispatchH.Pull)
-		case hasSegment(p, "traces") && hasSegment(p, "traces"):
+		case hasSegment(p, "traces"):
 			getOnly(w, r, auditH.QueryByTrace)
 		case hasSegment(p, "mailboxes") && hasSuffix(p, "/mailboxes"):
 			postOnly(w, r, mailboxH.Create)
