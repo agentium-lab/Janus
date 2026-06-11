@@ -28,6 +28,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
+	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
@@ -95,6 +96,10 @@ func main() {
 	outboxPub := outbox.NewPublisher(outboxRepo, natsDrv)
 	go outboxPub.Start(context.Background(), 500*time.Millisecond)
 	defer outboxPub.Stop()
+
+	retrySched := retry.NewScheduler(pool)
+	go retrySched.Start(context.Background(), 1*time.Second)
+	defer retrySched.Stop()
 
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, wsH, a2aGw)
 

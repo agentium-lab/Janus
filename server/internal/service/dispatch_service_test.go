@@ -143,6 +143,14 @@ func (m *mockDispatchTaskRepo) ListByStatus(_ context.Context, tenantID string, 
 	return nil, nil
 }
 
+func (m *mockDispatchTaskRepo) UpdateRetryAt(_ context.Context, tenantID, taskID string, retryAt time.Time) error {
+	key := tenantID + ":" + taskID
+	if t, ok := m.tasks[key]; ok {
+		t.Status = core.TaskStatusRetryScheduled
+	}
+	return nil
+}
+
 type mockDispatchMailboxRepo struct {
 	mailboxes map[string]*core.Mailbox
 }

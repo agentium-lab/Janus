@@ -396,6 +396,17 @@ func (m *mockTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID string, 
 	return nil
 }
 
+func (m *mockTaskRepo) UpdateRetryAt(_ context.Context, tenantID, taskID string, retryAt time.Time) error {
+	if m.err != nil {
+		return m.err
+	}
+	key := tenantID + ":" + taskID
+	if t, ok := m.tasks[key]; ok {
+		t.Status = core.TaskStatusRetryScheduled
+	}
+	return nil
+}
+
 func (m *mockTaskRepo) ListByStatus(_ context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
 	if m.err != nil {
 		return nil, m.err

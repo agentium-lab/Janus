@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -25,6 +26,7 @@ type TaskRepo interface {
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	GetByIdempotencyKey(ctx context.Context, tenantID, key string) (*core.Task, error)
 	UpdateStatus(ctx context.Context, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
+	UpdateRetryAt(ctx context.Context, tenantID, taskID string, retryAt time.Time) error
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
 }
 

@@ -260,7 +260,9 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	if retriable {
 		mb, mbErr := s.mailboxRepo.Get(ctx, tenantID, task.MailboxID)
 		if mbErr == nil && !mb.RetryPolicy.ExceedsMaxAttempts(task.AttemptCount) {
-			if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusRetryScheduled, 0); err != nil {
+			if err := s.taskRepo.UpdateRetryAt(ctx, tenantID, taskID,
+				time.Now().Add(mb.RetryPolicy.BackoffDuration(task.AttemptCount)),
+			); err != nil {
 				return fmt.Errorf("schedule retry: %w", err)
 			}
 			_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{

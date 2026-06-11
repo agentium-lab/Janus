@@ -178,6 +178,14 @@ func (r *TaskRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID
 	return err
 }
 
+func (r *TaskRepository) UpdateRetryAt(ctx context.Context, tenantID, taskID string, retryAt time.Time) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		retryAt, tenantID, taskID,
+	)
+	return err
+}
+
 func (r *TaskRepository) ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
