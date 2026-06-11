@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: Build all modules
+        run: go build ./...
+
+  vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: staticcheck
+        run: staticcheck ./...
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: janus
+          POSTGRES_PASSWORD: janus
+          POSTGRES_DB: janus_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+        options: --entrypoint nats-server -- -js
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+
+      - name: Unit tests (no infra dependency)
+        run: |
+          go test -count=1 -timeout=60s -cover ./core/...
+          go test -count=1 -timeout=60s -cover ./server/internal/handler/...
+          go test -count=1 -timeout=60s -cover ./server/internal/service/...
+          go test -count=1 -timeout=60s -cover ./sdk/go/...
+          go test -count=1 -timeout=60s -cover ./cli/...
+          go test -count=1 -timeout=60s -cover ./demo/...
+
+      - name: Postgres driver tests
+        env:
+          JANUS_PG_HOST: localhost
+          JANUS_PG_PORT: 5432
+          JANUS_PG_USER: janus
+          JANUS_PG_DBNAME: janus_test
+        run: go test -count=1 -timeout=60s -cover ./server/internal/driver/postgres/...
+
+      - name: NATS driver tests
+        env:
+          JANUS_NATS_URL: nats://localhost:4222
+        run: go test -count=1 -timeout=60s -cover ./server/internal/driver/nats/...
+
+      - name: Redis driver tests
+        env:
+          JANUS_REDIS_ADDR: localhost:6379
+        run: go test -count=1 -timeout=60s -cover ./server/internal/driver/redis/...
