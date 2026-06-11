@@ -88,3 +88,10 @@ func tenantIDFromPath(path string) string {
 	}
 	return ""
 }
+
+func isDuplicateKeyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505")
+}

@@ -75,8 +75,20 @@ func main() {
 	log.Printf("Server: %s | Tenant: %s\n", serverURL, tenant)
 	log.Println()
 
+	log.Println("[Setup] Creating tenant...")
+	if err := client.CreateTenant(ctx, tenant, "Pipeline Demo"); err != nil {
+		if !isConflict(err) {
+			log.Fatalf("create tenant: %v", err)
+		}
+	}
+
 	log.Println("[Setup] Registering agents and creating mailboxes...")
 	for _, a := range agents {
+		if err := client.CreateMailbox(ctx, a.mailbox, a.id); err != nil {
+			if !isConflict(err) {
+				log.Fatalf("create mailbox %s: %v", a.mailbox, err)
+			}
+		}
 		if err := client.RegisterAgent(ctx, janus.RegisterAgentRequest{
 			ID: a.id, DisplayName: a.name, Protocol: "a2a",
 		}); err != nil {

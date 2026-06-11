@@ -33,6 +33,14 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
+func (c *Client) CreateTenant(ctx context.Context, id, name string) error {
+	return c.doPost(ctx, "/v1/tenants", map[string]string{"id": id, "name": name}, nil)
+}
+
+func (c *Client) CreateMailbox(ctx context.Context, id, agentID string) error {
+	return c.doPost(ctx, "/v1/tenants/"+c.tenantID+"/mailboxes", map[string]string{"id": id, "agent_id": agentID}, nil)
+}
+
 type RegisterAgentRequest struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`

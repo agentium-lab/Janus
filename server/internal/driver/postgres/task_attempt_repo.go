@@ -27,10 +27,10 @@ func (r *TaskAttemptRepository) Create(ctx context.Context, a core.TaskAttempt) 
 		usageJSON, _ = json.Marshal(a.TokenUsage)
 	}
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status,
+		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
 		  started_at, heartbeat_at, finished_at, error, token_usage)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		a.TenantID, a.TaskID, a.Attempt, a.AgentID, a.LeaseID, a.Status,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		a.TenantID, a.TaskID, a.Attempt, a.AgentID, a.LeaseID, a.DeliveryRef, a.Status,
 		a.StartedAt, a.HeartbeatAt, a.FinishedAt, jsonOrNull(errorJSON), jsonOrNull(usageJSON),
 	)
 	return err
@@ -42,14 +42,14 @@ func (r *TaskAttemptRepository) GetLatest(ctx context.Context, tenantID, taskID 
 	var heartbeatAt, finishedAt *time.Time
 
 	err := r.pool.QueryRow(ctx,
-		`SELECT tenant_id, task_id, attempt, agent_id, lease_id, status,
+		`SELECT tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
 		        started_at, heartbeat_at, finished_at, error, token_usage
 		 FROM task_attempts
 		 WHERE tenant_id = $1 AND task_id = $2
 		 ORDER BY attempt DESC LIMIT 1`,
 		tenantID, taskID,
 	).Scan(
-		&a.TenantID, &a.TaskID, &a.Attempt, &a.AgentID, &a.LeaseID, &a.Status,
+		&a.TenantID, &a.TaskID, &a.Attempt, &a.AgentID, &a.LeaseID, &a.DeliveryRef, &a.Status,
 		&a.StartedAt, &heartbeatAt, &finishedAt, &errorJSON, &usageJSON,
 	)
 	if err != nil {

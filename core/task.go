@@ -194,17 +194,18 @@ type TaskError struct {
 
 // TaskAttempt represents a single execution attempt of a task.
 type TaskAttempt struct {
-	TenantID   string
-	TaskID     string
-	Attempt    int
-	AgentID    string
-	LeaseID    string
-	Status     string
-	StartedAt  time.Time
+	TenantID    string
+	TaskID      string
+	Attempt     int
+	AgentID     string
+	LeaseID     string
+	DeliveryRef string
+	Status      string
+	StartedAt   time.Time
 	HeartbeatAt *time.Time
-	FinishedAt *time.Time
-	Error      *TaskError
-	TokenUsage *TokenUsage
+	FinishedAt  *time.Time
+	Error       *TaskError
+	TokenUsage  *TokenUsage
 }
 
 type TokenUsage struct {
