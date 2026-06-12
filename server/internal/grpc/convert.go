@@ -187,6 +187,9 @@ func createTaskReqToCore(req *pb.CreateTaskRequest) (core.Task, error) {
 	if e.Target != nil {
 		task.TargetType = core.TargetType(e.Target.Type)
 		task.TargetValue = e.Target.Value
+		if task.TargetType == core.TargetTypeMailbox {
+			task.MailboxID = task.TargetValue
+		}
 	}
 	if e.Deadline != nil {
 		dl := e.Deadline.AsTime()

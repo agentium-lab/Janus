@@ -323,3 +323,20 @@ func nilIfZero(v int) interface{} {
 	}
 	return v
 }
+
+func (r *TaskRepository) SetResultRef(ctx context.Context, tenantID, taskID, resultRef string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE tasks SET result_ref = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		resultRef, tenantID, taskID,
+	)
+	return err
+}
+
+func (r *TaskRepository) CountByStatus(ctx context.Context, tenantID string, status core.TaskStatus) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE tenant_id = $1 AND status = $2`,
+		tenantID, status,
+	).Scan(&count)
+	return count, err
+}

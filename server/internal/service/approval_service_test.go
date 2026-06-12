@@ -77,7 +77,7 @@ func (m *mockApprovalRepo) ListPending(_ context.Context, tenantID string, limit
 func TestApprovalService_RequestApproval(t *testing.T) {
 	repo := &mockApprovalRepo{}
 	taskSvc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	result, err := svc.RequestApproval(context.Background(), core.Approval{
 		TenantID:    "acme",
@@ -93,7 +93,7 @@ func TestApprovalService_RequestApproval(t *testing.T) {
 func TestApprovalService_RequestApproval_MissingFields(t *testing.T) {
 	repo := &mockApprovalRepo{}
 	taskSvc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	_, err := svc.RequestApproval(context.Background(), core.Approval{
 		TenantID: "acme",
@@ -111,7 +111,7 @@ func TestApprovalService_Approve(t *testing.T) {
 		"acme:task-1": {TenantID: "acme", ID: "task-1", Status: core.TaskStatusApprovalPending},
 	}}
 	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	err := svc.Approve(context.Background(), "acme", approvalID, "admin", "looks good")
 	require.NoError(t, err)
@@ -127,7 +127,7 @@ func TestApprovalService_Reject(t *testing.T) {
 		"acme:task-2": {TenantID: "acme", ID: "task-2", Status: core.TaskStatusApprovalPending},
 	}}
 	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	err := svc.Reject(context.Background(), "acme", approvalID, "admin", "security risk")
 	require.NoError(t, err)
@@ -139,7 +139,7 @@ func TestApprovalService_Approve_AlreadyDecided(t *testing.T) {
 		"acme:apr-3": {TenantID: "acme", ID: "apr-3", Status: "approved"},
 	}}
 	taskSvc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	err := svc.Approve(context.Background(), "acme", "apr-3", "admin", "")
 	assert.Error(t, err)
@@ -154,7 +154,7 @@ func TestApprovalService_Expire(t *testing.T) {
 		"acme:task-4": {TenantID: "acme", ID: "task-4", Status: core.TaskStatusApprovalPending},
 	}}
 	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	err := svc.Expire(context.Background(), "acme", "apr-4")
 	require.NoError(t, err)
@@ -165,7 +165,7 @@ func TestApprovalService_Get(t *testing.T) {
 	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
 		"acme:apr-1": {TenantID: "acme", ID: "apr-1", Status: "pending"},
 	}}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	result, err := svc.Get(context.Background(), "acme", "apr-1")
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestApprovalService_ListPending(t *testing.T) {
 		"acme:a2": {TenantID: "acme", ID: "a2", Status: "approved"},
 		"acme:a3": {TenantID: "acme", ID: "a3", Status: "pending"},
 	}}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	result, err := svc.ListPending(context.Background(), "acme", 10)
 	require.NoError(t, err)
@@ -186,7 +186,7 @@ func TestApprovalService_ListPending(t *testing.T) {
 }
 
 func TestApprovalService_ListPending_DefaultLimit(t *testing.T) {
-	svc := NewApprovalService(&mockApprovalRepo{}, nil)
+	svc := NewApprovalService(&mockApprovalRepo{}, nil, nil)
 	result, err := svc.ListPending(context.Background(), "acme", 0)
 	require.NoError(t, err)
 	assert.Empty(t, result)
@@ -200,7 +200,7 @@ func TestApprovalService_Approve_Expired(t *testing.T) {
 		"acme:task-exp": {TenantID: "acme", ID: "task-exp", Status: core.TaskStatusApprovalPending},
 	}}
 	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc)
+	svc := NewApprovalService(repo, taskSvc, nil)
 
 	err := svc.Approve(context.Background(), "acme", "apr-exp", "admin", "late")
 	require.NoError(t, err)
@@ -211,7 +211,7 @@ func TestApprovalService_Reject_AlreadyDecided(t *testing.T) {
 	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
 		"acme:apr-5": {TenantID: "acme", ID: "apr-5", Status: "rejected"},
 	}}
-	svc := NewApprovalService(repo, NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil))
+	svc := NewApprovalService(repo, NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil), nil)
 
 	err := svc.Reject(context.Background(), "acme", "apr-5", "admin", "")
 	assert.Error(t, err)
@@ -220,7 +220,7 @@ func TestApprovalService_Reject_AlreadyDecided(t *testing.T) {
 
 func TestApprovalService_Approve_GetError(t *testing.T) {
 	repo := &mockApprovalRepo{err: fmt.Errorf("db down")}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	err := svc.Approve(context.Background(), "acme", "apr-1", "admin", "")
 	assert.Error(t, err)
@@ -229,7 +229,7 @@ func TestApprovalService_Approve_GetError(t *testing.T) {
 
 func TestApprovalService_Reject_GetError(t *testing.T) {
 	repo := &mockApprovalRepo{err: fmt.Errorf("db down")}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	err := svc.Reject(context.Background(), "acme", "apr-1", "admin", "")
 	assert.Error(t, err)
@@ -238,7 +238,7 @@ func TestApprovalService_Reject_GetError(t *testing.T) {
 
 func TestApprovalService_Expire_UpdateError(t *testing.T) {
 	repo := &mockApprovalRepo{err: fmt.Errorf("db down")}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	err := svc.Expire(context.Background(), "acme", "apr-1")
 	assert.Error(t, err)
@@ -247,7 +247,7 @@ func TestApprovalService_Expire_UpdateError(t *testing.T) {
 
 func TestApprovalService_RequestApproval_RepoError(t *testing.T) {
 	repo := &mockApprovalRepo{err: fmt.Errorf("db down")}
-	svc := NewApprovalService(repo, nil)
+	svc := NewApprovalService(repo, nil, nil)
 
 	_, err := svc.RequestApproval(context.Background(), core.Approval{
 		TenantID: "acme", TaskID: "task-1", RequestedBy: "admin",

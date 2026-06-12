@@ -81,6 +81,29 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
+func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromPath(r.URL.Path)
+	approvals, err := h.svc.ListPending(r.Context(), tenantID, 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if approvals == nil {
+		approvals = []*core.Approval{}
+	}
+	writeJSON(w, http.StatusOK, approvals)
+}
+
+func (h *ApprovalHandler) Get(w http.ResponseWriter, r *http.Request) {
+	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
+	approval, err := h.svc.Get(r.Context(), tenantID, approvalID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, approval)
+}
+
 func extractTenantAndApproval(path string) (string, string) {
 	parts := stringsSplit(path, "/")
 	for i, p := range parts {

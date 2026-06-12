@@ -36,7 +36,12 @@ func (r *OutboxRepo) Insert(ctx context.Context, tx pgx.Tx, id, tenantID, kind s
 }
 
 func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry, error) {
-	rows, err := r.pool.Query(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.Query(ctx,
 		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
 		 FROM outbox_events
 		 WHERE status IN ('pending', 'retry')
@@ -45,6 +50,7 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 		 LIMIT $1 FOR UPDATE SKIP LOCKED`, limit,
 	)
 	if err != nil {
+		tx.Rollback(ctx)
 		return nil, err
 	}
 	defer rows.Close()
@@ -53,11 +59,31 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 	for rows.Next() {
 		var e OutboxEntry
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.Kind, &e.Payload, &e.Status, &e.Attempts, &e.CreatedAt); err != nil {
+			tx.Rollback(ctx)
 			return nil, err
 		}
 		entries = append(entries, e)
 	}
-	return entries, rows.Err()
+	if err := rows.Err(); err != nil {
+		tx.Rollback(ctx)
+		return nil, err
+	}
+
+	for _, e := range entries {
+		_, err := tx.Exec(ctx,
+			`UPDATE outbox_events SET status = 'publishing', attempts = attempts + 1 WHERE id = $1`,
+			e.ID,
+		)
+		if err != nil {
+			tx.Rollback(ctx)
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return entries, nil
 }
 
 func (r *OutboxRepo) MarkPublished(ctx context.Context, id string) error {
@@ -71,13 +97,17 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, id string) error {
 const maxOutboxRetries = 5
 
 func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
+	return r.MarkFailedWithReason(ctx, id, "")
+}
+
+func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastErr string) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
-		 SET status = CASE WHEN attempts + 1 >= $2 THEN 'dead' ELSE 'retry' END,
-		     attempts = attempts + 1,
-		     next_attempt_at = CASE WHEN attempts + 1 < $2 THEN now() + interval '5 seconds' * (attempts + 1) ^ 2 ELSE NULL END
+		 SET status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'retry' END,
+		     last_error = CASE WHEN $3 != '' THEN $3 ELSE last_error END,
+		     next_attempt_at = CASE WHEN attempts < $2 THEN now() + interval '5 seconds' * attempts ^ 2 ELSE NULL END
 		 WHERE id = $1`,
-		id, maxOutboxRetries,
+		id, maxOutboxRetries, lastErr,
 	)
 	return err
 }

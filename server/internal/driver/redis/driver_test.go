@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	go_redis "github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -129,7 +130,12 @@ func TestDriver_ScanExpired(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, d.Ping(ctx, "acme", "alive-agent"))
-	d.rdb.Set(ctx, heartbeatKey("acme", "stale-agent"), "0", 0)
+
+	zsetKey := heartbeatSetKey("acme")
+	d.rdb.ZAdd(ctx, zsetKey, go_redis.Z{
+		Score:  float64(time.Now().Add(-time.Hour).UTC().UnixMilli()),
+		Member: "stale-agent",
+	})
 
 	expired, err := d.ScanExpired(ctx, "acme")
 	require.NoError(t, err)
@@ -189,13 +195,8 @@ func TestDriver_Client(t *testing.T) {
 	assert.NotNil(t, d.Client())
 }
 
-func TestHeartbeatKey(t *testing.T) {
-	assert.Equal(t, "agent:heartbeat:acme:agent-1", heartbeatKey("acme", "agent-1"))
-}
-
-func TestExtractAgentID(t *testing.T) {
-	assert.Equal(t, "agent-1", extractAgentID("agent:heartbeat:acme:agent-1", "acme"))
-	assert.Equal(t, "reviewer.default", extractAgentID("agent:heartbeat:acme:reviewer.default", "acme"))
+func TestHeartbeatSetKey(t *testing.T) {
+	assert.Equal(t, "agent:heartbeat:acme", heartbeatSetKey("acme"))
 }
 
 func TestDriver_PingManyAgents(t *testing.T) {
@@ -212,8 +213,15 @@ func TestDriver_PingManyAgents(t *testing.T) {
 		assert.NotNil(t, hb)
 	}
 
-	d.rdb.Set(ctx, heartbeatKey("acme", "agent-005"), "0", 0)
-	d.rdb.Set(ctx, heartbeatKey("acme", "agent-010"), "0", 0)
+	zsetKey := heartbeatSetKey("acme")
+	d.rdb.ZAdd(ctx, zsetKey, go_redis.Z{
+		Score:  float64(time.Now().Add(-time.Hour).UTC().UnixMilli()),
+		Member: "agent-005",
+	})
+	d.rdb.ZAdd(ctx, zsetKey, go_redis.Z{
+		Score:  float64(time.Now().Add(-time.Hour).UTC().UnixMilli()),
+		Member: "agent-010",
+	})
 
 	expired, err := d.ScanExpired(ctx, "acme")
 	require.NoError(t, err)

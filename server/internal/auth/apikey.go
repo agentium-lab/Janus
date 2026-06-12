@@ -102,3 +102,25 @@ func hashKey(key string) string {
 	h := sha256.Sum256([]byte(key))
 	return hex.EncodeToString(h[:])
 }
+
+func TenantGuard(extractTenantFromPath func(string) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			authTenant := TenantFromContext(r.Context())
+			if authTenant == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			pathTenant := extractTenantFromPath(r.URL.Path)
+			if pathTenant == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if pathTenant != authTenant {
+				http.Error(w, `{"error":"tenant mismatch: authenticated tenant cannot access this resource"}`, http.StatusForbidden)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}

@@ -54,7 +54,7 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 	for _, e := range entries {
 		if err := p.publishOne(ctx, e); err != nil {
 			log.Printf("outbox publish %s: %v", e.ID, err)
-			_ = p.repo.MarkFailed(ctx, e.ID)
+			_ = p.repo.MarkFailedWithReason(ctx, e.ID, err.Error())
 			continue
 		}
 		_ = p.repo.MarkPublished(ctx, e.ID)

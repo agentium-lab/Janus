@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -19,10 +20,11 @@ type ApprovalRepo interface {
 type ApprovalService struct {
 	repo     ApprovalRepo
 	taskSvc  *TaskService
+	queueDrv core.QueueEventDriver
 }
 
-func NewApprovalService(repo ApprovalRepo, taskSvc *TaskService) *ApprovalService {
-	return &ApprovalService{repo: repo, taskSvc: taskSvc}
+func NewApprovalService(repo ApprovalRepo, taskSvc *TaskService, queueDrv core.QueueEventDriver) *ApprovalService {
+	return &ApprovalService{repo: repo, taskSvc: taskSvc, queueDrv: queueDrv}
 }
 
 func (s *ApprovalService) RequestApproval(ctx context.Context, approval core.Approval) (*core.Approval, error) {
@@ -60,6 +62,17 @@ func (s *ApprovalService) Approve(ctx context.Context, tenantID, approvalID, app
 	}
 	if err := s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusQueued, core.EventTaskQueued, 0); err != nil {
 		return fmt.Errorf("queue task: %w", err)
+	}
+	task, err := s.taskSvc.Get(ctx, tenantID, approval.TaskID)
+	if err == nil && task != nil && task.MailboxID != "" && s.queueDrv != nil {
+		payload, _ := json.Marshal(task.Envelope)
+		_ = s.queueDrv.PublishTask(ctx, core.TaskMessage{
+			TenantID:  tenantID,
+			MailboxID: task.MailboxID,
+			TaskID:    approval.TaskID,
+			Priority:  task.Priority,
+			Payload:   payload,
+		})
 	}
 	return nil
 }

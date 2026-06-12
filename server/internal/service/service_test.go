@@ -454,6 +454,26 @@ func (m *mockTaskRepo) ListByStatus(_ context.Context, tenantID string, status c
 	return result, nil
 }
 
+func (m *mockTaskRepo) SetResultRef(_ context.Context, tenantID, taskID, resultRef string) error {
+	if m.err != nil {
+		return m.err
+	}
+	return nil
+}
+
+func (m *mockTaskRepo) CountByStatus(_ context.Context, tenantID string, status core.TaskStatus) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	count := 0
+	for _, t := range m.tasks {
+		if t.TenantID == tenantID && t.Status == status {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func makeTestEnvelope(taskID, tenantID string) core.TaskEnvelope {
 	return core.TaskEnvelope{
 		JanusVersion: "0.1", TaskID: taskID, TenantID: tenantID,
@@ -996,6 +1016,10 @@ func (m *mockTaskRepoFailUpdate) UpdateStatus(_ context.Context, _, _ string, _ 
 	return fmt.Errorf("update fail")
 }
 func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error { return nil }
+func (m *mockTaskRepoFailUpdate) SetResultRef(_ context.Context, _, _, _ string) error { return nil }
+func (m *mockTaskRepoFailUpdate) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
+	return 0, nil
+}
 func (m *mockTaskRepoFailUpdate) ListByStatus(_ context.Context, _ string, _ core.TaskStatus, _ int) ([]*core.Task, error) {
 	return nil, nil
 }

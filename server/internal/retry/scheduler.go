@@ -2,21 +2,25 @@ package retry
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"time"
 
+	"github.com/agentium-lab/Janus/core"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type Scheduler struct {
-	pool *pgxpool.Pool
-	done chan struct{}
+	pool    *pgxpool.Pool
+	queue   core.QueueEventDriver
+	done    chan struct{}
 }
 
-func NewScheduler(pool *pgxpool.Pool) *Scheduler {
+func NewScheduler(pool *pgxpool.Pool, queue core.QueueEventDriver) *Scheduler {
 	return &Scheduler{
-		pool: pool,
-		done: make(chan struct{}),
+		pool:  pool,
+		queue: queue,
+		done:  make(chan struct{}),
 	}
 }
 
@@ -41,14 +45,65 @@ func (s *Scheduler) Stop() {
 }
 
 func (s *Scheduler) processReadyRetries(ctx context.Context) {
-	tag, err := s.pool.Exec(ctx,
-		`UPDATE tasks SET status = 'queued', retry_at = NULL, updated_at = now()
+	rows, err := s.pool.Query(ctx,
+		`SELECT tenant_id, id, mailbox_id, priority, envelope
+		 FROM tasks
 		 WHERE status = 'retry_scheduled' AND retry_at IS NOT NULL AND retry_at <= now()`)
 	if err != nil {
-		log.Printf("retry scheduler: %v", err)
+		log.Printf("retry scheduler query: %v", err)
 		return
 	}
-	if tag.RowsAffected() > 0 {
-		log.Printf("retry scheduler: promoted %d tasks to queued", tag.RowsAffected())
+	defer rows.Close()
+
+	type retryTask struct {
+		TenantID  string
+		ID        string
+		MailboxID string
+		Priority  core.Priority
+		Envelope  []byte
+	}
+
+	var tasks []retryTask
+	for rows.Next() {
+		var t retryTask
+		if err := rows.Scan(&t.TenantID, &t.ID, &t.MailboxID, &t.Priority, &t.Envelope); err != nil {
+			log.Printf("retry scheduler scan: %v", err)
+			return
+		}
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("retry scheduler rows: %v", err)
+		return
+	}
+
+	for _, t := range tasks {
+		_, err := s.pool.Exec(ctx,
+			`UPDATE tasks SET status = 'queued', retry_at = NULL, updated_at = now()
+			 WHERE tenant_id = $1 AND id = $2 AND status = 'retry_scheduled'`,
+			t.TenantID, t.ID,
+		)
+		if err != nil {
+			log.Printf("retry scheduler update %s: %v", t.ID, err)
+			continue
+		}
+
+		if t.MailboxID != "" && s.queue != nil {
+			var env core.TaskEnvelope
+			if err := json.Unmarshal(t.Envelope, &env); err == nil {
+				payload, _ := json.Marshal(env)
+				_ = s.queue.PublishTask(ctx, core.TaskMessage{
+					TenantID:  t.TenantID,
+					MailboxID: t.MailboxID,
+					TaskID:    t.ID,
+					Priority:  t.Priority,
+					Payload:   payload,
+				})
+			}
+		}
+	}
+
+	if len(tasks) > 0 {
+		log.Printf("retry scheduler: promoted %d tasks to queued", len(tasks))
 	}
 }

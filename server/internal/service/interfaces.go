@@ -30,6 +30,8 @@ type TaskRepo interface {
 	UpdateStatus(ctx context.Context, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
 	UpdateRetryAt(ctx context.Context, tenantID, taskID string, retryAt time.Time) error
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
+	SetResultRef(ctx context.Context, tenantID, taskID, resultRef string) error
+	CountByStatus(ctx context.Context, tenantID string, status core.TaskStatus) (int, error)
 }
 
 type MailboxRepo interface {

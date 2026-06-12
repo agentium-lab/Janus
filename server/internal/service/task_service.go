@@ -19,6 +19,7 @@ type TaskService struct {
 	pool        *pgxpool.Pool
 	outboxRepo  *postgres.OutboxRepo
 	policySvc   *PolicyService
+	approvalSvc *ApprovalService
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -32,6 +33,11 @@ func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Po
 
 func (s *TaskService) WithPolicy(policySvc *PolicyService) *TaskService {
 	s.policySvc = policySvc
+	return s
+}
+
+func (s *TaskService) WithApproval(approvalSvc *ApprovalService) *TaskService {
+	s.approvalSvc = approvalSvc
 	return s
 }
 
@@ -86,20 +92,45 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		}
 	}
 
+	var result *core.Task
 	if s.outboxRepo != nil && s.pool != nil {
 		err := s.createWithOutbox(ctx, task)
 		if err == nil {
 			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
-			return &task, nil
+			created, _ := s.taskRepo.Get(ctx, task.TenantID, task.ID)
+			if created != nil {
+				result = created
+			} else {
+				result = &task
+			}
+		} else {
+			return nil, err
 		}
-		return nil, err
+	} else {
+		err := s.createDirect(ctx, task)
+		if err == nil {
+			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+			created, _ := s.taskRepo.Get(ctx, task.TenantID, task.ID)
+			if created != nil {
+				result = created
+			} else {
+				result = &task
+			}
+		} else {
+			return nil, err
+		}
 	}
-	err := s.createDirect(ctx, task)
-	if err == nil {
-		metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
-		return &task, nil
+
+	if task.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
+		_, _ = s.approvalSvc.RequestApproval(ctx, core.Approval{
+			TenantID:   task.TenantID,
+			TaskID:     task.ID,
+			RequestedBy: task.SourceAgent,
+			Reason:     "policy: approval required",
+		})
 	}
-	return nil, err
+
+	return result, nil
 }
 
 func (s *TaskService) createWithOutbox(ctx context.Context, task core.Task) error {

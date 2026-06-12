@@ -68,7 +68,8 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		}
 	}
 
-	if err := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, 0); err != nil {
+	running, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
+	if err := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, running); err != nil {
 		return nil, err
 	}
 
@@ -195,6 +196,10 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusCompleted, 0); err != nil {
 		return fmt.Errorf("complete task: %w", err)
+	}
+
+	if resultRef != "" {
+		_ = s.taskRepo.SetResultRef(ctx, tenantID, taskID, resultRef)
 	}
 
 	_ = s.budgetSvc.Settle(ctx, tenantID, attempt.AgentID, usage)

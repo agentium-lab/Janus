@@ -39,12 +39,17 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		MailboxID      string `json:"mailbox_id"`
 		IdempotencyKey string `json:"idempotency_key"`
 		Priority       string `json:"priority"`
+		TTLSeconds     int    `json:"ttl_seconds"`
+		Deadline       string `json:"deadline"`
 		Envelope       struct {
-			JanusVersion string `json:"janus_version"`
-			TaskID       string `json:"task_id"`
-			TenantID     string `json:"tenant_id"`
-			SourceAgent  string `json:"source_agent"`
-			Target       struct {
+			JanusVersion   string `json:"janus_version"`
+			TaskID         string `json:"task_id"`
+			IdempotencyKey string `json:"idempotency_key"`
+			TenantID       string `json:"tenant_id"`
+			SourceAgent    string `json:"source_agent"`
+			Priority       string `json:"priority"`
+			TTLSeconds     int    `json:"ttl_seconds"`
+			Target         struct {
 				Type  string `json:"type"`
 				Value string `json:"value"`
 			} `json:"target"`
@@ -53,7 +58,9 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				Content string `json:"content"`
 			} `json:"payload"`
 			Trace struct {
-				TraceID string `json:"trace_id"`
+				TraceID      string `json:"trace_id"`
+				ParentTaskID string `json:"parent_task_id"`
+				SpanID       string `json:"span_id"`
 			} `json:"trace"`
 		} `json:"envelope"`
 	}
@@ -72,6 +79,11 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		mailboxID = req.TargetValue
 	}
 
+	idempotencyKey := req.IdempotencyKey
+	if idempotencyKey == "" {
+		idempotencyKey = req.Envelope.IdempotencyKey
+	}
+
 	task := core.Task{
 		TenantID:       tenantID,
 		ID:             req.ID,
@@ -79,14 +91,18 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		TargetType:     core.TargetType(req.TargetType),
 		TargetValue:    req.TargetValue,
 		MailboxID:      mailboxID,
-		IdempotencyKey: req.IdempotencyKey,
+		IdempotencyKey: idempotencyKey,
 		Priority:       priority,
+		TTLSeconds:     req.TTLSeconds,
 		Status:         core.TaskStatusCreated,
 		Envelope: core.TaskEnvelope{
-			JanusVersion: req.Envelope.JanusVersion,
-			TaskID:       req.Envelope.TaskID,
-			TenantID:     req.Envelope.TenantID,
-			SourceAgent:  req.Envelope.SourceAgent,
+			JanusVersion:   req.Envelope.JanusVersion,
+			TaskID:         req.Envelope.TaskID,
+			IdempotencyKey: idempotencyKey,
+			TenantID:       req.Envelope.TenantID,
+			SourceAgent:    req.Envelope.SourceAgent,
+			Priority:       core.Priority(req.Envelope.Priority),
+			TTLSeconds:     req.Envelope.TTLSeconds,
 			Target: core.Target{
 				Type:  core.TargetType(req.Envelope.Target.Type),
 				Value: req.Envelope.Target.Value,
@@ -95,7 +111,11 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				Type:    req.Envelope.Payload.Type,
 				Content: req.Envelope.Payload.Content,
 			},
-			Trace: core.TraceContext{TraceID: req.Envelope.Trace.TraceID},
+			Trace: core.TraceContext{
+				TraceID:      req.Envelope.Trace.TraceID,
+				ParentTaskID: req.Envelope.Trace.ParentTaskID,
+				SpanID:       req.Envelope.Trace.SpanID,
+			},
 		},
 	}
 
@@ -104,11 +124,14 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if result != nil && result.ID == task.ID {
-		writeJSON(w, http.StatusCreated, map[string]string{"id": req.ID, "status": "created"})
-	} else {
-		writeJSON(w, http.StatusOK, map[string]string{"id": result.ID, "status": "existing"})
+	if result == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unexpected nil result"})
+		return
 	}
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"id":     result.ID,
+		"status": string(result.Status),
+	})
 }
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {

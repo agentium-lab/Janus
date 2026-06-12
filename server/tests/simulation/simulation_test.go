@@ -102,6 +102,11 @@ func (r *simTaskRepo) ListByStatus(_ context.Context, tenantID string, status co
 	return result, nil
 }
 
+func (r *simTaskRepo) SetResultRef(_ context.Context, _, _, _ string) error { return nil }
+func (r *simTaskRepo) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
+	return 0, nil
+}
+
 type simMailboxRepo struct {
 	mailboxes map[string]*core.Mailbox
 }

@@ -86,7 +86,9 @@ func main() {
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	eventSvc := service.NewEventService(eventRepo)
-	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc)
+	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, natsDrv)
+	taskSvc.WithApproval(approvalSvc)
+	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
 
 	tenantH := handler.NewTenantHandler(tenantSvc)
 	agentH := handler.NewAgentHandler(agentSvc)
@@ -95,6 +97,7 @@ func main() {
 	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 	approvalH := handler.NewApprovalHandler(approvalSvc)
+	contextRefH := handler.NewContextRefHandler(contextRefSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
@@ -112,7 +115,11 @@ func main() {
 	go outboxPub.Start(context.Background(), 500*time.Millisecond)
 	defer outboxPub.Stop()
 
-	retrySched := retry.NewScheduler(pool)
+	eventProjector := outbox.NewEventProjector(eventSvc)
+	go eventProjector.Start(context.Background())
+	defer eventProjector.Stop()
+
+	retrySched := retry.NewScheduler(pool, natsDrv)
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 
@@ -138,7 +145,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, wsH, a2aGw, dlqH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, dlqH)
 
 	combined := http.NewServeMux()
 	combined.Handle("/metrics", promhttp.Handler())
@@ -166,7 +173,7 @@ func main() {
 		}
 		defer pgDB.Close()
 		validator := auth.NewAPIKeyValidator(pgDB)
-		handler = auth.Middleware(validator)(combined)
+		handler = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(combined))
 		log.Println("api key authentication enabled")
 	} else {
 		log.Println("WARNING: authentication disabled (JANUS_AUTH_ENABLED=false)")
@@ -220,7 +227,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -282,6 +289,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, approvalH.Approve)
 		case hasSegment(p, "approvals") && hasSuffix(p, "/reject"):
 			postOnly(w, r, approvalH.Reject)
+		case hasSegment(p, "approvals") && !hasLastSegment(p, "approvals"):
+			getOnly(w, r, approvalH.Get)
+		case hasSegment(p, "approvals") && hasLastSegment(p, "approvals"):
+			if r.Method == http.MethodPost {
+				postOnly(w, r, approvalH.Request)
+			} else {
+				getOnly(w, r, approvalH.ListPending)
+			}
 		case hasSegment(p, "tasks") && hasSuffix(p, "/replay"):
 			postOnly(w, r, taskH.Replay)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/complete"):
@@ -296,6 +311,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, taskH.Create)
 		case hasSegment(p, "events"):
 			getOnly(w, r, auditH.QueryByTenant)
+		case hasSegment(p, "context-refs") && hasSuffix(p, "/attach"):
+			postOnly(w, r, contextRefH.Attach)
+		case hasSegment(p, "context-refs") && hasSuffix(p, "/detach"):
+			postOnly(w, r, contextRefH.Detach)
+		case hasSegment(p, "context-refs") && hasSuffix(p, "/list"):
+			getOnly(w, r, contextRefH.ListByTask)
+		case hasSegment(p, "context-refs") && !hasLastSegment(p, "context-refs"):
+			getOnly(w, r, contextRefH.Get)
 		default:
 			if r.Method == http.MethodGet {
 				tenantH.Get(w, r)
@@ -391,4 +414,14 @@ func (a *auditAdapter) QueryByTrace(ctx context.Context, tenantID, traceID strin
 
 func (a *auditAdapter) QueryByTenant(ctx context.Context, tenantID string, limit int) (interface{}, error) {
 	return a.svc.QueryByTenant(ctx, tenantID, limit)
+}
+
+func extractTenantFromPath(path string) string {
+	parts := strings.Split(path, "/")
+	for i, p := range parts {
+		if p == "tenants" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
 }
