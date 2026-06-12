@@ -103,6 +103,22 @@ func (m *mockDispatchAttemptRepo) UpdateFinished(_ context.Context, tenantID, ta
 	return nil
 }
 
+func (m *mockDispatchAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+	for i := len(m.attempts) - 1; i >= 0; i-- {
+		a := m.attempts[i]
+		if a.TaskID == taskID && a.Attempt == attempt {
+			if a.Status != "claimed" && a.Status != "running" {
+				return false, nil
+			}
+			a.Status = status
+			now := time.Now()
+			a.FinishedAt = &now
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 type mockDispatchTaskRepo struct {
 	tasks    map[string]*core.Task
 	updateErr error
@@ -141,6 +157,27 @@ func (m *mockDispatchTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID 
 		t.CompletedAt = &now
 	}
 	return nil
+}
+
+func (m *mockDispatchTaskRepo) UpdateStatusWithCheck(_ context.Context, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptInc int) (bool, error) {
+	if m.updateErr != nil {
+		return false, m.updateErr
+	}
+	key := tenantID + ":" + taskID
+	t, ok := m.tasks[key]
+	if !ok {
+		return false, nil
+	}
+	if t.Status != expectedStatus {
+		return false, nil
+	}
+	t.Status = newStatus
+	t.AttemptCount += attemptInc
+	if newStatus == core.TaskStatusCompleted {
+		now := time.Now()
+		t.CompletedAt = &now
+	}
+	return true, nil
 }
 
 func (m *mockDispatchTaskRepo) ListByStatus(_ context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {

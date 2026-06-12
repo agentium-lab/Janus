@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -49,6 +50,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 			SourceAgent    string `json:"source_agent"`
 			Priority       string `json:"priority"`
 			TTLSeconds     int    `json:"ttl_seconds"`
+			Deadline       string `json:"deadline"`
 			Target         struct {
 				Type  string `json:"type"`
 				Value string `json:"value"`
@@ -62,6 +64,23 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				ParentTaskID string `json:"parent_task_id"`
 				SpanID       string `json:"span_id"`
 			} `json:"trace"`
+			Budget *struct {
+				MaxTokens   int      `json:"max_tokens"`
+				MaxCostUSD  float64  `json:"max_cost_usd"`
+				ModelClasses []string `json:"model_classes"`
+			} `json:"budget"`
+			Policy *struct {
+				DataClassification     string   `json:"data_classification"`
+				RequiresHumanApproval bool     `json:"requires_human_approval"`
+				AllowedTools           []string `json:"allowed_tools"`
+			} `json:"policy"`
+			ContextRefs []struct {
+				Type           string   `json:"type"`
+				URI            string   `json:"uri"`
+				Hash           string   `json:"hash"`
+				Classification string   `json:"classification"`
+				AccessScope    []string `json:"access_scope"`
+			} `json:"context_refs"`
 		} `json:"envelope"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -84,6 +103,52 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		idempotencyKey = req.Envelope.IdempotencyKey
 	}
 
+	var deadline *time.Time
+	if req.Deadline != "" {
+		d, err := time.Parse(time.RFC3339, req.Deadline)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid deadline format, expected RFC3339")
+			return
+		}
+		deadline = &d
+	} else if req.Envelope.Deadline != "" {
+		d, err := time.Parse(time.RFC3339, req.Envelope.Deadline)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid envelope deadline format, expected RFC3339")
+			return
+		}
+		deadline = &d
+	}
+
+	var budget *core.Budget
+	if req.Envelope.Budget != nil {
+		budget = &core.Budget{
+			MaxTokens:    req.Envelope.Budget.MaxTokens,
+			MaxCostUSD:   req.Envelope.Budget.MaxCostUSD,
+			ModelClasses: req.Envelope.Budget.ModelClasses,
+		}
+	}
+
+	var policy *core.PolicyContext
+	if req.Envelope.Policy != nil {
+		policy = &core.PolicyContext{
+			DataClassification:     req.Envelope.Policy.DataClassification,
+			RequiresHumanApproval: req.Envelope.Policy.RequiresHumanApproval,
+			AllowedTools:           req.Envelope.Policy.AllowedTools,
+		}
+	}
+
+	var contextRefs []core.ContextRef
+	for _, ref := range req.Envelope.ContextRefs {
+		contextRefs = append(contextRefs, core.ContextRef{
+			Type:           ref.Type,
+			URI:            ref.URI,
+			Hash:           ref.Hash,
+			Classification: ref.Classification,
+			AccessScope:    ref.AccessScope,
+		})
+	}
+
 	task := core.Task{
 		TenantID:       tenantID,
 		ID:             req.ID,
@@ -94,6 +159,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		IdempotencyKey: idempotencyKey,
 		Priority:       priority,
 		TTLSeconds:     req.TTLSeconds,
+		Deadline:       deadline,
 		Status:         core.TaskStatusCreated,
 		Envelope: core.TaskEnvelope{
 			JanusVersion:   req.Envelope.JanusVersion,
@@ -103,6 +169,10 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 			SourceAgent:    req.Envelope.SourceAgent,
 			Priority:       core.Priority(req.Envelope.Priority),
 			TTLSeconds:     req.Envelope.TTLSeconds,
+			Deadline:       deadline,
+			Budget:         budget,
+			Policy:         policy,
+			ContextRefs:    contextRefs,
 			Target: core.Target{
 				Type:  core.TargetType(req.Envelope.Target.Type),
 				Value: req.Envelope.Target.Value,

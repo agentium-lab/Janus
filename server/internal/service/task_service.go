@@ -314,14 +314,22 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 
 	if task.MailboxID != "" {
 		payload, _ := json.Marshal(task.Envelope)
-		if err := s.queueDriver.PublishTask(ctx, core.TaskMessage{
+		msg := core.TaskMessage{
 			TenantID:  tenantID,
 			MailboxID: task.MailboxID,
 			TaskID:    taskID,
 			Priority:  task.Priority,
 			Payload:   payload,
-		}); err != nil {
-			return nil, fmt.Errorf("re-publish to queue: %w", err)
+		}
+		if s.outboxRepo != nil {
+			queuePayload, _ := json.Marshal(msg)
+			if err := s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "task_publish", queuePayload); err != nil {
+				return nil, fmt.Errorf("outbox insert replay: %w", err)
+			}
+		} else {
+			if err := s.queueDriver.PublishTask(ctx, msg); err != nil {
+				return nil, fmt.Errorf("re-publish to queue: %w", err)
+			}
 		}
 		_ = s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusQueued, 0)
 	}
@@ -362,8 +370,12 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 	if !core.CanTransition(current.Status, status) {
 		return fmt.Errorf("invalid transition: %s -> %s for task %s", current.Status, status, taskID)
 	}
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, status, attemptInc); err != nil {
+	ok, err := s.taskRepo.UpdateStatusWithCheck(ctx, tenantID, taskID, current.Status, status, attemptInc)
+	if err != nil {
 		return fmt.Errorf("update task status to %s: %w", status, err)
+	}
+	if !ok {
+		return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, current.Status)
 	}
 	recordTaskMetric(tenantID, status)
 	return s.publishEvent(ctx, core.JanusEvent{
@@ -375,6 +387,9 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 }
 
 func (s *TaskService) publishEvent(ctx context.Context, event core.JanusEvent) error {
+	if err := enrichEvent(&event); err != nil {
+		return err
+	}
 	return s.queueDriver.PublishEvent(ctx, event)
 }
 

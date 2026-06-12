@@ -3,6 +3,7 @@ package retry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -11,9 +12,10 @@ import (
 )
 
 type Scheduler struct {
-	pool    *pgxpool.Pool
-	queue   core.QueueEventDriver
-	done    chan struct{}
+	pool      *pgxpool.Pool
+	queue     core.QueueEventDriver
+	useOutbox bool
+	done      chan struct{}
 }
 
 func NewScheduler(pool *pgxpool.Pool, queue core.QueueEventDriver) *Scheduler {
@@ -22,6 +24,11 @@ func NewScheduler(pool *pgxpool.Pool, queue core.QueueEventDriver) *Scheduler {
 		queue: queue,
 		done:  make(chan struct{}),
 	}
+}
+
+func (s *Scheduler) WithOutbox() *Scheduler {
+	s.useOutbox = true
+	return s
 }
 
 func (s *Scheduler) Start(ctx context.Context, interval time.Duration) {
@@ -88,17 +95,26 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 			continue
 		}
 
-		if t.MailboxID != "" && s.queue != nil {
+		if t.MailboxID != "" {
 			var env core.TaskEnvelope
 			if err := json.Unmarshal(t.Envelope, &env); err == nil {
 				payload, _ := json.Marshal(env)
-				_ = s.queue.PublishTask(ctx, core.TaskMessage{
+				msg := core.TaskMessage{
 					TenantID:  t.TenantID,
 					MailboxID: t.MailboxID,
 					TaskID:    t.ID,
 					Priority:  t.Priority,
 					Payload:   payload,
-				})
+				}
+				if s.useOutbox {
+					queuePayload, _ := json.Marshal(msg)
+					_, _ = s.pool.Exec(ctx,
+						`INSERT INTO outbox_events (id, tenant_id, kind, payload) VALUES ($1, $2, 'task_publish', $3)`,
+						generateULID(), t.TenantID, queuePayload,
+					)
+				} else if s.queue != nil {
+					_ = s.queue.PublishTask(ctx, msg)
+				}
 			}
 		}
 	}
@@ -106,4 +122,20 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	if len(tasks) > 0 {
 		log.Printf("retry scheduler: promoted %d tasks to queued", len(tasks))
 	}
+}
+
+func generateULID() string {
+	now := time.Now()
+	t := uint64(now.UnixMilli())
+	b := make([]byte, 10)
+	for i := 9; i >= 0; i-- {
+		b[i] = byte(t & 0xff)
+		t >>= 8
+	}
+	randBytes := make([]byte, 6)
+	for i := range randBytes {
+		randBytes[i] = byte(t & 0xff)
+		t = t>>8 + uint64(i)
+	}
+	return fmt.Sprintf("%x%x", b, randBytes)
 }

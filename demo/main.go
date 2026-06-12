@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/rand"
 	"os"
 	"os/signal"
 	"sync"
@@ -16,14 +15,20 @@ import (
 	janus "github.com/agentium-lab/Janus/sdk/go"
 )
 
-type DemoAgent struct {
+type PipelineAgent struct {
 	id       string
 	name     string
 	tenant   string
 	client   *janus.Client
 	mailbox  string
 	wg       sync.WaitGroup
-	onTask   func(task *core.Task) string
+	onTask   func(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string
+}
+
+type pipelineStep struct {
+	agent   string
+	mailbox string
+	action  string
 }
 
 func main() {
@@ -32,35 +37,38 @@ func main() {
 
 	client := janus.NewClient(janus.Config{BaseURL: serverURL, TenantID: tenant})
 
-	agents := []*DemoAgent{
-		{
-			id: "coding-agent", name: "Coding Agent", tenant: tenant,
-			client: client, mailbox: "coding-inbox",
-			onTask: codingAgentHandler,
-		},
-		{
-			id: "review-agent", name: "Review Agent", tenant: tenant,
-			client: client, mailbox: "review-inbox",
-			onTask: reviewAgentHandler,
-		},
-		{
-			id: "test-agent", name: "Test Agent", tenant: tenant,
-			client: client, mailbox: "test-inbox",
-			onTask: testAgentHandler,
-		},
+	agents := []*PipelineAgent{
+		{id: "product-agent", name: "Product Manager", tenant: tenant, client: client, mailbox: "product-inbox", onTask: productAgentHandler},
+		{id: "review-agent", name: "Code Reviewer", tenant: tenant, client: client, mailbox: "review-inbox", onTask: reviewAgentHandler},
+		{id: "code-agent", name: "Coding Agent", tenant: tenant, client: client, mailbox: "code-inbox", onTask: codeAgentHandler},
+		{id: "test-agent", name: "Test Agent", tenant: tenant, client: client, mailbox: "test-inbox", onTask: testAgentHandler},
+		{id: "security-agent", name: "Security Scanner", tenant: tenant, client: client, mailbox: "security-inbox", onTask: securityAgentHandler},
+		{id: "human-approver", name: "Human Approver", tenant: tenant, client: client, mailbox: "approval-inbox", onTask: humanApproverHandler},
+		{id: "deploy-agent", name: "Deploy Agent", tenant: tenant, client: client, mailbox: "deploy-inbox", onTask: deployAgentHandler},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	log.Println("=== Janus 7-Agent Coding/DevOps Pipeline Demo ===")
+	log.Println()
+
+	if err := client.CreateTenant(ctx, tenant, "Demo Corp"); err != nil {
+		log.Printf("tenant (may already exist): %v", err)
+	}
+
 	for _, a := range agents {
-		if err := a.client.RegisterAgent(ctx, janus.RegisterAgentRequest{
+		if err := client.RegisterAgent(ctx, janus.RegisterAgentRequest{
 			ID: a.id, DisplayName: a.name, Protocol: "a2a",
 		}); err != nil {
 			log.Fatalf("register %s: %v", a.id, err)
 		}
-		log.Printf("Registered: %s (%s)", a.name, a.id)
+		if err := client.CreateMailbox(ctx, a.mailbox, a.id); err != nil {
+			log.Printf("mailbox %s (may exist): %v", a.mailbox, err)
+		}
+		log.Printf("  Registered: %s (%s)", a.name, a.id)
 	}
+	log.Println()
 
 	for _, a := range agents {
 		a := a
@@ -71,11 +79,39 @@ func main() {
 		}()
 	}
 
-	publishDemoTasks(ctx, client, tenant)
+	traceID := fmt.Sprintf("pipeline-%d", time.Now().UnixMilli())
+	taskID := fmt.Sprintf("feature-%d", time.Now().UnixMilli())
+	log.Printf("Kicking off pipeline with task %s (trace: %s)", taskID, traceID)
+	log.Println()
+
+	_, err := client.PublishTask(ctx, janus.PublishTaskRequest{
+		ID:          taskID,
+		SourceAgent: "orchestrator",
+		TargetType:  "mailbox",
+		TargetValue: "product-inbox",
+		MailboxID:   "product-inbox",
+		Priority:    "normal",
+		Envelope: core.TaskEnvelope{
+			JanusVersion: "0.1",
+			TaskID:       taskID,
+			TenantID:     tenant,
+			SourceAgent:  "orchestrator",
+			Target:       core.Target{Type: "mailbox", Value: "product-inbox"},
+			Payload: core.Payload{
+				Type:    "feature_request",
+				Content: `{"feature": "Add user authentication", "priority": "high"}`,
+			},
+			Trace: core.TraceContext{TraceID: traceID},
+		},
+	})
+	if err != nil {
+		log.Fatalf("publish: %v", err)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
+	log.Println()
 	log.Println("Shutting down...")
 	cancel()
 	for _, a := range agents {
@@ -83,7 +119,7 @@ func main() {
 	}
 }
 
-func (a *DemoAgent) run(ctx context.Context) {
+func (a *PipelineAgent) run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -102,9 +138,13 @@ func (a *DemoAgent) run(ctx context.Context) {
 		}
 
 		task := result.Task
-		log.Printf("[%s] Processing task %s", a.name, task.ID)
+		log.Printf("[%s] Pulled task %s", a.name, task.ID)
 
-		output := a.onTask(task)
+		if result.Lease.LeaseID != "" {
+			_ = a.client.StartTask(ctx, task.ID, result.Lease.LeaseID)
+		}
+
+		output := a.onTask(ctx, task, a.client, a.tenant)
 
 		if result.Lease.LeaseID != "" {
 			err = a.client.AckTask(ctx, task.ID, janus.AckRequest{
@@ -118,93 +158,115 @@ func (a *DemoAgent) run(ctx context.Context) {
 		}
 
 		log.Printf("[%s] Completed task %s: %s", a.name, task.ID, output)
-
 		return
 	}
 }
 
-func codingAgentHandler(task *core.Task) string {
-	time.Sleep(time.Duration(500+rand.Intn(1000)) * time.Millisecond)
+func sendToNext(ctx context.Context, client *janus.Client, tenant, fromAgent, targetMailbox, taskID, traceID, payloadType, payloadContent string) {
+	nextID := fmt.Sprintf("%s-step-%d", taskID, time.Now().UnixMilli())
+	log.Printf("  -> Sending to %s: %s", targetMailbox, nextID)
+	_, err := client.PublishTask(ctx, janus.PublishTaskRequest{
+		ID:          nextID,
+		SourceAgent: fromAgent,
+		TargetType:  "mailbox",
+		TargetValue: targetMailbox,
+		MailboxID:   targetMailbox,
+		Priority:    "normal",
+		Envelope: core.TaskEnvelope{
+			JanusVersion: "0.1",
+			TaskID:       nextID,
+			TenantID:     tenant,
+			SourceAgent:  fromAgent,
+			Target:       core.Target{Type: "mailbox", Value: targetMailbox},
+			Payload:      core.Payload{Type: payloadType, Content: payloadContent},
+			Trace:        core.TraceContext{TraceID: traceID, ParentTaskID: taskID},
+		},
+	})
+	if err != nil {
+		log.Printf("  -> Failed to send to %s: %v", targetMailbox, err)
+	}
+}
+
+func productAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(300 * time.Millisecond)
 	result := map[string]string{
-		"status":   "coded",
-		"files":    "main.go, handler.go, service.go",
-		"task_id":  task.ID,
-		"agent":    "coding-agent",
+		"status":       "requirements_defined",
+		"feature":      "Add user authentication",
+		"requirements": "JWT tokens, login/signup endpoints, session management",
 	}
 	data, _ := json.Marshal(result)
-	return string(data)
+	sendToNext(ctx, client, tenant, "product-agent", "review-inbox", task.ID, task.Envelope.Trace.TraceID, "review_request", string(data))
+	return "Requirements defined -> sent to review"
 }
 
-func reviewAgentHandler(task *core.Task) string {
-	time.Sleep(time.Duration(300+rand.Intn(700)) * time.Millisecond)
-	approved := rand.Float32() > 0.2
-	result := map[string]interface{}{
-		"status":   "reviewed",
-		"approved": approved,
-		"task_id":  task.ID,
-		"agent":    "review-agent",
-	}
-	if !approved {
-		result["comments"] = "Consider error handling edge cases"
+func reviewAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(400 * time.Millisecond)
+	result := map[string]string{
+		"status":   "review_approved",
+		"comments": "LGTM, proceed with implementation",
 	}
 	data, _ := json.Marshal(result)
-	return string(data)
+	sendToNext(ctx, client, tenant, "review-agent", "code-inbox", task.ID, task.Envelope.Trace.TraceID, "code_request", string(data))
+	return "Review approved -> sent to coding"
 }
 
-func testAgentHandler(task *core.Task) string {
-	time.Sleep(time.Duration(200+rand.Intn(500)) * time.Millisecond)
-	passed := rand.Float32() > 0.15
-	result := map[string]interface{}{
-		"status":    "tested",
-		"passed":    passed,
-		"task_id":   task.ID,
-		"agent":     "test-agent",
-		"coverage":  fmt.Sprintf("%.1f%%", 85+rand.Float64()*15),
-	}
-	if !passed {
-		result["failed_tests"] = rand.Intn(3) + 1
+func codeAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(600 * time.Millisecond)
+	result := map[string]string{
+		"status": "code_complete",
+		"files":  "auth.go, handler.go, middleware.go",
 	}
 	data, _ := json.Marshal(result)
-	return string(data)
+	sendToNext(ctx, client, tenant, "code-agent", "test-inbox", task.ID, task.Envelope.Trace.TraceID, "test_request", string(data))
+	return "Code written -> sent to testing"
 }
 
-func publishDemoTasks(ctx context.Context, client *janus.Client, tenant string) {
-	for i := 1; i <= 3; i++ {
-		taskID := fmt.Sprintf("demo-task-%d", i)
-		var targetMailbox string
-		switch i {
-		case 1:
-			targetMailbox = "coding-inbox"
-		case 2:
-			targetMailbox = "review-inbox"
-		case 3:
-			targetMailbox = "test-inbox"
-		}
-
-		_, err := client.PublishTask(ctx, janus.PublishTaskRequest{
-			ID:          taskID,
-			SourceAgent: "demo-orchestrator",
-			TargetType:  "mailbox",
-			TargetValue: targetMailbox,
-			Priority:    "normal",
-			Envelope: core.TaskEnvelope{
-				JanusVersion: "0.1",
-				TaskID:       taskID,
-				TenantID:     tenant,
-				SourceAgent:  "demo-orchestrator",
-				Target:       core.Target{Type: "mailbox", Value: targetMailbox},
-				Payload: core.Payload{
-					Type:    "json",
-					Content: fmt.Sprintf(`{"step": %d, "description": "Demo task %d"}`, i, i),
-				},
-			},
-		})
-		if err != nil {
-			log.Printf("Failed to publish task %s: %v", taskID, err)
-			continue
-		}
-		log.Printf("Published: %s → %s", taskID, targetMailbox)
+func testAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(500 * time.Millisecond)
+	result := map[string]string{
+		"status":   "tests_passed",
+		"coverage": "92.5%",
+		"tests":    "12/12 passed",
 	}
+	data, _ := json.Marshal(result)
+	sendToNext(ctx, client, tenant, "test-agent", "security-inbox", task.ID, task.Envelope.Trace.TraceID, "security_scan_request", string(data))
+	return "Tests passed -> sent to security"
+}
+
+func securityAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(400 * time.Millisecond)
+	result := map[string]string{
+		"status":     "scan_passed",
+		"vulnerabilities": "0 critical, 0 high",
+	}
+	data, _ := json.Marshal(result)
+	sendToNext(ctx, client, tenant, "security-agent", "approval-inbox", task.ID, task.Envelope.Trace.TraceID, "approval_request", string(data))
+	return "Security scan passed -> sent to human approval"
+}
+
+func humanApproverHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(200 * time.Millisecond)
+	result := map[string]string{
+		"status":    "approved",
+		"approver":  "human-approver",
+		"condition": "Deploy to staging first",
+	}
+	data, _ := json.Marshal(result)
+	sendToNext(ctx, client, tenant, "human-approver", "deploy-inbox", task.ID, task.Envelope.Trace.TraceID, "deploy_request", string(data))
+	return "Human approved -> sent to deploy"
+}
+
+func deployAgentHandler(ctx context.Context, task *core.Task, client *janus.Client, tenant string) string {
+	time.Sleep(500 * time.Millisecond)
+	log.Println()
+	log.Println("========================================")
+	log.Println("  PIPELINE COMPLETE!")
+	log.Println("  Feature: Add user authentication")
+	log.Println("  Status: Deployed to staging")
+	log.Println("  Agents: 7/7 completed successfully")
+	log.Println("========================================")
+	log.Println()
+	return "Deployed to staging successfully"
 }
 
 func envOr(key, fallback string) string {

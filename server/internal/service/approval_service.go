@@ -18,13 +18,19 @@ type ApprovalRepo interface {
 }
 
 type ApprovalService struct {
-	repo     ApprovalRepo
-	taskSvc  *TaskService
-	queueDrv core.QueueEventDriver
+	repo        ApprovalRepo
+	taskSvc     *TaskService
+	queueDrv    core.QueueEventDriver
+	outbox      OutboxWriter
 }
 
 func NewApprovalService(repo ApprovalRepo, taskSvc *TaskService, queueDrv core.QueueEventDriver) *ApprovalService {
 	return &ApprovalService{repo: repo, taskSvc: taskSvc, queueDrv: queueDrv}
+}
+
+func (s *ApprovalService) WithOutbox(outbox OutboxWriter) *ApprovalService {
+	s.outbox = outbox
+	return s
 }
 
 func (s *ApprovalService) RequestApproval(ctx context.Context, approval core.Approval) (*core.Approval, error) {
@@ -64,15 +70,21 @@ func (s *ApprovalService) Approve(ctx context.Context, tenantID, approvalID, app
 		return fmt.Errorf("queue task: %w", err)
 	}
 	task, err := s.taskSvc.Get(ctx, tenantID, approval.TaskID)
-	if err == nil && task != nil && task.MailboxID != "" && s.queueDrv != nil {
+	if err == nil && task != nil && task.MailboxID != "" {
 		payload, _ := json.Marshal(task.Envelope)
-		_ = s.queueDrv.PublishTask(ctx, core.TaskMessage{
+		msg := core.TaskMessage{
 			TenantID:  tenantID,
 			MailboxID: task.MailboxID,
 			TaskID:    approval.TaskID,
 			Priority:  task.Priority,
 			Payload:   payload,
-		})
+		}
+		if s.outbox != nil {
+			queuePayload, _ := json.Marshal(msg)
+			_ = s.outbox.InsertDirect(ctx, ulid(), tenantID, "task_publish", queuePayload)
+		} else if s.queueDrv != nil {
+			_ = s.queueDrv.PublishTask(ctx, msg)
+		}
 	}
 	return nil
 }

@@ -167,6 +167,28 @@ func (r *simTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID string, s
 	return nil
 }
 
+func (r *simTaskRepo) UpdateStatusWithCheck(_ context.Context, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.tasks[r.key(tenantID, taskID)]
+	if !ok {
+		return false, nil
+	}
+	if t.Status != expectedStatus {
+		return false, nil
+	}
+	t.Status = newStatus
+	if attemptIncrement > 0 {
+		t.AttemptCount += attemptIncrement
+	}
+	t.UpdatedAt = time.Now()
+	if newStatus == core.TaskStatusCompleted {
+		now := time.Now()
+		t.CompletedAt = &now
+	}
+	return true, nil
+}
+
 func (r *simTaskRepo) UpdateRetryAt(_ context.Context, tenantID, taskID string, retryAt time.Time) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -265,6 +287,10 @@ func (r *simAttemptRepo) UpdateHeartbeat(_ context.Context, tenantID, taskID str
 
 func (r *simAttemptRepo) UpdateFinished(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error {
 	return nil
+}
+
+func (r *simAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+	return true, nil
 }
 
 type simMailboxRepo struct {

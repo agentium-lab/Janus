@@ -28,6 +28,7 @@ type TaskRepo interface {
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 	GetByIdempotencyKey(ctx context.Context, tenantID, key string) (*core.Task, error)
 	UpdateStatus(ctx context.Context, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
+	UpdateStatusWithCheck(ctx context.Context, tenantID, taskID string, expectedStatus core.TaskStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error)
 	UpdateRetryAt(ctx context.Context, tenantID, taskID string, retryAt time.Time) error
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
 	SetResultRef(ctx context.Context, tenantID, taskID, resultRef string) error
@@ -49,6 +50,7 @@ type TaskAttemptRepo interface {
 	GetLatest(ctx context.Context, tenantID, taskID string) (*core.TaskAttempt, error)
 	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) error
 	UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error
+	UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error)
 }
 
 type BudgetRepo interface {
@@ -64,6 +66,10 @@ type PolicyRuleRepo interface {
 
 type QueueDriver interface {
 	core.QueueEventDriver
+}
+
+type OutboxWriter interface {
+	InsertDirect(ctx context.Context, id, tenantID, kind string, payload []byte) error
 }
 
 type HeartbeatDriver interface {

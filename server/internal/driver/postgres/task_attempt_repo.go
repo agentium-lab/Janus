@@ -89,6 +89,19 @@ func (r *TaskAttemptRepository) UpdateFinished(ctx context.Context, tenantID, ta
 	return err
 }
 
+func (r *TaskAttemptRepository) UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE task_attempts SET status = $1, finished_at = now(), error = $2, token_usage = $3
+		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6 AND status IN ('claimed', 'running')`,
+		status, jsonOrNull(errJSON), jsonOrNull(usageJSON),
+		tenantID, taskID, attempt,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func jsonOrNull(b []byte) interface{} {
 	if len(b) == 0 {
 		return nil

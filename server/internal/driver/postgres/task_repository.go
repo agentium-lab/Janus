@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
@@ -150,6 +151,34 @@ func (r *TaskRepository) UpdateStatus(ctx context.Context, tenantID, taskID stri
 		string(status), tenantID, taskID,
 	)
 	return err
+}
+
+func (r *TaskRepository) UpdateStatusWithCheck(ctx context.Context, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error) {
+	var tag pgconn.CommandTag
+	var err error
+	if attemptIncrement > 0 {
+		tag, err = r.pool.Exec(ctx,
+			`UPDATE tasks SET status = $1, attempt_count = attempt_count + $2, updated_at = now()
+			 WHERE tenant_id = $3 AND id = $4 AND status = $5`,
+			string(newStatus), attemptIncrement, tenantID, taskID, string(expectedStatus),
+		)
+	} else if newStatus == core.TaskStatusCompleted {
+		tag, err = r.pool.Exec(ctx,
+			`UPDATE tasks SET status = $1, updated_at = now(), completed_at = now()
+			 WHERE tenant_id = $2 AND id = $3 AND status = $4`,
+			string(newStatus), tenantID, taskID, string(expectedStatus),
+		)
+	} else {
+		tag, err = r.pool.Exec(ctx,
+			`UPDATE tasks SET status = $1, updated_at = now()
+			 WHERE tenant_id = $2 AND id = $3 AND status = $4`,
+			string(newStatus), tenantID, taskID, string(expectedStatus),
+		)
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *TaskRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error {

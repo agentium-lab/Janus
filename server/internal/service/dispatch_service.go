@@ -115,7 +115,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, fmt.Errorf("update task claimed: %w", err)
 	}
 
-	_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+	s.publishEvent(ctx, core.JanusEvent{
 		EventType: core.EventTaskClaimed,
 		TenantID:  tenantID,
 		TaskID:    task.ID,
@@ -146,7 +146,7 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 		return fmt.Errorf("update task running: %w", err)
 	}
 
-	_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+	s.publishEvent(ctx, core.JanusEvent{
 		EventType: core.EventTaskStarted,
 		TenantID:  tenantID,
 		TaskID:    taskID,
@@ -190,8 +190,12 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		usageJSON, _ = encodeJSON(usage)
 	}
 
-	if err := s.attemptRepo.UpdateFinished(ctx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON); err != nil {
+	ok, err := s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON)
+	if err != nil {
 		return fmt.Errorf("finish attempt: %w", err)
+	}
+	if !ok {
+		return nil
 	}
 
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusCompleted, 0); err != nil {
@@ -206,7 +210,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 	if attempt.DeliveryRef != "" {
 		if err := s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef)); err != nil {
-			_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+			s.publishEvent(ctx, core.JanusEvent{
 				EventType: core.EventTaskCompleted,
 				TenantID:  tenantID,
 				TaskID:    taskID,
@@ -216,7 +220,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		}
 	}
 
-	_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+	s.publishEvent(ctx, core.JanusEvent{
 		EventType: core.EventTaskCompleted,
 		TenantID:  tenantID,
 		TaskID:    taskID,
@@ -254,8 +258,12 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 		}
 	}
 
-	if err := s.attemptRepo.UpdateFinished(ctx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil); err != nil {
+	ok, err := s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
+	if err != nil {
 		return fmt.Errorf("finish attempt: %w", err)
+	}
+	if !ok {
+		return nil
 	}
 
 	task, err := s.taskRepo.Get(ctx, tenantID, taskID)
@@ -271,7 +279,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 			); err != nil {
 				return fmt.Errorf("schedule retry: %w", err)
 			}
-			_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+			s.publishEvent(ctx, core.JanusEvent{
 				EventType: core.EventTaskRetryScheduled,
 				TenantID:  tenantID,
 				TaskID:    taskID,
@@ -295,7 +303,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 		Headers:   map[string]string{"attempt_count": fmt.Sprintf("%d", task.AttemptCount)},
 	}, errJSON)
 
-	_ = s.queueDriver.PublishEvent(ctx, core.JanusEvent{
+	s.publishEvent(ctx, core.JanusEvent{
 		EventType: core.EventTaskDeadLettered,
 		TenantID:  tenantID,
 		TaskID:    taskID,
@@ -303,6 +311,11 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	})
 
 	return nil
+}
+
+func (s *DispatchService) publishEvent(ctx context.Context, event core.JanusEvent) {
+	_ = enrichEvent(&event)
+	_ = s.queueDriver.PublishEvent(ctx, event)
 }
 
 func generateLeaseID() string {

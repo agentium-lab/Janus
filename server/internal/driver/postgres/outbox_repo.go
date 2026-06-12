@@ -35,6 +35,14 @@ func (r *OutboxRepo) Insert(ctx context.Context, tx pgx.Tx, id, tenantID, kind s
 	return err
 }
 
+func (r *OutboxRepo) InsertDirect(ctx context.Context, id, tenantID, kind string, payload json.RawMessage) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO outbox_events (id, tenant_id, kind, payload) VALUES ($1, $2, $3, $4)`,
+		id, tenantID, kind, payload,
+	)
+	return err
+}
+
 func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

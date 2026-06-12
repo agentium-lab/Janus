@@ -427,6 +427,23 @@ func (m *mockTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID string, 
 	return nil
 }
 
+func (m *mockTaskRepo) UpdateStatusWithCheck(_ context.Context, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, inc int) (bool, error) {
+	if m.err != nil {
+		return false, m.err
+	}
+	key := tenantID + ":" + taskID
+	t, ok := m.tasks[key]
+	if !ok {
+		return false, nil
+	}
+	if t.Status != expectedStatus {
+		return false, nil
+	}
+	t.Status = newStatus
+	t.AttemptCount += inc
+	return true, nil
+}
+
 func (m *mockTaskRepo) UpdateRetryAt(_ context.Context, tenantID, taskID string, retryAt time.Time) error {
 	if m.err != nil {
 		return m.err
@@ -1018,6 +1035,9 @@ func (m *mockTaskRepoFailUpdate) GetByIdempotencyKey(_ context.Context, _, _ str
 }
 func (m *mockTaskRepoFailUpdate) UpdateStatus(_ context.Context, _, _ string, _ core.TaskStatus, _ int) error {
 	return fmt.Errorf("update fail")
+}
+func (m *mockTaskRepoFailUpdate) UpdateStatusWithCheck(_ context.Context, _, _ string, _, _ core.TaskStatus, _ int) (bool, error) {
+	return false, fmt.Errorf("update fail")
 }
 func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error { return nil }
 func (m *mockTaskRepoFailUpdate) SetResultRef(_ context.Context, _, _, _ string) error { return nil }

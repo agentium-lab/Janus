@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -309,6 +311,51 @@ func TestTaskHandler_Create(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Create(w, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+func TestTaskHandler_CreateWithFullEnvelope(t *testing.T) {
+	svc := &mockTaskService{}
+	h := NewTaskHandler(svc)
+
+	futureDeadline := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	body, _ := json.Marshal(map[string]interface{}{
+		"id": "task-full", "source_agent": "agent-a",
+		"target_type": "capability", "target_value": "review",
+		"deadline": futureDeadline,
+		"envelope": map[string]interface{}{
+			"janus_version": "0.1", "task_id": "task-full", "tenant_id": "acme",
+			"source_agent": "agent-a",
+			"target":       map[string]string{"type": "capability", "value": "review"},
+			"payload":      map[string]string{"type": "review", "content": "x"},
+			"trace":        map[string]string{"trace_id": "t1"},
+			"budget": map[string]interface{}{
+				"max_tokens":  1000,
+				"max_cost_usd": 0.5,
+			},
+			"policy": map[string]interface{}{
+				"data_classification":      "confidential",
+				"requires_human_approval": true,
+				"allowed_tools":           []string{"search"},
+			},
+			"context_refs": []map[string]string{
+				{"type": "document", "uri": "file:///a.txt", "hash": "abc123", "classification": "internal"},
+			},
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	h.Create(w, req)
+	assert.Equal(t, http.StatusCreated, w.Code)
+
+	created := svc.tasks["acme:task-full"]
+	require.NotNil(t, created)
+	assert.NotNil(t, created.Deadline)
+	assert.NotNil(t, created.Envelope.Budget)
+	assert.Equal(t, 1000, created.Envelope.Budget.MaxTokens)
+	assert.NotNil(t, created.Envelope.Policy)
+	assert.True(t, created.Envelope.Policy.RequiresHumanApproval)
+	assert.Len(t, created.Envelope.ContextRefs, 1)
+	assert.Equal(t, "document", created.Envelope.ContextRefs[0].Type)
 }
 
 func TestTaskHandler_CreateBadBody(t *testing.T) {

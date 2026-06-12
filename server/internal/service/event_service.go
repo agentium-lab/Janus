@@ -2,11 +2,8 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -27,15 +24,8 @@ func NewEventService(repo EventRepo) *EventService {
 }
 
 func (s *EventService) Record(ctx context.Context, evt core.JanusEvent) error {
-	if evt.EventID == "" {
-		id, err := generateEventID()
-		if err != nil {
-			return fmt.Errorf("generate event id: %w", err)
-		}
-		evt.EventID = id
-	}
-	if evt.Timestamp.IsZero() {
-		evt.Timestamp = time.Now().UTC()
+	if err := enrichEvent(&evt); err != nil {
+		return err
 	}
 	if evt.Payload == nil {
 		evt.Payload = []byte(`{}`)
@@ -62,14 +52,6 @@ func (s *EventService) QueryByTenant(ctx context.Context, tenantID string, limit
 		limit = 50
 	}
 	return s.repo.ListByTenant(ctx, tenantID, limit)
-}
-
-func generateEventID() (string, error) {
-	b := make([]byte, 10)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return "evt_" + hex.EncodeToString(b), nil
 }
 
 func (s *EventService) PublishEvent(ctx context.Context, tenantID string, eventType core.EventType, taskID, traceID, sourceAgent string, payload interface{}) error {
