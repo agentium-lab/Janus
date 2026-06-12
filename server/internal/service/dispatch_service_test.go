@@ -159,6 +159,7 @@ func (m *mockDispatchTaskRepo) SetResultRef(_ context.Context, _, _, _ string) e
 func (m *mockDispatchTaskRepo) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
 	return 0, nil
 }
+func (m *mockDispatchTaskRepo) ResetForReplay(_ context.Context, _, _ string) error { return nil }
 
 type mockDispatchMailboxRepo struct {
 	mailboxes map[string]*core.Mailbox

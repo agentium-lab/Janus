@@ -32,6 +32,7 @@ type TaskRepo interface {
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
 	SetResultRef(ctx context.Context, tenantID, taskID, resultRef string) error
 	CountByStatus(ctx context.Context, tenantID string, status core.TaskStatus) (int, error)
+	ResetForReplay(ctx context.Context, tenantID, taskID string) error
 }
 
 type MailboxRepo interface {

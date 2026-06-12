@@ -474,6 +474,10 @@ func (m *mockTaskRepo) CountByStatus(_ context.Context, tenantID string, status 
 	return count, nil
 }
 
+func (m *mockTaskRepo) ResetForReplay(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func makeTestEnvelope(taskID, tenantID string) core.TaskEnvelope {
 	return core.TaskEnvelope{
 		JanusVersion: "0.1", TaskID: taskID, TenantID: tenantID,
@@ -1023,6 +1027,7 @@ func (m *mockTaskRepoFailUpdate) CountByStatus(_ context.Context, _ string, _ co
 func (m *mockTaskRepoFailUpdate) ListByStatus(_ context.Context, _ string, _ core.TaskStatus, _ int) ([]*core.Task, error) {
 	return nil, nil
 }
+func (m *mockTaskRepoFailUpdate) ResetForReplay(_ context.Context, _, _ string) error { return nil }
 
 func TestTaskService_TransitionUpdateError(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("update fail")}, &mockQueueDriver{}, nil, nil)

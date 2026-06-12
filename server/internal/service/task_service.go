@@ -308,11 +308,7 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
 	}
 
-	repo, ok := s.taskRepo.(*postgres.TaskRepository)
-	if !ok {
-		return nil, fmt.Errorf("replay requires postgres task repository")
-	}
-	if err := repo.ResetForReplay(ctx, tenantID, taskID); err != nil {
+	if err := s.taskRepo.ResetForReplay(ctx, tenantID, taskID); err != nil {
 		return nil, fmt.Errorf("reset task: %w", err)
 	}
 
