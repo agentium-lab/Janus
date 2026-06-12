@@ -81,6 +81,12 @@ func runMigration(t *testing.T, pool *pgxpool.Pool) {
 	migrations := []string{
 		"000001_initial_schema.up.sql",
 		"000002_delivery_ref.up.sql",
+		"000003_api_keys.up.sql",
+		"000004_budget_usage.up.sql",
+		"000005_retry_at.up.sql",
+		"000006_context_refs.up.sql",
+		"000007_outbox.up.sql",
+		"000008_outbox_retry.up.sql",
 	}
 	for _, m := range migrations {
 		up, err := os.ReadFile(filepath.Join(repoRoot(), "migrations", m))
@@ -90,6 +96,12 @@ func runMigration(t *testing.T, pool *pgxpool.Pool) {
 	}
 	t.Cleanup(func() {
 		downFiles := []string{
+			"000008_outbox_retry.down.sql",
+			"000007_outbox.down.sql",
+			"000006_context_refs.down.sql",
+			"000005_retry_at.down.sql",
+			"000004_budget_usage.down.sql",
+			"000003_api_keys.down.sql",
 			"000002_delivery_ref.down.sql",
 			"000001_initial_schema.down.sql",
 		}

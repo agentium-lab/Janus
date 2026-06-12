@@ -17,7 +17,7 @@ jobs:
           go-version-file: go.work
 
       - name: Build all modules
-        run: go build ./...
+        run: go build ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
 
   vet:
     runs-on: ubuntu-latest
@@ -32,10 +32,10 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: go vet
-        run: go vet ./...
+        run: go vet ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
 
       - name: staticcheck
-        run: staticcheck ./...
+        run: staticcheck ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
 
   test:
     runs-on: ubuntu-latest

@@ -247,11 +247,11 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
 
 	if attempt.DeliveryRef != "" {
-		reason := core.NackNonRetriable
 		if retriable {
-			reason = core.NackRetriable
+			_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef))
+		} else {
+			_ = s.queueDriver.NackTask(ctx, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable)
 		}
-		_ = s.queueDriver.NackTask(ctx, core.DeliveryRef(attempt.DeliveryRef), reason)
 	}
 
 	if err := s.attemptRepo.UpdateFinished(ctx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil); err != nil {

@@ -103,12 +103,30 @@ func main() {
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
 	dlqH := handler.NewDLQHandler(dlqSvc)
 
-	eventCh := make(chan core.JanusEvent, 256)
-	_, err = natsDrv.SubscribeEvents(context.Background(), eventCh)
+	rawEventCh := make(chan core.JanusEvent, 256)
+	_, err = natsDrv.SubscribeEvents(context.Background(), rawEventCh)
 	if err != nil {
 		log.Fatalf("subscribe events: %v", err)
 	}
-	broadcaster := handler.NewFanoutBroadcaster(eventCh)
+
+	broadcastCh := make(chan core.JanusEvent, 256)
+	projectorCh := make(chan core.JanusEvent, 256)
+	go func() {
+		for evt := range rawEventCh {
+			select {
+			case broadcastCh <- evt:
+			default:
+			}
+			select {
+			case projectorCh <- evt:
+			default:
+			}
+		}
+		close(broadcastCh)
+		close(projectorCh)
+	}()
+
+	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
 
 	outboxPub := outbox.NewPublisher(outboxRepo, natsDrv)
@@ -116,6 +134,11 @@ func main() {
 	defer outboxPub.Stop()
 
 	eventProjector := outbox.NewEventProjector(eventSvc)
+	go func() {
+		for evt := range projectorCh {
+			eventProjector.Record(context.Background(), evt)
+		}
+	}()
 	go eventProjector.Start(context.Background())
 	defer eventProjector.Stop()
 

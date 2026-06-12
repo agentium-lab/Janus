@@ -25,19 +25,19 @@ func NewApprovalHandler(svc ApprovalService) *ApprovalHandler {
 }
 
 type approvalRequestReq struct {
-	TenantID    string `json:"tenant_id"`
 	TaskID      string `json:"task_id"`
 	RequestedBy string `json:"requested_by"`
 }
 
 func (h *ApprovalHandler) Request(w http.ResponseWriter, r *http.Request) {
+	tenantID := tenantIDFromPath(r.URL.Path)
 	var req approvalRequestReq
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	result, err := h.svc.RequestApproval(r.Context(), core.Approval{
-		TenantID:    req.TenantID,
+		TenantID:    tenantID,
 		TaskID:      req.TaskID,
 		RequestedBy: req.RequestedBy,
 	})

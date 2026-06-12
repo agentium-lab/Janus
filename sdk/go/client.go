@@ -15,18 +15,21 @@ import (
 type Client struct {
 	baseURL    string
 	tenantID   string
+	apiKey     string
 	httpClient *http.Client
 }
 
 type Config struct {
 	BaseURL  string
 	TenantID string
+	APIKey   string
 }
 
 func NewClient(cfg Config) *Client {
 	return &Client{
 		baseURL:  cfg.BaseURL,
 		tenantID: cfg.TenantID,
+		apiKey:   cfg.APIKey,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -202,6 +205,9 @@ func (c *Client) doPost(ctx context.Context, path string, body interface{}, resu
 }
 
 func (c *Client) do(req *http.Request, result interface{}) error {
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http request: %w", err)

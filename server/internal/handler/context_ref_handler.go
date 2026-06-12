@@ -47,7 +47,7 @@ func (h *ContextRefHandler) Attach(w http.ResponseWriter, r *http.Request) {
 
 func (h *ContextRefHandler) Get(w http.ResponseWriter, r *http.Request) {
 	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
-	refID := lastPathSegment(r.URL.Path)
+	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
 	ref, err := h.svc.Get(r.Context(), tenantID, refID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -74,7 +74,7 @@ func (h *ContextRefHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *ContextRefHandler) Detach(w http.ResponseWriter, r *http.Request) {
 	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
-	refID := lastPathSegment(r.URL.Path)
+	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
 	if err := h.svc.Detach(r.Context(), tenantID, refID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
