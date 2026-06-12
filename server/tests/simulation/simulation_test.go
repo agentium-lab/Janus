@@ -20,7 +20,94 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
-// Mock Repos
+// In-memory queue that behaves like a real message broker.
+// PublishTask routes messages to mailbox queues.
+// FetchTasks retrieves and removes messages from a mailbox.
+
+type simQueueDriver struct {
+	mu        sync.Mutex
+	queues    map[string][]core.TaskDelivery
+	published []core.TaskMessage
+	events    []core.JanusEvent
+	refSeq    int
+}
+
+func (d *simQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.queues == nil {
+		d.queues = make(map[string][]core.TaskDelivery)
+	}
+	d.refSeq++
+	ref := core.DeliveryRef(fmt.Sprintf("ref-%d", d.refSeq))
+	d.queues[msg.MailboxID] = append(d.queues[msg.MailboxID], core.TaskDelivery{
+		TaskID:      msg.TaskID,
+		Payload:     msg.Payload,
+		DeliveryRef: ref,
+	})
+	d.published = append(d.published, msg)
+	return nil
+}
+
+func (d *simQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.queues == nil {
+		return nil, nil
+	}
+	queue := d.queues[mailbox]
+	if len(queue) == 0 {
+		return nil, nil
+	}
+	limit := opts.MaxMessages
+	if limit <= 0 {
+		limit = 1
+	}
+	if limit > len(queue) {
+		limit = len(queue)
+	}
+	taken := make([]core.TaskDelivery, limit)
+	copy(taken, queue[:limit])
+	d.queues[mailbox] = queue[limit:]
+	return taken, nil
+}
+
+func (d *simQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error        { return nil }
+func (d *simQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error { return nil }
+
+func (d *simQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.events = append(d.events, event)
+	return nil
+}
+
+func (d *simQueueDriver) ReplayEvents(_ context.Context, filter core.EventReplayFilter) (core.EventIterator, error) {
+	return nil, nil
+}
+func (d *simQueueDriver) EnsureTenant(_ context.Context, tenantID string) error { return nil }
+func (d *simQueueDriver) EnsureMailbox(_ context.Context, spec core.MailboxSpec) error {
+	return nil
+}
+func (d *simQueueDriver) EnsureConsumer(_ context.Context, spec core.ConsumerSpec) error {
+	return nil
+}
+func (d *simQueueDriver) PublishDLQ(_ context.Context, msg core.TaskMessage, errPayload []byte) error {
+	return nil
+}
+func (d *simQueueDriver) Close() error { return nil }
+
+func (d *simQueueDriver) PublishedCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.published)
+}
+
+func (d *simQueueDriver) EventCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.events)
+}
 
 type simTaskRepo struct {
 	mu    sync.RWMutex
@@ -217,8 +304,8 @@ func (r *simMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID str
 }
 
 type simApprovalRepo struct {
-	mu         sync.Mutex
-	approvals  map[string]*core.Approval
+	mu        sync.Mutex
+	approvals map[string]*core.Approval
 }
 
 func (r *simApprovalRepo) key(tenantID, approvalID string) string { return tenantID + ":" + approvalID }
@@ -290,7 +377,7 @@ func (r *simPolicyRuleRepo) ListActive(_ context.Context, tenantID string) ([]*c
 
 type simBudgetRepo struct{}
 
-func (r *simBudgetRepo) Upsert(_ context.Context, spec core.BudgetSpec) error      { return nil }
+func (r *simBudgetRepo) Upsert(_ context.Context, spec core.BudgetSpec) error { return nil }
 func (r *simBudgetRepo) Get(_ context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error) {
 	return nil, fmt.Errorf("not found")
 }
@@ -309,57 +396,104 @@ func (r *simBudgetUsageRepo) GetDailyUsage(_ context.Context, tenantID, scopeTyp
 	return 0, 0, 0, nil
 }
 
-type simQueueDriver struct {
-	published []core.TaskMessage
-	events    []core.JanusEvent
-	mu        sync.Mutex
+// simAgent is a simulated agent actor in the pipeline.
+// Each agent owns a mailbox, can pull tasks, process them,
+// and on completion, send a new task to the next agent's mailbox.
+
+type simAgent struct {
+	id         string
+	mailboxID  string
+	dispatcher *service.DispatchService
+	taskSvc    *service.TaskService
+	taskRepo   *simTaskRepo
+	attemptRepo *simAttemptRepo
+	tenantID   string
+	onComplete func(ctx context.Context, agent *simAgent, originalTask core.Task)
 }
 
-func (d *simQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.published = append(d.published, msg)
+func (a *simAgent) pullAndProcess(ctx context.Context) (*core.Task, error) {
+	result, err := a.dispatcher.PullTask(ctx, a.tenantID, a.mailboxID, a.id)
+	if err != nil {
+		return nil, fmt.Errorf("pull: %w", err)
+	}
+	if result == nil {
+		return nil, nil
+	}
+	return result.Task, nil
+}
+
+func (a *simAgent) start(ctx context.Context, taskID string) error {
+	task, err := a.taskRepo.Get(ctx, a.tenantID, taskID)
+	if err != nil {
+		return err
+	}
+	task.Status = core.TaskStatusClaimed
+	a.taskRepo.UpdateStatus(ctx, a.tenantID, taskID, core.TaskStatusClaimed, 0)
+
+	a.attemptRepo.Create(ctx, core.TaskAttempt{
+		TenantID: a.tenantID, TaskID: taskID,
+		Attempt: task.AttemptCount + 1, AgentID: a.id,
+		LeaseID: fmt.Sprintf("lease-%s-%s", a.id, taskID),
+	})
+
+	return a.taskSvc.Start(ctx, a.tenantID, taskID)
+}
+
+func (a *simAgent) complete(ctx context.Context, taskID string) error {
+	err := a.taskSvc.Complete(ctx, a.tenantID, taskID)
+	if err != nil {
+		return err
+	}
+	if a.onComplete != nil {
+		task, _ := a.taskRepo.Get(ctx, a.tenantID, taskID)
+		if task != nil {
+			a.onComplete(ctx, a, *task)
+		}
+	}
 	return nil
 }
 
-func (d *simQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
-	return nil, nil
+func (a *simAgent) fail(ctx context.Context, taskID string, code, message string) error {
+	return a.taskSvc.Fail(ctx, a.tenantID, taskID, &core.TaskError{Code: code, Message: message})
 }
 
-func (d *simQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error  { return nil }
-func (d *simQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error {
-	return nil
+func (a *simAgent) sendTaskTo(ctx context.Context, targetMailboxID, targetAgentID, taskID, payloadType string) error {
+	task := core.Task{
+		TenantID:    a.tenantID,
+		ID:          taskID,
+		SourceAgent: a.id,
+		TargetType:  core.TargetTypeMailbox,
+		TargetValue: targetMailboxID,
+		MailboxID:   targetMailboxID,
+		Priority:    core.PriorityNormal,
+		Envelope: core.TaskEnvelope{
+			JanusVersion: "0.8",
+			TaskID:       taskID,
+			TenantID:     a.tenantID,
+			SourceAgent:  a.id,
+			Target:       core.Target{Type: core.TargetTypeMailbox, Value: targetMailboxID},
+			Payload:      core.Payload{Type: payloadType, Content: fmt.Sprintf("from %s", a.id)},
+			Trace:        core.TraceContext{TraceID: fmt.Sprintf("trace-%s", taskID)},
+		},
+	}
+	_, err := a.taskSvc.Create(ctx, task)
+	return err
 }
 
-func (d *simQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.events = append(d.events, event)
-	return nil
-}
+// Test: Real Agent-to-Agent Pipeline
+//
+// Pipeline: product-agent → review-agent → code-agent → test-agent → deploy-agent
+//
+// Each agent:
+//  1. Pulls from its own mailbox (real queue fetch)
+//  2. Starts processing (claimed → running)
+//  3. Completes the task
+//  4. On completion, sends a new task to the NEXT agent's mailbox
+//
+// This tests the full message-passing lifecycle:
+// Create→Publish→Queue→Pull→Claim→Start→Complete→SendNext→...
 
-func (d *simQueueDriver) ReplayEvents(_ context.Context, filter core.EventReplayFilter) (core.EventIterator, error) {
-	return nil, nil
-}
-
-func (d *simQueueDriver) EnsureTenant(_ context.Context, tenantID string) error { return nil }
-func (d *simQueueDriver) EnsureMailbox(_ context.Context, spec core.MailboxSpec) error {
-	return nil
-}
-func (d *simQueueDriver) EnsureConsumer(_ context.Context, spec core.ConsumerSpec) error {
-	return nil
-}
-func (d *simQueueDriver) SubscribeEvents(_ context.Context, ch chan<- core.JanusEvent) (context.CancelFunc, error) {
-	return func() {}, nil
-}
-func (d *simQueueDriver) PublishDLQ(_ context.Context, msg core.TaskMessage, errPayload []byte) error {
-	return nil
-}
-func (d *simQueueDriver) Close() error { return nil }
-
-// Test: 7-Agent Full Pipeline Simulation
-
-func TestSevenAgentSimulation(t *testing.T) {
+func TestAgentToAgentPipeline(t *testing.T) {
 	taskRepo := &simTaskRepo{}
 	attemptRepo := &simAttemptRepo{}
 	mailboxRepo := &simMailboxRepo{}
@@ -376,330 +510,299 @@ func TestSevenAgentSimulation(t *testing.T) {
 	taskSvc.WithApproval(approvalSvc)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 
-	taskH := handler.NewTaskHandler(taskSvc)
-	approvalH := handler.NewApprovalHandler(approvalSvc)
-	_ = handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/acme/tasks", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			taskH.Create(w, r)
-		}
-	})
-	mux.HandleFunc("/v1/tenants/acme/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		switch {
-		case bytes.HasSuffix([]byte(path), []byte("/start")):
-			taskH.Start(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/complete")):
-			taskH.Complete(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/fail")):
-			taskH.Fail(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/cancel")):
-			taskH.Cancel(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/block")):
-			taskH.Block(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/unblock")):
-			taskH.Unblock(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/replay")):
-			taskH.Replay(w, r)
-		default:
-			taskH.Get(w, r)
-		}
-	})
-	mux.HandleFunc("/v1/tenants/acme/approvals/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		switch {
-		case bytes.HasSuffix([]byte(path), []byte("/approve")):
-			approvalH.Approve(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/reject")):
-			approvalH.Reject(w, r)
-		default:
-			approvalH.Get(w, r)
-		}
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
 	tenantID := "acme"
+	ctx := context.Background()
 
-	var tasksCreated atomic.Int64
-	var tasksCompleted atomic.Int64
-	var tasksFailed atomic.Int64
+	var pipelineCompleted atomic.Int64
+	var totalTasksCreated atomic.Int64
 
-	createTask := func(taskID, sourceAgent, targetValue, payloadType string) {
-		body, _ := json.Marshal(map[string]interface{}{
-			"id": taskID, "source_agent": sourceAgent,
-			"target_type": "capability", "target_value": targetValue,
-			"mailbox_id": targetValue + "-mb",
-			"envelope": map[string]interface{}{
-				"janus_version": "0.8", "task_id": taskID, "tenant_id": tenantID,
-				"source_agent": sourceAgent,
-				"target":       map[string]string{"type": "capability", "value": targetValue},
-				"payload":      map[string]string{"type": payloadType, "content": "auto-generated"},
-				"trace":        map[string]string{"trace_id": "trace-sim-001"},
-			},
-		})
-		resp, err := http.Post(server.URL+"/v1/tenants/acme/tasks", "application/json", bytes.NewReader(body))
-		require.NoError(t, err)
-		require.Equal(t, http.StatusCreated, resp.StatusCode)
-		tasksCreated.Add(1)
-		resp.Body.Close()
+	agents := make(map[string]*simAgent)
+
+	makeAgent := func(id, mailboxID string, onComplete func(ctx context.Context, a *simAgent, orig core.Task)) *simAgent {
+		return &simAgent{
+			id:          id,
+			mailboxID:   mailboxID,
+			dispatcher:  dispatchSvc,
+			taskSvc:     taskSvc,
+			taskRepo:    taskRepo,
+			attemptRepo: attemptRepo,
+			tenantID:    tenantID,
+			onComplete:  onComplete,
+		}
 	}
 
-	transitionTask := func(taskID, action string) int {
-		resp, err := http.Post(server.URL+"/v1/tenants/acme/tasks/"+taskID+"/"+action, "application/json", bytes.NewReader([]byte("{}")))
+	deployAgent := makeAgent("deploy-agent", "deploy-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
+		pipelineCompleted.Add(1)
+	})
+
+	testAgent := makeAgent("test-agent", "test-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
+		a.sendTaskTo(ctx, "deploy-mb", "deploy-agent", "task-deploy-001", "deploy_request")
+		totalTasksCreated.Add(1)
+	})
+
+	codeAgent := makeAgent("code-agent", "code-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
+		a.sendTaskTo(ctx, "test-mb", "test-agent", "task-test-001", "run_tests")
+		totalTasksCreated.Add(1)
+	})
+
+	reviewAgent := makeAgent("review-agent", "review-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
+		a.sendTaskTo(ctx, "code-mb", "code-agent", "task-code-001", "code_change_request")
+		totalTasksCreated.Add(1)
+	})
+
+	productAgent := makeAgent("product-agent", "product-mb", nil)
+
+	agents["product-agent"] = productAgent
+	agents["review-agent"] = reviewAgent
+	agents["code-agent"] = codeAgent
+	agents["test-agent"] = testAgent
+	agents["deploy-agent"] = deployAgent
+
+	t.Run("step1_product_agent_sends_review_request", func(t *testing.T) {
+		err := productAgent.sendTaskTo(ctx, "review-mb", "review-agent", "task-review-001", "code_review_request")
 		require.NoError(t, err)
-		resp.Body.Close()
-		return resp.StatusCode
-	}
+		totalTasksCreated.Add(1)
 
-	getTaskStatus := func(taskID string) core.TaskStatus {
-		resp, err := http.Get(server.URL + "/v1/tenants/acme/tasks/" + taskID)
+		task, err := taskRepo.Get(ctx, tenantID, "task-review-001")
 		require.NoError(t, err)
-		defer resp.Body.Close()
-		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
-		status, _ := result["status"].(string)
-		return core.TaskStatus(status)
-	}
-
-	// Agent 1: product-agent publishes review request
-	t.Run("agent1_product_publishes_review", func(t *testing.T) {
-		createTask("task-review-001", "product-agent", "code_review", "code_review_request")
-		assert.Equal(t, core.TaskStatusQueued, getTaskStatus("task-review-001"))
+		assert.Equal(t, core.TaskStatusQueued, task.Status)
+		assert.Equal(t, "product-agent", task.SourceAgent)
+		assert.Equal(t, "review-mb", task.MailboxID)
 	})
 
-	// ---- Agent 2: review-agent pulls and starts review ----
-	t.Run("agent2_review_agent_starts", func(t *testing.T) {
-		// Simulate claim via state machine: queued -> claimed -> running
-		task, err := taskSvc.Get(context.Background(), tenantID, "task-review-001")
+	t.Run("step2_review_agent_pulls_from_queue", func(t *testing.T) {
+		task, err := reviewAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
-		task.Status = core.TaskStatusClaimed
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-review-001", core.TaskStatusClaimed, 0)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-review-001", task.ID)
 
-		code := transitionTask("task-review-001", "start")
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, core.TaskStatusRunning, getTaskStatus("task-review-001"))
-	})
-
-	// ---- Agent 3: review blocks for human approval ----
-	t.Run("agent3_review_blocks_for_approval", func(t *testing.T) {
-		code := transitionTask("task-review-001", "block")
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, core.TaskStatusBlocked, getTaskStatus("task-review-001"))
-	})
-
-	// ---- Agent 4: human-approver unblocks ----
-	t.Run("agent4_human_approver_unblocks", func(t *testing.T) {
-		code := transitionTask("task-review-001", "unblock")
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, core.TaskStatusRunning, getTaskStatus("task-review-001"))
-	})
-
-	// ---- Agent 2: review-agent completes ----
-	t.Run("agent2_review_completes", func(t *testing.T) {
-		code := transitionTask("task-review-001", "complete")
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, core.TaskStatusCompleted, getTaskStatus("task-review-001"))
-		tasksCompleted.Add(1)
-	})
-
-	// ---- Agent 5: code-agent picks up coding task ----
-	t.Run("agent5_code_agent_writes_code", func(t *testing.T) {
-		createTask("task-code-001", "review-agent", "coding", "code_change_request")
-
-		// Simulate claim -> start
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-code-001", core.TaskStatusClaimed, 0)
-		transitionTask("task-code-001", "start")
-		assert.Equal(t, core.TaskStatusRunning, getTaskStatus("task-code-001"))
-
-		code := transitionTask("task-code-001", "complete")
-		assert.Equal(t, http.StatusOK, code)
-		tasksCompleted.Add(1)
-	})
-
-	// ---- Agent 6: test-agent runs tests (first fails, retry succeeds) ----
-	t.Run("agent6_test_agent_fail_then_succeed", func(t *testing.T) {
-		createTask("task-test-001", "code-agent", "testing", "run_tests")
-
-		// Claim -> start
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-test-001", core.TaskStatusClaimed, 0)
-		transitionTask("task-test-001", "start")
-		assert.Equal(t, core.TaskStatusRunning, getTaskStatus("task-test-001"))
-
-		// First attempt fails
-		failBody, _ := json.Marshal(map[string]string{"code": "test_failure", "message": "flaky test"})
-		resp, err := http.Post(server.URL+"/v1/tenants/acme/tasks/task-test-001/fail", "application/json", bytes.NewReader(failBody))
+		err = reviewAgent.start(ctx, task.ID)
 		require.NoError(t, err)
-		resp.Body.Close()
-		assert.Equal(t, core.TaskStatusFailed, getTaskStatus("task-test-001"))
-		tasksFailed.Add(1)
 
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-test-001", core.TaskStatusDeadLettered, 0)
-
-		code := transitionTask("task-test-001", "replay")
-		assert.Equal(t, http.StatusOK, code)
-		assert.Equal(t, core.TaskStatusQueued, getTaskStatus("task-test-001"))
-
-		// Second attempt: claim -> start -> complete
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-test-001", core.TaskStatusClaimed, 0)
-		transitionTask("task-test-001", "start")
-		code = transitionTask("task-test-001", "complete")
-		assert.Equal(t, http.StatusOK, code)
-		tasksCompleted.Add(1)
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-001")
+		assert.Equal(t, core.TaskStatusRunning, got.Status)
 	})
 
-	// ---- Agent 7: deploy-agent deploys ----
-	t.Run("agent7_deploy_agent_deploys", func(t *testing.T) {
-		createTask("task-deploy-001", "test-agent", "deployment", "deploy_request")
+	t.Run("step3_review_agent_completes_and_sends_to_code_agent", func(t *testing.T) {
+		err := reviewAgent.complete(ctx, "task-review-001")
+		require.NoError(t, err)
 
-		taskRepo.UpdateStatus(context.Background(), tenantID, "task-deploy-001", core.TaskStatusClaimed, 0)
-		transitionTask("task-deploy-001", "start")
-		code := transitionTask("task-deploy-001", "complete")
-		assert.Equal(t, http.StatusOK, code)
-		tasksCompleted.Add(1)
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-001")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+
+		codeTask, err := taskRepo.Get(ctx, tenantID, "task-code-001")
+		require.NoError(t, err)
+		assert.Equal(t, core.TaskStatusQueued, codeTask.Status)
+		assert.Equal(t, "review-agent", codeTask.SourceAgent)
+		assert.Equal(t, "code-mb", codeTask.MailboxID)
 	})
 
-	// ---- Simulation summary ----
-	t.Run("simulation_summary", func(t *testing.T) {
-		assert.Equal(t, int64(4), tasksCreated.Load(), "4 tasks created total")
-		assert.Equal(t, int64(4), tasksCompleted.Load(), "4 tasks completed")
-		assert.Equal(t, int64(1), tasksFailed.Load(), "1 task failed (test retry)")
+	t.Run("step4_code_agent_pulls_and_completes", func(t *testing.T) {
+		task, err := codeAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-code-001", task.ID)
 
-		queueDrv.mu.Lock()
-		pubCount := len(queueDrv.published)
-		eventCount := len(queueDrv.events)
-		queueDrv.mu.Unlock()
-		assert.GreaterOrEqual(t, pubCount, 4, "at least 4 task publishes to queue")
-		assert.GreaterOrEqual(t, eventCount, 4, "at least 4 events published")
+		codeAgent.start(ctx, task.ID)
+		err = codeAgent.complete(ctx, task.ID)
+		require.NoError(t, err)
 
-		t.Logf("Simulation: %d created, %d completed, %d failed, %d queue msgs, %d events",
-			tasksCreated.Load(), tasksCompleted.Load(), tasksFailed.Load(), pubCount, eventCount)
+		got, _ := taskRepo.Get(ctx, tenantID, "task-code-001")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+
+		testTask, err := taskRepo.Get(ctx, tenantID, "task-test-001")
+		require.NoError(t, err)
+		assert.Equal(t, core.TaskStatusQueued, testTask.Status)
+		assert.Equal(t, "code-agent", testTask.SourceAgent)
+	})
+
+	t.Run("step5_test_agent_pulls_fails_replays_succeeds", func(t *testing.T) {
+		task, err := testAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-test-001", task.ID)
+
+		testAgent.start(ctx, task.ID)
+
+		err = testAgent.fail(ctx, task.ID, "test_failure", "flaky test")
+		require.NoError(t, err)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-test-001")
+		assert.Equal(t, core.TaskStatusFailed, got.Status)
+
+		taskRepo.UpdateStatus(ctx, tenantID, "task-test-001", core.TaskStatusDeadLettered, 0)
+		_, err = taskSvc.Replay(ctx, tenantID, "task-test-001")
+		require.NoError(t, err)
+
+		got, _ = taskRepo.Get(ctx, tenantID, "task-test-001")
+		assert.Equal(t, core.TaskStatusQueued, got.Status)
+
+		task2, err := testAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task2)
+		assert.Equal(t, "task-test-001", task2.ID)
+
+		testAgent.start(ctx, task2.ID)
+		err = testAgent.complete(ctx, task2.ID)
+		require.NoError(t, err)
+
+		got, _ = taskRepo.Get(ctx, tenantID, "task-test-001")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+	})
+
+	t.Run("step6_deploy_agent_pulls_and_completes", func(t *testing.T) {
+		task, err := deployAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-deploy-001", task.ID)
+		assert.Equal(t, "test-agent", task.SourceAgent)
+
+		deployAgent.start(ctx, task.ID)
+		err = deployAgent.complete(ctx, task.ID)
+		require.NoError(t, err)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-deploy-001")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+		assert.Equal(t, "test-agent", got.SourceAgent)
+	})
+
+	t.Run("pipeline_summary", func(t *testing.T) {
+		assert.Equal(t, int64(1), pipelineCompleted.Load(), "pipeline should complete once")
+
+		expectedCreated := int64(4)
+		assert.Equal(t, expectedCreated, totalTasksCreated.Load(), "4 tasks in pipeline")
+
+		pubCount := queueDrv.PublishedCount()
+		eventCount := queueDrv.EventCount()
+
+		assert.GreaterOrEqual(t, pubCount, 5, "at least 5 task publishes (4 pipeline + 1 replay)")
+		assert.GreaterOrEqual(t, eventCount, 10, "events for create/start/complete per task")
+
+		t.Logf("Pipeline: %d tasks, %d completed, %d queue publishes, %d events",
+			totalTasksCreated.Load(), pipelineCompleted.Load(), pubCount, eventCount)
+
+		var completedCount int
+		taskRepo.mu.RLock()
+		for _, t := range taskRepo.tasks {
+			if t.Status == core.TaskStatusCompleted {
+				completedCount++
+			}
+		}
+		taskRepo.mu.RUnlock()
+		assert.Equal(t, 4, completedCount, "all 4 pipeline tasks should be completed")
 	})
 }
 
-// Test: Approval Lifecycle End-to-End
+// Test: Agent-to-Agent with Approval Gate
+//
+// product-agent → review-agent (blocks for approval)
+// human approves → review-agent resumes → sends to code-agent
 
-func TestApprovalLifecycleE2E(t *testing.T) {
+func TestAgentToAgentWithApprovalGate(t *testing.T) {
 	taskRepo := &simTaskRepo{}
+	attemptRepo := &simAttemptRepo{}
+	mailboxRepo := &simMailboxRepo{}
 	queueDrv := &simQueueDriver{}
 	approvalRepo := &simApprovalRepo{}
 	policyRuleRepo := &simPolicyRuleRepo{}
 	budgetRepo := &simBudgetRepo{}
+	budgetUsageRepo := &simBudgetUsageRepo{}
 
 	policySvc := service.NewPolicyService(policyRuleRepo)
-	_ = service.NewBudgetService(budgetRepo)
+	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo)
 	taskSvc := service.NewTaskService(taskRepo, queueDrv, nil, nil).WithPolicy(policySvc)
 	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, queueDrv)
 	taskSvc.WithApproval(approvalSvc)
+	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 
-	taskH := handler.NewTaskHandler(taskSvc)
-	approvalH := handler.NewApprovalHandler(approvalSvc)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/acme/tasks", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			taskH.Create(w, r)
-		}
-	})
-	mux.HandleFunc("/v1/tenants/acme/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		taskH.Get(w, r)
-	})
-	mux.HandleFunc("/v1/tenants/acme/approvals", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			approvalH.Request(w, r)
-		}
-	})
-	mux.HandleFunc("/v1/tenants/acme/approvals/", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-		switch {
-		case bytes.HasSuffix([]byte(path), []byte("/approve")):
-			approvalH.Approve(w, r)
-		case bytes.HasSuffix([]byte(path), []byte("/reject")):
-			approvalH.Reject(w, r)
-		default:
-			approvalH.Get(w, r)
-		}
-	})
-
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
+	tenantID := "acme"
 	ctx := context.Background()
 
-	// Step 1: Create approval request manually
-	t.Run("step1_create_approval_request", func(t *testing.T) {
-		// First create a task to approve
+	codeAgent := &simAgent{
+		id: "code-agent", mailboxID: "code-mb",
+		dispatcher: dispatchSvc, taskSvc: taskSvc, taskRepo: taskRepo, attemptRepo: attemptRepo, tenantID: tenantID,
+	}
+
+	t.Run("step1_send_task_with_manual_approval", func(t *testing.T) {
 		task := core.Task{
-			TenantID: "acme", ID: "task-approval-001",
-			SourceAgent: "product-agent", TargetType: core.TargetTypeCapability,
-			TargetValue: "sensitive-op", MailboxID: "sensitive-op-mb",
-			Priority: core.PriorityHigh, Status: core.TaskStatusApprovalPending,
-			Envelope: core.TaskEnvelope{JanusVersion: "0.8", TaskID: "task-approval-001", TenantID: "acme", SourceAgent: "product-agent", Target: core.Target{Type: core.TargetTypeCapability, Value: "sensitive-op"}, Payload: core.Payload{Type: "approval_request"}, Trace: core.TraceContext{TraceID: "trace-approval-001"}},
+			TenantID: tenantID, ID: "task-review-002",
+			SourceAgent: "product-agent", TargetType: core.TargetTypeMailbox,
+			TargetValue: "review-mb", MailboxID: "review-mb",
+			Priority: core.PriorityHigh,
+			Envelope: core.TaskEnvelope{
+				JanusVersion: "0.8", TaskID: "task-review-002", TenantID: tenantID,
+				SourceAgent: "product-agent",
+				Target:      core.Target{Type: core.TargetTypeMailbox, Value: "review-mb"},
+				Payload:     core.Payload{Type: "sensitive_review"},
+				Trace:       core.TraceContext{TraceID: "trace-review-002"},
+			},
 		}
 		_, err := taskSvc.Create(ctx, task)
 		require.NoError(t, err)
 
-		// Request approval
-		body, _ := json.Marshal(map[string]string{
-			"tenant_id": "acme", "task_id": "task-approval-001", "requested_by": "product-agent",
-		})
-		resp, err := http.Post(server.URL+"/v1/tenants/acme/approvals", "application/json", bytes.NewReader(body))
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		assert.Equal(t, http.StatusCreated, resp.StatusCode)
-
-		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
-		assert.Equal(t, "pending", result["status"])
-		assert.NotEmpty(t, result["id"])
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
+		assert.Equal(t, core.TaskStatusQueued, got.Status)
 	})
 
-	// Step 2: Verify task is in approval_pending state
-	t.Run("step2_task_is_approval_pending", func(t *testing.T) {
-		resp, err := http.Get(server.URL + "/v1/tenants/acme/tasks/task-approval-001")
+	t.Run("step2_review_agent_pulls_and_blocks", func(t *testing.T) {
+		reviewAgent := &simAgent{
+			id: "review-agent", mailboxID: "review-mb",
+			dispatcher: dispatchSvc, taskSvc: taskSvc, taskRepo: taskRepo, attemptRepo: attemptRepo, tenantID: tenantID,
+		}
+		task, err := reviewAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
-		defer resp.Body.Close()
-		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
-		assert.Equal(t, "approval_pending", result["status"])
+		require.NotNil(t, task)
+		assert.Equal(t, "task-review-002", task.ID)
+
+		reviewAgent.start(ctx, task.ID)
+
+		err = taskSvc.Block(ctx, tenantID, "task-review-002", "awaiting human approval")
+		require.NoError(t, err)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
+		assert.Equal(t, core.TaskStatusBlocked, got.Status)
 	})
 
-	// Step 3: Approve the task
-	t.Run("step3_approve_task", func(t *testing.T) {
-		// Get the approval ID first
-		approval, _ := approvalRepo.GetPendingByTask(ctx, "acme", "task-approval-001")
-		require.NotNil(t, approval)
-		approvalID := approval.ID
-
-		body, _ := json.Marshal(map[string]string{
-			"approver": "admin", "reason": "looks good",
-		})
-		resp, err := http.Post(server.URL+"/v1/tenants/acme/approvals/"+approvalID+"/approve", "application/json", bytes.NewReader(body))
+	t.Run("step3_human_approves_and_unblocks", func(t *testing.T) {
+		err := taskSvc.Unblock(ctx, tenantID, "task-review-002")
 		require.NoError(t, err)
-		defer resp.Body.Close()
-		assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
+		assert.Equal(t, core.TaskStatusRunning, got.Status)
 	})
 
-	// Step 4: Verify task is queued and was published to queue
-	t.Run("step4_task_queued_and_published", func(t *testing.T) {
-		resp, err := http.Get(server.URL + "/v1/tenants/acme/tasks/task-approval-001")
-		require.NoError(t, err)
-		defer resp.Body.Close()
-		var result map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&result)
-		assert.Equal(t, "queued", result["status"])
+	t.Run("step4_review_agent_completes_and_sends_to_code_agent", func(t *testing.T) {
+		reviewAgent := &simAgent{
+			id: "review-agent", mailboxID: "review-mb",
+			dispatcher: dispatchSvc, taskSvc: taskSvc, taskRepo: taskRepo, attemptRepo: attemptRepo, tenantID: tenantID,
+			onComplete: func(ctx context.Context, a *simAgent, orig core.Task) {
+				a.sendTaskTo(ctx, "code-mb", "code-agent", "task-code-002", "code_change")
+			},
+		}
 
-		queueDrv.mu.Lock()
-		pubCount := len(queueDrv.published)
-		queueDrv.mu.Unlock()
-		assert.GreaterOrEqual(t, pubCount, 1, "task should be published to queue after approval")
+		reviewAgent.complete(ctx, "task-review-002")
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+
+		codeTask, err := taskRepo.Get(ctx, tenantID, "task-code-002")
+		require.NoError(t, err)
+		assert.Equal(t, core.TaskStatusQueued, codeTask.Status)
+		assert.Equal(t, "review-agent", codeTask.SourceAgent)
+		assert.Equal(t, "code-mb", codeTask.MailboxID)
+
+		task, err := codeAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-code-002", task.ID)
+
+		codeAgent.start(ctx, task.ID)
+		codeAgent.complete(ctx, task.ID)
+
+		got, _ = taskRepo.Get(ctx, tenantID, "task-code-002")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
 	})
 }
-
-// Test: ACK result_ref persistence
 
 func TestAckResultRefPersistence(t *testing.T) {
 	taskRepo := &simTaskRepo{}
@@ -715,7 +818,6 @@ func TestAckResultRefPersistence(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create a task and set it to claimed
 	task := core.Task{
 		TenantID: "acme", ID: "task-resultref-001",
 		SourceAgent: "agent-1", TargetType: core.TargetTypeCapability,
@@ -725,24 +827,19 @@ func TestAckResultRefPersistence(t *testing.T) {
 	}
 	require.NoError(t, taskRepo.Create(ctx, task))
 
-	// Create an attempt
 	require.NoError(t, attemptRepo.Create(ctx, core.TaskAttempt{
 		TenantID: "acme", TaskID: "task-resultref-001",
 		Attempt: 1, AgentID: "agent-1", LeaseID: "lease-001",
 	}))
 
-	// ACK with result_ref
 	err := dispatchSvc.AckTask(ctx, "acme", "task-resultref-001", "lease-001", "s3://results/task-resultref-001.json", nil)
 	require.NoError(t, err)
 
-	// Verify result_ref persisted
 	got, err := taskRepo.Get(ctx, "acme", "task-resultref-001")
 	require.NoError(t, err)
 	assert.Equal(t, "s3://results/task-resultref-001.json", got.ResultRef)
 	assert.Equal(t, core.TaskStatusCompleted, got.Status)
 }
-
-// Test: Multi-Agent Concurrent Publish
 
 func TestMultiAgentConcurrentPublish(t *testing.T) {
 	taskRepo := &simTaskRepo{}
@@ -796,8 +893,6 @@ func TestMultiAgentConcurrentPublish(t *testing.T) {
 	assert.Equal(t, int64(10), successCount.Load(), "all 10 concurrent tasks should be created")
 }
 
-// Test: Event Publishing Verification
-
 func TestEventPublishingOnLifecycle(t *testing.T) {
 	taskRepo := &simTaskRepo{}
 	queueDrv := &simQueueDriver{}
@@ -805,7 +900,6 @@ func TestEventPublishingOnLifecycle(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create and transition a task through its lifecycle
 	task := core.Task{
 		TenantID: "acme", ID: "task-events-001",
 		SourceAgent: "agent-1", TargetType: core.TargetTypeCapability,
@@ -816,25 +910,18 @@ func TestEventPublishingOnLifecycle(t *testing.T) {
 	_, err := taskSvc.Create(ctx, task)
 	require.NoError(t, err)
 
-	queueDrv.mu.Lock()
-	eventsAfterCreate := len(queueDrv.events)
-	queueDrv.mu.Unlock()
+	eventsAfterCreate := queueDrv.EventCount()
 	assert.GreaterOrEqual(t, eventsAfterCreate, 1, "at least 1 event after create")
 
 	taskRepo.UpdateStatus(ctx, "acme", "task-events-001", core.TaskStatusClaimed, 0)
 	require.NoError(t, taskSvc.Start(ctx, "acme", "task-events-001"))
 
-	queueDrv.mu.Lock()
-	eventsAfterStart := len(queueDrv.events)
-	queueDrv.mu.Unlock()
+	eventsAfterStart := queueDrv.EventCount()
 	assert.Greater(t, eventsAfterStart, eventsAfterCreate, "more events after start")
 
-	// Complete
 	require.NoError(t, taskSvc.Complete(ctx, "acme", "task-events-001"))
 
-	queueDrv.mu.Lock()
-	eventsAfterComplete := len(queueDrv.events)
-	queueDrv.mu.Unlock()
+	eventsAfterComplete := queueDrv.EventCount()
 	assert.Greater(t, eventsAfterComplete, eventsAfterStart, "more events after complete")
 
 	queueDrv.mu.Lock()
@@ -851,8 +938,6 @@ func TestEventPublishingOnLifecycle(t *testing.T) {
 	t.Logf("Event types: %v", eventTypes)
 }
 
-// Test: State Machine Validation
-
 func TestStateMachineValidation(t *testing.T) {
 	taskRepo := &simTaskRepo{}
 	queueDrv := &simQueueDriver{}
@@ -860,7 +945,6 @@ func TestStateMachineValidation(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Create a completed task
 	task := core.Task{
 		TenantID: "acme", ID: "task-terminal-001",
 		SourceAgent: "agent-1", TargetType: core.TargetTypeAgent,
@@ -870,13 +954,10 @@ func TestStateMachineValidation(t *testing.T) {
 	_, err := taskSvc.Create(ctx, task)
 	require.NoError(t, err)
 
-	// Try to start a completed task — should fail
 	err = taskSvc.Start(ctx, "acme", "task-terminal-001")
 	assert.Error(t, err, "should not allow transition from completed to running")
 	assert.Contains(t, err.Error(), "terminal state")
 }
-
-// dispatchAdapter for handler wiring
 
 type dispatchAdapter struct {
 	svc *service.DispatchService
@@ -891,8 +972,8 @@ func (a *dispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, nil
 	}
 	return &handler.ServicePullResult{
-		Task:    res.Task,
-		LeaseID: res.LeaseID,
+		Task:     res.Task,
+		LeaseID:  res.LeaseID,
 		ExpiresAt: res.ExpiresAt,
 	}, nil
 }

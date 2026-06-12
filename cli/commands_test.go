@@ -65,12 +65,13 @@ func TestDashboardCmd_ServeAndShutdown(t *testing.T) {
 	done := make(chan struct{})
 	var startErr error
 
+	serverURL = apiSrv.URL
+	tenantID = "test"
+
 	go func() {
 		defer close(done)
 		cmd := &cobra.Command{Use: "test", SilenceErrors: true, SilenceUsage: true}
 		cmd.SetOut(io.Discard)
-		serverURL = apiSrv.URL
-		tenantID = "test"
 		cmd.AddCommand(dashboardCmd())
 		cmd.SetArgs([]string{"dashboard", "--port", "0"})
 		startErr = cmd.Execute()
