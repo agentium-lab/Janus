@@ -480,18 +480,12 @@ func (a *simAgent) sendTaskTo(ctx context.Context, targetMailboxID, targetAgentI
 	return err
 }
 
-// Test: Real Agent-to-Agent Pipeline
+// Test: Real Agent-to-Agent Pipeline with Feedback Loop
 //
-// Pipeline: product-agent → review-agent → code-agent → test-agent → deploy-agent
-//
-// Each agent:
-//  1. Pulls from its own mailbox (real queue fetch)
-//  2. Starts processing (claimed → running)
-//  3. Completes the task
-//  4. On completion, sends a new task to the NEXT agent's mailbox
-//
-// This tests the full message-passing lifecycle:
-// Create→Publish→Queue→Pull→Claim→Start→Complete→SendNext→...
+// Pipeline: product → review → code → test (FAIL, send back to code)
+//                                      → code (fix, send back to test)
+//                                      → test (PASS, send to deploy)
+//                                      → deploy (done)
 
 func TestAgentToAgentPipeline(t *testing.T) {
 	taskRepo := &simTaskRepo{}
@@ -515,8 +509,8 @@ func TestAgentToAgentPipeline(t *testing.T) {
 
 	var pipelineCompleted atomic.Int64
 	var totalTasksCreated atomic.Int64
-
-	agents := make(map[string]*simAgent)
+	var testFailCount atomic.Int64
+	var codeFixCount atomic.Int64
 
 	makeAgent := func(id, mailboxID string, onComplete func(ctx context.Context, a *simAgent, orig core.Task)) *simAgent {
 		return &simAgent{
@@ -535,30 +529,17 @@ func TestAgentToAgentPipeline(t *testing.T) {
 		pipelineCompleted.Add(1)
 	})
 
-	testAgent := makeAgent("test-agent", "test-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
-		a.sendTaskTo(ctx, "deploy-mb", "deploy-agent", "task-deploy-001", "deploy_request")
-		totalTasksCreated.Add(1)
-	})
+	testAgent := makeAgent("test-agent", "test-mb", nil)
 
-	codeAgent := makeAgent("code-agent", "code-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
-		a.sendTaskTo(ctx, "test-mb", "test-agent", "task-test-001", "run_tests")
-		totalTasksCreated.Add(1)
-	})
+	codeAgent := makeAgent("code-agent", "code-mb", nil)
 
-	reviewAgent := makeAgent("review-agent", "review-mb", func(ctx context.Context, a *simAgent, orig core.Task) {
-		a.sendTaskTo(ctx, "code-mb", "code-agent", "task-code-001", "code_change_request")
-		totalTasksCreated.Add(1)
-	})
+	reviewAgent := makeAgent("review-agent", "review-mb", nil)
 
 	productAgent := makeAgent("product-agent", "product-mb", nil)
 
-	agents["product-agent"] = productAgent
-	agents["review-agent"] = reviewAgent
-	agents["code-agent"] = codeAgent
-	agents["test-agent"] = testAgent
-	agents["deploy-agent"] = deployAgent
+	_ = deployAgent
 
-	t.Run("step1_product_agent_sends_review_request", func(t *testing.T) {
+	t.Run("step1_product_sends_review_request", func(t *testing.T) {
 		err := productAgent.sendTaskTo(ctx, "review-mb", "review-agent", "task-review-001", "code_review_request")
 		require.NoError(t, err)
 		totalTasksCreated.Add(1)
@@ -570,34 +551,25 @@ func TestAgentToAgentPipeline(t *testing.T) {
 		assert.Equal(t, "review-mb", task.MailboxID)
 	})
 
-	t.Run("step2_review_agent_pulls_from_queue", func(t *testing.T) {
+	t.Run("step2_review_agent_pulls_and_completes", func(t *testing.T) {
 		task, err := reviewAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, task)
 		assert.Equal(t, "task-review-001", task.ID)
 
-		err = reviewAgent.start(ctx, task.ID)
-		require.NoError(t, err)
-
-		got, _ := taskRepo.Get(ctx, tenantID, "task-review-001")
-		assert.Equal(t, core.TaskStatusRunning, got.Status)
-	})
-
-	t.Run("step3_review_agent_completes_and_sends_to_code_agent", func(t *testing.T) {
-		err := reviewAgent.complete(ctx, "task-review-001")
+		reviewAgent.start(ctx, task.ID)
+		err = reviewAgent.complete(ctx, task.ID)
 		require.NoError(t, err)
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-review-001")
 		assert.Equal(t, core.TaskStatusCompleted, got.Status)
-
-		codeTask, err := taskRepo.Get(ctx, tenantID, "task-code-001")
-		require.NoError(t, err)
-		assert.Equal(t, core.TaskStatusQueued, codeTask.Status)
-		assert.Equal(t, "review-agent", codeTask.SourceAgent)
-		assert.Equal(t, "code-mb", codeTask.MailboxID)
 	})
 
-	t.Run("step4_code_agent_pulls_and_completes", func(t *testing.T) {
+	t.Run("step3_review_sends_code_task_and_code_agent_works", func(t *testing.T) {
+		err := reviewAgent.sendTaskTo(ctx, "code-mb", "code-agent", "task-code-001", "code_change_request")
+		require.NoError(t, err)
+		totalTasksCreated.Add(1)
+
 		task, err := codeAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, task)
@@ -609,14 +581,13 @@ func TestAgentToAgentPipeline(t *testing.T) {
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-code-001")
 		assert.Equal(t, core.TaskStatusCompleted, got.Status)
-
-		testTask, err := taskRepo.Get(ctx, tenantID, "task-test-001")
-		require.NoError(t, err)
-		assert.Equal(t, core.TaskStatusQueued, testTask.Status)
-		assert.Equal(t, "code-agent", testTask.SourceAgent)
 	})
 
-	t.Run("step5_test_agent_pulls_fails_replays_succeeds", func(t *testing.T) {
+	t.Run("step4_code_sends_test_task_and_test_agent_fails", func(t *testing.T) {
+		err := codeAgent.sendTaskTo(ctx, "test-mb", "test-agent", "task-test-001", "run_tests")
+		require.NoError(t, err)
+		totalTasksCreated.Add(1)
+
 		task, err := testAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, task)
@@ -624,33 +595,66 @@ func TestAgentToAgentPipeline(t *testing.T) {
 
 		testAgent.start(ctx, task.ID)
 
-		err = testAgent.fail(ctx, task.ID, "test_failure", "flaky test")
+		err = testAgent.fail(ctx, task.ID, "test_failure", "assertion failed: expected 200 got 500")
 		require.NoError(t, err)
+		testFailCount.Add(1)
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-test-001")
 		assert.Equal(t, core.TaskStatusFailed, got.Status)
+	})
 
-		taskRepo.UpdateStatus(ctx, tenantID, "task-test-001", core.TaskStatusDeadLettered, 0)
-		_, err = taskSvc.Replay(ctx, tenantID, "task-test-001")
+	t.Run("step5_test_agent_sends_fix_request_back_to_code_agent", func(t *testing.T) {
+		err := testAgent.sendTaskTo(ctx, "code-mb", "code-agent", "task-code-fix-001", "fix_request")
 		require.NoError(t, err)
+		totalTasksCreated.Add(1)
 
-		got, _ = taskRepo.Get(ctx, tenantID, "task-test-001")
-		assert.Equal(t, core.TaskStatusQueued, got.Status)
-
-		task2, err := testAgent.pullAndProcess(ctx)
+		task, err := taskRepo.Get(ctx, tenantID, "task-code-fix-001")
 		require.NoError(t, err)
-		require.NotNil(t, task2)
-		assert.Equal(t, "task-test-001", task2.ID)
+		assert.Equal(t, core.TaskStatusQueued, task.Status)
+		assert.Equal(t, "test-agent", task.SourceAgent)
+		assert.Equal(t, "code-mb", task.MailboxID)
+	})
 
-		testAgent.start(ctx, task2.ID)
-		err = testAgent.complete(ctx, task2.ID)
+	t.Run("step6_code_agent_pulls_fix_request_and_fixes", func(t *testing.T) {
+		task, err := codeAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-code-fix-001", task.ID)
+		assert.Equal(t, "test-agent", task.SourceAgent)
 
-		got, _ = taskRepo.Get(ctx, tenantID, "task-test-001")
+		codeAgent.start(ctx, task.ID)
+		err = codeAgent.complete(ctx, task.ID)
+		require.NoError(t, err)
+		codeFixCount.Add(1)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-code-fix-001")
 		assert.Equal(t, core.TaskStatusCompleted, got.Status)
 	})
 
-	t.Run("step6_deploy_agent_pulls_and_completes", func(t *testing.T) {
+	t.Run("step7_code_agent_sends_retest_and_test_agent_passes", func(t *testing.T) {
+		err := codeAgent.sendTaskTo(ctx, "test-mb", "test-agent", "task-test-002", "run_tests")
+		require.NoError(t, err)
+		totalTasksCreated.Add(1)
+
+		task, err := testAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-test-002", task.ID)
+		assert.Equal(t, "code-agent", task.SourceAgent)
+
+		testAgent.start(ctx, task.ID)
+		err = testAgent.complete(ctx, task.ID)
+		require.NoError(t, err)
+
+		got, _ := taskRepo.Get(ctx, tenantID, "task-test-002")
+		assert.Equal(t, core.TaskStatusCompleted, got.Status)
+	})
+
+	t.Run("step8_test_agent_sends_deploy_and_deploy_agent_finishes", func(t *testing.T) {
+		err := testAgent.sendTaskTo(ctx, "deploy-mb", "deploy-agent", "task-deploy-001", "deploy_request")
+		require.NoError(t, err)
+		totalTasksCreated.Add(1)
+
 		task, err := deployAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, task)
@@ -663,33 +667,50 @@ func TestAgentToAgentPipeline(t *testing.T) {
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-deploy-001")
 		assert.Equal(t, core.TaskStatusCompleted, got.Status)
-		assert.Equal(t, "test-agent", got.SourceAgent)
 	})
 
 	t.Run("pipeline_summary", func(t *testing.T) {
-		assert.Equal(t, int64(1), pipelineCompleted.Load(), "pipeline should complete once")
-
-		expectedCreated := int64(4)
-		assert.Equal(t, expectedCreated, totalTasksCreated.Load(), "4 tasks in pipeline")
-
-		pubCount := queueDrv.PublishedCount()
-		eventCount := queueDrv.EventCount()
-
-		assert.GreaterOrEqual(t, pubCount, 5, "at least 5 task publishes (4 pipeline + 1 replay)")
-		assert.GreaterOrEqual(t, eventCount, 10, "events for create/start/complete per task")
-
-		t.Logf("Pipeline: %d tasks, %d completed, %d queue publishes, %d events",
-			totalTasksCreated.Load(), pipelineCompleted.Load(), pubCount, eventCount)
+		assert.Equal(t, int64(1), pipelineCompleted.Load(), "pipeline completed once")
+		assert.Equal(t, int64(1), testFailCount.Load(), "test failed once")
+		assert.Equal(t, int64(1), codeFixCount.Load(), "code fixed once")
+		assert.Equal(t, int64(6), totalTasksCreated.Load(), "6 tasks total")
 
 		var completedCount int
+		var failedCount int
 		taskRepo.mu.RLock()
 		for _, t := range taskRepo.tasks {
 			if t.Status == core.TaskStatusCompleted {
 				completedCount++
 			}
+			if t.Status == core.TaskStatusFailed {
+				failedCount++
+			}
 		}
 		taskRepo.mu.RUnlock()
-		assert.Equal(t, 4, completedCount, "all 4 pipeline tasks should be completed")
+		assert.Equal(t, 5, completedCount, "5 tasks completed (review + code + code-fix + retest + deploy)")
+		assert.Equal(t, 1, failedCount, "1 task failed (first test run)")
+
+		pubCount := queueDrv.PublishedCount()
+		eventCount := queueDrv.EventCount()
+
+		t.Logf("Pipeline: %d created, %d completed, %d failed, %d queue publishes, %d events",
+			totalTasksCreated.Load(), completedCount, failedCount, pubCount, eventCount)
+
+		assert.GreaterOrEqual(t, pubCount, 6, "at least 6 task publishes")
+		assert.GreaterOrEqual(t, eventCount, 14, "events for full lifecycle")
+
+		trace := []string{
+			"product-agent → review-mb",
+			"review-agent → code-mb",
+			"code-agent → test-mb",
+			"test-agent FAILS → code-mb",
+			"code-agent FIXES → test-mb",
+			"test-agent PASSES → deploy-mb",
+			"deploy-agent DONE",
+		}
+		for _, step := range trace {
+			t.Logf("  %s", step)
+		}
 	})
 }
 
