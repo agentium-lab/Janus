@@ -12,6 +12,7 @@ import (
 type auditService interface {
 	QueryByTask(ctx context.Context, tenantID, taskID string, limit int) ([]*core.JanusEvent, error)
 	QueryByTrace(ctx context.Context, tenantID, traceID string, limit int) ([]*core.JanusEvent, error)
+	QueryByTenant(ctx context.Context, tenantID string, limit int) ([]*core.JanusEvent, error)
 }
 
 type AuditServiceServer struct {
@@ -38,7 +39,11 @@ func (s *AuditServiceServer) ListEvents(ctx context.Context, req *pb.ListEventsR
 		}
 		return &pb.ListEventsResponse{Events: eventsToProto(events)}, nil
 	default:
-		return &pb.ListEventsResponse{}, nil
+		events, err := s.svc.QueryByTenant(ctx, req.TenantId, int(req.PageSize))
+		if err != nil {
+			return nil, err
+		}
+		return &pb.ListEventsResponse{Events: eventsToProto(events)}, nil
 	}
 }
 

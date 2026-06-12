@@ -547,7 +547,7 @@ func TestTaskService_Idempotency(t *testing.T) {
 
 func TestTaskService_Lifecycle(t *testing.T) {
 	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
-		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusClaimed},
 	}}
 	qd := &mockQueueDriver{}
 	svc := NewTaskService(taskRepo, qd, nil, nil)
@@ -1004,7 +1004,7 @@ func TestTaskService_TransitionUpdateError(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("update fail")}, &mockQueueDriver{}, nil, nil)
 	err := svc.Start(context.Background(), "acme", "t1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "update task status")
+	assert.Contains(t, err.Error(), "update fail")
 }
 
 func TestTaskService_ListByStatusDefault(t *testing.T) {

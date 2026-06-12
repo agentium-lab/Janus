@@ -1,4 +1,4 @@
-create table outbox_events (
+create table if not exists outbox_events (
     id           text primary key,
     tenant_id    text not null,
     kind         text not null,
@@ -9,4 +9,4 @@ create table outbox_events (
     published_at timestamptz
 );
 
-create index outbox_pending_idx on outbox_events (status, created_at) where status = 'pending';
+create index if not exists outbox_pending_idx on outbox_events (status, created_at) where status = 'pending';

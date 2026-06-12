@@ -90,3 +90,36 @@ func (r *EventRepo) ListByTrace(ctx context.Context, tenantID, traceID string, l
 	}
 	return events, rows.Err()
 }
+
+func (r *EventRepo) ListByTenant(ctx context.Context, tenantID string, limit int) ([]*core.JanusEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT event_id, event_type, task_id, agent_id, trace_id, occurred_at, payload
+		 FROM audit_event_projection
+		 WHERE tenant_id = $1
+		 ORDER BY occurred_at DESC
+		 LIMIT $2`,
+		tenantID, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query audit events by tenant: %w", err)
+	}
+	defer rows.Close()
+
+	var events []*core.JanusEvent
+	for rows.Next() {
+		var evt core.JanusEvent
+		var agentID *string
+		if err := rows.Scan(&evt.EventID, &evt.EventType, &evt.TaskID, &agentID, &evt.TraceID, &evt.Timestamp, &evt.Payload); err != nil {
+			return nil, fmt.Errorf("scan audit event: %w", err)
+		}
+		if agentID != nil {
+			evt.SourceAgent = *agentID
+		}
+		evt.TenantID = tenantID
+		events = append(events, &evt)
+	}
+	return events, rows.Err()
+}

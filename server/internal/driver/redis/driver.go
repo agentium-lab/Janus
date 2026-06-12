@@ -3,8 +3,6 @@ package redis
 import (
 	"context"
 	"fmt"
-	"strconv"
-	"strings"
 	"time"
 
 	go_redis "github.com/redis/go-redis/v9"
@@ -13,9 +11,8 @@ import (
 )
 
 const (
-	heartbeatKeyPrefix = "agent:heartbeat:"
+	heartbeatSetPrefix = "agent:heartbeat:"
 	heartbeatTTL       = 60 * time.Second
-	scanBatchSize      = 100
 )
 
 type Config struct {
@@ -47,66 +44,47 @@ func NewDriver(cfg Config) (*Driver, error) {
 }
 
 func (d *Driver) Ping(ctx context.Context, tenantID, agentID string) error {
-	key := heartbeatKey(tenantID, agentID)
-	now := time.Now().UTC().UnixMilli()
-	return d.rdb.Set(ctx, key, now, heartbeatTTL).Err()
+	key := heartbeatSetKey(tenantID)
+	expireAt := float64(time.Now().Add(heartbeatTTL).UTC().UnixMilli())
+	return d.rdb.ZAdd(ctx, key, go_redis.Z{
+		Score:  expireAt,
+		Member: agentID,
+	}).Err()
 }
 
 func (d *Driver) GetLastHeartbeat(ctx context.Context, tenantID, agentID string) (*time.Time, error) {
-	key := heartbeatKey(tenantID, agentID)
-	val, err := d.rdb.Get(ctx, key).Result()
+	key := heartbeatSetKey(tenantID)
+	score, err := d.rdb.ZScore(ctx, key, agentID).Result()
 	if err == go_redis.Nil {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get heartbeat %s: %w", key, err)
+		return nil, fmt.Errorf("get heartbeat %s/%s: %w", tenantID, agentID, err)
 	}
 
-	ms, err := strconv.ParseInt(val, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("parse heartbeat timestamp: %w", err)
-	}
-
-	t := time.UnixMilli(ms).UTC()
-	return &t, nil
+	expireAtMs := int64(score)
+	lastPing := time.UnixMilli(expireAtMs - heartbeatTTL.Milliseconds()).UTC()
+	return &lastPing, nil
 }
 
 func (d *Driver) ScanExpired(ctx context.Context, tenantID string) ([]string, error) {
-	pattern := heartbeatKey(tenantID, "*")
-	var expiredAgents []string
+	key := heartbeatSetKey(tenantID)
+	now := float64(time.Now().UTC().UnixMilli())
 
-	var cursor uint64
-	for {
-		keys, nextCursor, err := d.rdb.Scan(ctx, cursor, pattern, scanBatchSize).Result()
-		if err != nil {
-			return nil, fmt.Errorf("scan heartbeats for tenant %s: %w", tenantID, err)
-		}
-
-		if len(keys) > 0 {
-			for _, key := range keys {
-				ttl, err := d.rdb.TTL(ctx, key).Result()
-				if err != nil {
-					continue
-				}
-				if ttl < 0 {
-					agentID := extractAgentID(key, tenantID)
-					expiredAgents = append(expiredAgents, agentID)
-				}
-			}
-		}
-
-		cursor = nextCursor
-		if cursor == 0 {
-			break
-		}
+	members, err := d.rdb.ZRangeByScore(ctx, key, &go_redis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%f", now),
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("scan expired heartbeats for tenant %s: %w", tenantID, err)
 	}
 
-	return expiredAgents, nil
+	return members, nil
 }
 
 func (d *Driver) Remove(ctx context.Context, tenantID, agentID string) error {
-	key := heartbeatKey(tenantID, agentID)
-	return d.rdb.Del(ctx, key).Err()
+	key := heartbeatSetKey(tenantID)
+	return d.rdb.ZRem(ctx, key, agentID).Err()
 }
 
 func (d *Driver) Close() error {
@@ -154,13 +132,8 @@ func (d *Driver) CheckTPM(ctx context.Context, tenantID, scopeType, scopeID stri
 	return nil
 }
 
-func heartbeatKey(tenantID, agentID string) string {
-	return fmt.Sprintf("%s%s:%s", heartbeatKeyPrefix, tenantID, agentID)
-}
-
-func extractAgentID(key, tenantID string) string {
-	prefix := fmt.Sprintf("%s%s:", heartbeatKeyPrefix, tenantID)
-	return strings.TrimPrefix(key, prefix)
+func heartbeatSetKey(tenantID string) string {
+	return fmt.Sprintf("%s%s", heartbeatSetPrefix, tenantID)
 }
 
 var _ core.HeartbeatDriver = (*Driver)(nil)

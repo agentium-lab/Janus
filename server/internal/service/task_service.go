@@ -90,12 +90,14 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		err := s.createWithOutbox(ctx, task)
 		if err == nil {
 			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+			return &task, nil
 		}
 		return nil, err
 	}
 	err := s.createDirect(ctx, task)
 	if err == nil {
 		metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+		return &task, nil
 	}
 	return nil, err
 }
@@ -127,7 +129,7 @@ func (s *TaskService) createWithOutbox(ctx context.Context, task core.Task) erro
 		return fmt.Errorf("outbox insert created: %w", err)
 	}
 
-	if task.MailboxID != "" {
+	if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
 		payload, _ := json.Marshal(task.Envelope)
 		queuePayload, _ := json.Marshal(core.TaskMessage{
 			TenantID:  task.TenantID,
@@ -174,7 +176,7 @@ func (s *TaskService) createDirect(ctx context.Context, task core.Task) error {
 		return fmt.Errorf("publish created event: %w", err)
 	}
 
-	if task.MailboxID != "" {
+	if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
 		payload, err := json.Marshal(task.Envelope)
 		if err != nil {
 			return fmt.Errorf("marshal envelope: %w", err)
@@ -322,6 +324,16 @@ func (s *TaskService) ListByStatus(ctx context.Context, tenantID string, status 
 func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, status core.TaskStatus, eventType core.EventType, attemptInc int) error {
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
+	}
+	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for transition: %w", err)
+	}
+	if current.Status.IsTerminal() {
+		return fmt.Errorf("task %s is in terminal state %s, cannot transition to %s", taskID, current.Status, status)
+	}
+	if !core.CanTransition(current.Status, status) {
+		return fmt.Errorf("invalid transition: %s -> %s for task %s", current.Status, status, taskID)
 	}
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, status, attemptInc); err != nil {
 		return fmt.Errorf("update task status to %s: %w", status, err)

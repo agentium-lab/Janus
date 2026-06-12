@@ -58,6 +58,22 @@ func (m *mockEventRepo) ListByTrace(_ context.Context, tenantID, traceID string,
 	return result, nil
 }
 
+func (m *mockEventRepo) ListByTenant(_ context.Context, tenantID string, limit int) ([]*core.JanusEvent, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var result []*core.JanusEvent
+	for i := range m.events {
+		e := &m.events[i]
+		if e.TenantID == tenantID {
+			result = append(result, e)
+		}
+		if len(result) >= limit {
+			break
+		}
+	}
+	return result, nil
+}
+
 func TestEventService_Record(t *testing.T) {
 	repo := &mockEventRepo{}
 	svc := NewEventService(repo)

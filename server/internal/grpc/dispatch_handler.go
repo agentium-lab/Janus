@@ -27,7 +27,7 @@ func NewDispatchServiceServer(s *svc.DispatchService) *DispatchServiceServer {
 }
 
 func (s *DispatchServiceServer) PullTask(ctx context.Context, req *pb.PullTaskRequest) (*pb.PullTaskResponse, error) {
-	result, err := s.svc.PullTask(ctx, req.TenantId, req.MailboxId, "")
+	result, err := s.svc.PullTask(ctx, req.TenantId, req.MailboxId, req.GetAgentId())
 	if err != nil {
 		return nil, err
 	}

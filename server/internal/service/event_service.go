@@ -15,6 +15,7 @@ type EventRepo interface {
 	Insert(ctx context.Context, evt core.JanusEvent) error
 	ListByTask(ctx context.Context, tenantID, taskID string, limit int) ([]*core.JanusEvent, error)
 	ListByTrace(ctx context.Context, tenantID, traceID string, limit int) ([]*core.JanusEvent, error)
+	ListByTenant(ctx context.Context, tenantID string, limit int) ([]*core.JanusEvent, error)
 }
 
 type EventService struct {
@@ -54,6 +55,13 @@ func (s *EventService) QueryByTrace(ctx context.Context, tenantID, traceID strin
 		limit = 50
 	}
 	return s.repo.ListByTrace(ctx, tenantID, traceID, limit)
+}
+
+func (s *EventService) QueryByTenant(ctx context.Context, tenantID string, limit int) ([]*core.JanusEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	return s.repo.ListByTenant(ctx, tenantID, limit)
 }
 
 func generateEventID() (string, error) {

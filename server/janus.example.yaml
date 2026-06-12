@@ -1,0 +1,29 @@
+http_port: 8080
+grpc_port: 9090
+
+postgres:
+  host: localhost
+  port: 5432
+  user: janus
+  password: ""
+  database: janus
+  max_conns: 20
+
+nats:
+  url: "nats://localhost:4222"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+migration:
+  auto: true
+  path: "migrations/"
+
+heartbeat:
+  sweeper_interval: "30s"
+  ttl: "60s"
+
+auth:
+  enabled: false

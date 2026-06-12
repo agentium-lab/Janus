@@ -39,7 +39,8 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
 		 FROM outbox_events
-		 WHERE status = 'pending'
+		 WHERE status IN ('pending', 'retry')
+		   AND (next_attempt_at IS NULL OR next_attempt_at <= now())
 		 ORDER BY created_at ASC
 		 LIMIT $1 FOR UPDATE SKIP LOCKED`, limit,
 	)
@@ -67,10 +68,16 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, id string) error {
 	return err
 }
 
+const maxOutboxRetries = 5
+
 func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
 	_, err := r.pool.Exec(ctx,
-		`UPDATE outbox_events SET status = 'failed', attempts = attempts + 1 WHERE id = $1`,
-		id,
+		`UPDATE outbox_events
+		 SET status = CASE WHEN attempts + 1 >= $2 THEN 'dead' ELSE 'retry' END,
+		     attempts = attempts + 1,
+		     next_attempt_at = CASE WHEN attempts + 1 < $2 THEN now() + interval '5 seconds' * (attempts + 1) ^ 2 ELSE NULL END
+		 WHERE id = $1`,
+		id, maxOutboxRetries,
 	)
 	return err
 }

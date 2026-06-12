@@ -30,6 +30,7 @@ type PullTaskRequest struct {
 	MailboxId     string                 `protobuf:"bytes,2,opt,name=mailbox_id,json=mailboxId,proto3" json:"mailbox_id,omitempty"`
 	MaxMessages   int32                  `protobuf:"varint,3,opt,name=max_messages,json=maxMessages,proto3" json:"max_messages,omitempty"`
 	WaitTime      *durationpb.Duration   `protobuf:"bytes,4,opt,name=wait_time,json=waitTime,proto3" json:"wait_time,omitempty"`
+	AgentId       string                 `protobuf:"bytes,5,opt,name=agent_id,json=agentId,proto3" json:"agent_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -90,6 +91,13 @@ func (x *PullTaskRequest) GetWaitTime() *durationpb.Duration {
 		return x.WaitTime
 	}
 	return nil
+}
+
+func (x *PullTaskRequest) GetAgentId() string {
+	if x != nil {
+		return x.AgentId
+	}
+	return ""
 }
 
 type Lease struct {

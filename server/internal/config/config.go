@@ -2,28 +2,31 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
-	"strconv"
+	"strings"
+
+	"github.com/spf13/viper"
 )
 
 type Config struct {
-	HTTPPort   int
-	GRPCPort   int
-	Postgres   PostgresConfig
-	NATS       NATSConfig
-	Redis      RedisConfig
-	Migration  MigrationConfig
-	Heartbeat  HeartbeatConfig
-	Auth       AuthConfig
+	HTTPPort   int            `mapstructure:"http_port"`
+	GRPCPort   int            `mapstructure:"grpc_port"`
+	Postgres   PostgresConfig `mapstructure:"postgres"`
+	NATS       NATSConfig     `mapstructure:"nats"`
+	Redis      RedisConfig    `mapstructure:"redis"`
+	Migration  MigrationConfig `mapstructure:"migration"`
+	Heartbeat  HeartbeatConfig `mapstructure:"heartbeat"`
+	Auth       AuthConfig     `mapstructure:"auth"`
 }
 
 type PostgresConfig struct {
-	Host     string
-	Port     int
-	User     string
-	Password string
-	Database string
-	MaxConns int
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	Database string `mapstructure:"database"`
+	MaxConns int    `mapstructure:"max_conns"`
 }
 
 func (p PostgresConfig) DSN() string {
@@ -31,90 +34,110 @@ func (p PostgresConfig) DSN() string {
 		p.User, p.Password, p.Host, p.Port, p.Database)
 }
 
-type NATSConfig struct {
-	URL string
-}
-
-type RedisConfig struct {
-	Addr     string
-	Password string
-	DB       int
-}
-
-type MigrationConfig struct {
-	Auto bool
-	Path string
-}
-
-type HeartbeatConfig struct {
-	SweeperInterval string
-	TTL             string
-}
-
-type AuthConfig struct {
-	Enabled bool
-}
-
 func (p PostgresConfig) ConnStr() string {
 	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
 		p.Host, p.Port, p.User, p.Password, p.Database)
 }
 
-// Load reads configuration from environment variables with sensible defaults.
+type NATSConfig struct {
+	URL string `mapstructure:"url"`
+}
+
+type RedisConfig struct {
+	Addr     string `mapstructure:"addr"`
+	Password string `mapstructure:"password"`
+	DB       int    `mapstructure:"db"`
+}
+
+type MigrationConfig struct {
+	Auto bool   `mapstructure:"auto"`
+	Path string `mapstructure:"path"`
+}
+
+type HeartbeatConfig struct {
+	SweeperInterval string `mapstructure:"sweeper_interval"`
+	TTL             string `mapstructure:"ttl"`
+}
+
+type AuthConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 func Load() *Config {
-	return &Config{
-		HTTPPort: getEnvInt("JANUS_HTTP_PORT", 8080),
-		Postgres: PostgresConfig{
-			Host:     getEnv("JANUS_PG_HOST", "localhost"),
-			Port:     getEnvInt("JANUS_PG_PORT", 5432),
-			User:     getEnv("JANUS_PG_USER", "janus"),
-			Password: getEnv("JANUS_PG_PASSWORD", ""),
-			Database: getEnv("JANUS_PG_DATABASE", "janus"),
-			MaxConns: getEnvInt("JANUS_PG_MAX_CONNS", 20),
-		},
-		NATS: NATSConfig{
-			URL: getEnv("JANUS_NATS_URL", "nats://localhost:4222"),
-		},
-		Redis: RedisConfig{
-			Addr:     getEnv("JANUS_REDIS_ADDR", "localhost:6379"),
-			Password: getEnv("JANUS_REDIS_PASSWORD", ""),
-			DB:       getEnvInt("JANUS_REDIS_DB", 0),
-		},
-		Migration: MigrationConfig{
-			Auto: getEnvBool("JANUS_MIGRATION_AUTO", true),
-			Path: getEnv("JANUS_MIGRATION_PATH", "migrations/"),
-		},
-		Heartbeat: HeartbeatConfig{
-			SweeperInterval: getEnv("JANUS_HB_SWEEPER_INTERVAL", "30s"),
-			TTL:             getEnv("JANUS_HB_TTL", "60s"),
-		},
-		Auth: AuthConfig{
-			Enabled: getEnvBool("JANUS_AUTH_ENABLED", false),
-		},
-	}
-}
+	v := viper.New()
 
-func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
-}
+	setDefaults(v)
+	bindEnvVars(v)
 
-func getEnvInt(key string, fallback int) int {
-	if v := os.Getenv(key); v != "" {
-		if i, err := strconv.Atoi(v); err == nil {
-			return i
+	v.SetConfigName("janus")
+	v.SetConfigType("yaml")
+	v.AddConfigPath(".")
+	v.AddConfigPath("/etc/janus/")
+	v.AddConfigPath("$HOME/.janus/")
+
+	if configPath := os.Getenv("JANUS_CONFIG_FILE"); configPath != "" {
+		v.SetConfigFile(configPath)
+	}
+
+	if err := v.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			log.Printf("warning: error reading config file: %v", err)
 		}
 	}
-	return fallback
+
+	var cfg Config
+	if err := v.Unmarshal(&cfg); err != nil {
+		log.Fatalf("failed to unmarshal config: %v", err)
+	}
+
+	return &cfg
 }
 
-func getEnvBool(key string, fallback bool) bool {
-	if v := os.Getenv(key); v != "" {
-		if b, err := strconv.ParseBool(v); err == nil {
-			return b
-		}
+func setDefaults(v *viper.Viper) {
+	v.SetDefault("http_port", 8080)
+	v.SetDefault("grpc_port", 9090)
+	v.SetDefault("postgres.host", "localhost")
+	v.SetDefault("postgres.port", 5432)
+	v.SetDefault("postgres.user", "janus")
+	v.SetDefault("postgres.password", "")
+	v.SetDefault("postgres.database", "janus")
+	v.SetDefault("postgres.max_conns", 20)
+	v.SetDefault("nats.url", "nats://localhost:4222")
+	v.SetDefault("redis.addr", "localhost:6379")
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("migration.auto", true)
+	v.SetDefault("migration.path", "migrations/")
+	v.SetDefault("heartbeat.sweeper_interval", "30s")
+	v.SetDefault("heartbeat.ttl", "60s")
+	v.SetDefault("auth.enabled", false)
+}
+
+func bindEnvVars(v *viper.Viper) {
+	envBindings := map[string]string{
+		"JANUS_HTTP_PORT":             "http_port",
+		"JANUS_GRPC_PORT":             "grpc_port",
+		"JANUS_PG_HOST":               "postgres.host",
+		"JANUS_PG_PORT":               "postgres.port",
+		"JANUS_PG_USER":               "postgres.user",
+		"JANUS_PG_PASSWORD":           "postgres.password",
+		"JANUS_PG_DATABASE":           "postgres.database",
+		"JANUS_PG_MAX_CONNS":          "postgres.max_conns",
+		"JANUS_NATS_URL":              "nats.url",
+		"JANUS_REDIS_ADDR":            "redis.addr",
+		"JANUS_REDIS_PASSWORD":        "redis.password",
+		"JANUS_REDIS_DB":              "redis.db",
+		"JANUS_MIGRATION_AUTO":        "migration.auto",
+		"JANUS_MIGRATION_PATH":        "migration.path",
+		"JANUS_HB_SWEEPER_INTERVAL":   "heartbeat.sweeper_interval",
+		"JANUS_HB_TTL":                "heartbeat.ttl",
+		"JANUS_AUTH_ENABLED":          "auth.enabled",
 	}
-	return fallback
+
+	v.SetEnvPrefix("")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+
+	for env, key := range envBindings {
+		v.BindEnv(key, env)
+	}
 }

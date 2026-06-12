@@ -11,9 +11,10 @@ import (
 )
 
 type mockAuditService struct {
-	taskEvents  []*core.JanusEvent
-	traceEvents []*core.JanusEvent
-	err         error
+	taskEvents   []*core.JanusEvent
+	traceEvents  []*core.JanusEvent
+	tenantEvents []*core.JanusEvent
+	err          error
 }
 
 func (m *mockAuditService) QueryByTask(_ context.Context, tenantID, taskID string, limit int) ([]*core.JanusEvent, error) {
@@ -28,6 +29,13 @@ func (m *mockAuditService) QueryByTrace(_ context.Context, tenantID, traceID str
 		return nil, m.err
 	}
 	return m.traceEvents, nil
+}
+
+func (m *mockAuditService) QueryByTenant(_ context.Context, tenantID string, limit int) ([]*core.JanusEvent, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.tenantEvents, nil
 }
 
 func makeTestEvent(id, eventType, tenantID, taskID, traceID string) *core.JanusEvent {

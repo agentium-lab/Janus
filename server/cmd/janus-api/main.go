@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -70,6 +71,7 @@ func main() {
 	mailboxRepo := pgdriver.NewMailboxRepository(pool)
 	attemptRepo := pgdriver.NewTaskAttemptRepository(pool)
 	budgetRepo := pgdriver.NewBudgetRepository(pool)
+	budgetUsageRepo := pgdriver.NewBudgetUsageRepo(pool)
 	policyRuleRepo := pgdriver.NewPolicyRuleRepository(pool)
 	eventRepo := pgdriver.NewEventRepo(pool)
 	outboxRepo := pgdriver.NewOutboxRepo(pool)
@@ -79,7 +81,7 @@ func main() {
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
-	budgetSvc := service.NewBudgetService(budgetRepo).WithRateLimiter(redisDrv)
+	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(redisDrv)
 	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
@@ -140,8 +142,21 @@ func main() {
 
 	combined := http.NewServeMux()
 	combined.Handle("/metrics", promhttp.Handler())
-	combined.Handle("/v1/", gwMux)
+	combined.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	combined.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := pool.Ping(r.Context()); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]string{"status": "unavailable", "error": err.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	}))
 	combined.Handle("/", mux)
+	combined.Handle("/grpc/", http.StripPrefix("/grpc", gwMux))
 
 	var handler http.Handler = combined
 	if cfg.Auth.Enabled {
@@ -151,17 +166,16 @@ func main() {
 		}
 		defer pgDB.Close()
 		validator := auth.NewAPIKeyValidator(pgDB)
-		handler = auth.Middleware(validator)(mux)
+		handler = auth.Middleware(validator)(combined)
 		log.Println("api key authentication enabled")
 	} else {
 		log.Println("WARNING: authentication disabled (JANUS_AUTH_ENABLED=false)")
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	log.Printf("janus-api listening on %s", addr)
+	log.Printf("janus-api listening HTTP=%s gRPC=%s", addr, grpcAddr)
 
 	srv := &http.Server{Addr: addr, Handler: handler}
-
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("http: %v", err)
@@ -376,5 +390,5 @@ func (a *auditAdapter) QueryByTrace(ctx context.Context, tenantID, traceID strin
 }
 
 func (a *auditAdapter) QueryByTenant(ctx context.Context, tenantID string, limit int) (interface{}, error) {
-	return []struct{}{}, nil
+	return a.svc.QueryByTenant(ctx, tenantID, limit)
 }
