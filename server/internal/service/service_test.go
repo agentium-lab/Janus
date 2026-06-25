@@ -44,6 +44,17 @@ func (m *mockTenantRepo) GetName(_ context.Context, id string) (string, error) {
 	return name, nil
 }
 
+func (m *mockTenantRepo) ListIDs(_ context.Context) ([]string, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	var ids []string
+	for id := range m.tenants {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 func TestTenantService_Create(t *testing.T) {
 	svc := NewTenantService(&mockTenantRepo{})
 	ctx := context.Background()
@@ -156,7 +167,7 @@ func (m *mockAgentRepo) ListByStatus(_ context.Context, tenantID string, status 
 }
 
 func (m *mockAgentRepo) ListAllByStatus(_ context.Context, status core.AgentStatus) ([]*core.Agent, error) {
-	return m.ListByStatus(nil, "", status)
+	return m.ListByStatus(context.Background(), "", status)
 }
 
 func (m *mockAgentRepo) FindByCapability(_ context.Context, tenantID, capability string) ([]*core.Agent, error) {
@@ -491,7 +502,25 @@ func (m *mockTaskRepo) CountByStatus(_ context.Context, tenantID string, status 
 	return count, nil
 }
 
-func (m *mockTaskRepo) ResetForReplay(_ context.Context, _, _ string) error {
+func (m *mockTaskRepo) CountRunningByAgent(_ context.Context, tenantID, agentID string) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	count := 0
+	for _, t := range m.tasks {
+		if t.TenantID == tenantID && t.SourceAgent == agentID && (t.Status == core.TaskStatusClaimed || t.Status == core.TaskStatusRunning) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (m *mockTaskRepo) ResetForReplay(_ context.Context, tenantID, taskID string) error {
+	key := tenantID + ":" + taskID
+	if t, ok := m.tasks[key]; ok {
+		t.Status = core.TaskStatusCreated
+		t.AttemptCount = 0
+	}
 	return nil
 }
 
@@ -626,6 +655,98 @@ func TestTaskService_Cancel(t *testing.T) {
 	require.NoError(t, svc.Cancel(ctx, "acme", "t1"))
 	got, _ := svc.Get(ctx, "acme", "t1")
 	assert.Equal(t, core.TaskStatusCancelled, got.Status)
+}
+
+func TestTaskService_Block(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	ctx := context.Background()
+
+	require.NoError(t, svc.Block(ctx, "acme", "t1", "manual block"))
+	got, _ := svc.Get(ctx, "acme", "t1")
+	assert.Equal(t, core.TaskStatusBlocked, got.Status)
+}
+
+func TestTaskService_Block_Validation(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	assert.EqualError(t, svc.Block(context.Background(), "", "t1", "x"), "tenant id and task id are required")
+	assert.EqualError(t, svc.Block(context.Background(), "acme", "", "x"), "tenant id and task id are required")
+}
+
+func TestTaskService_Unblock(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusBlocked},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	ctx := context.Background()
+
+	require.NoError(t, svc.Unblock(ctx, "acme", "t1"))
+	got, _ := svc.Get(ctx, "acme", "t1")
+	assert.Equal(t, core.TaskStatusRunning, got.Status)
+}
+
+func TestTaskService_Replay(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {
+			ID: "t1", TenantID: "acme", Status: core.TaskStatusCompleted,
+			MailboxID: "mb1", Envelope: core.TaskEnvelope{TaskID: "t1"},
+		},
+	}}
+	qd := &mockQueueDriver{}
+	svc := NewTaskService(taskRepo, qd, nil, nil)
+	ctx := context.Background()
+
+	result, err := svc.Replay(ctx, "acme", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, core.TaskStatusQueued, result.Status)
+	assert.Len(t, qd.publishedTasks, 1)
+}
+
+func TestTaskService_Replay_NoMailbox(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusCompleted},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	ctx := context.Background()
+
+	result, err := svc.Replay(ctx, "acme", "t1")
+	require.NoError(t, err)
+	assert.Equal(t, core.TaskStatusCreated, result.Status)
+}
+
+func TestTaskService_Replay_NotTerminal(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	_, err := svc.Replay(context.Background(), "acme", "t1")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "only terminal tasks can be replayed")
+}
+
+func TestTaskService_Replay_Validation(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	_, err := svc.Replay(context.Background(), "", "t1", )
+	assert.EqualError(t, err, "tenant id and task id are required")
+}
+
+func TestTaskService_WithApproval(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	s2 := svc.WithApproval(nil)
+	assert.Same(t, svc, s2)
+}
+
+func TestTaskService_WithLifecycle(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	s2 := svc.WithLifecycle(nil)
+	assert.Same(t, svc, s2)
+}
+
+func TestLifecycleService_New(t *testing.T) {
+	ls := NewLifecycleService(nil)
+	assert.NotNil(t, ls)
 }
 
 func TestTaskService_ListByStatus(t *testing.T) {
@@ -910,7 +1031,7 @@ func (m *mockAgentRepoFailOn) ListByStatus(_ context.Context, tenantID string, s
 }
 
 func (m *mockAgentRepoFailOn) ListAllByStatus(_ context.Context, status core.AgentStatus) ([]*core.Agent, error) {
-	return m.ListByStatus(nil, "", status)
+	return m.ListByStatus(context.Background(), "", status)
 }
 
 func (m *mockAgentRepoFailOn) FindByCapability(_ context.Context, tenantID, capability string) ([]*core.Agent, error) {
@@ -1042,6 +1163,9 @@ func (m *mockTaskRepoFailUpdate) UpdateStatusWithCheck(_ context.Context, _, _ s
 func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error { return nil }
 func (m *mockTaskRepoFailUpdate) SetResultRef(_ context.Context, _, _, _ string) error { return nil }
 func (m *mockTaskRepoFailUpdate) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
+	return 0, nil
+}
+func (m *mockTaskRepoFailUpdate) CountRunningByAgent(_ context.Context, _, _ string) (int, error) {
 	return 0, nil
 }
 func (m *mockTaskRepoFailUpdate) ListByStatus(_ context.Context, _ string, _ core.TaskStatus, _ int) ([]*core.Task, error) {
@@ -1264,4 +1388,66 @@ func TestAgentService_ResolveCapability_RepoError(t *testing.T) {
 
 	_, err := svc.ResolveCapability(ctx, "acme", "review")
 	assert.Error(t, err)
+}
+
+func TestApprovalService_WithOutbox(t *testing.T) {
+	svc := NewApprovalService(&mockApprovalRepo{}, nil, nil)
+	s2 := svc.WithOutbox(nil)
+	assert.Same(t, svc, s2)
+}
+
+func TestDispatchService_WithLifecycle(t *testing.T) {
+	svc := NewDispatchService(&mockDispatchTaskRepo{}, &mockDispatchAttemptRepo{}, &mockDispatchMailboxRepo{}, &mockQueueDriver{}, nil, nil)
+	s2 := svc.WithLifecycle(nil, nil, nil)
+	assert.Same(t, svc, s2)
+}
+
+func TestMailboxService_UpdateConfig(t *testing.T) {
+	mbRepo := &mockMailboxRepo{}
+	svc := NewMailboxService(mbRepo, &mockQueueDriver{})
+	err := svc.UpdateConfig(context.Background(), "acme", "mb1", 5, 30, 3, 3600)
+	assert.NoError(t, err)
+}
+
+func TestMailboxService_UpdateConfig_Validation(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, &mockQueueDriver{})
+	err := svc.UpdateConfig(context.Background(), "", "mb1", 5, 30, 3, 3600)
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+	err = svc.UpdateConfig(context.Background(), "acme", "", 5, 30, 3, 3600)
+	assert.EqualError(t, err, "tenant id and mailbox id are required")
+}
+
+func TestTaskService_Transition_NotFound(t *testing.T) {
+	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+	err := svc.transition(context.Background(), "acme", "nonexistent", core.TaskStatusRunning, core.EventTaskStarted, 0)
+	assert.Error(t, err)
+}
+
+func TestTaskService_Transition_TerminalState(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusCompleted},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	err := svc.transition(context.Background(), "acme", "t1", core.TaskStatusRunning, core.EventTaskStarted, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "terminal state")
+}
+
+func TestTaskService_Transition_InvalidTransition(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusCreated},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	err := svc.transition(context.Background(), "acme", "t1", core.TaskStatusCompleted, core.EventTaskCompleted, 0)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid transition")
+}
+
+func TestTaskService_Transition_CASConflict(t *testing.T) {
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
+	}}
+	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	err := svc.transition(context.Background(), "acme", "t1", core.TaskStatusClaimed, core.EventTaskClaimed, 1)
+	assert.NoError(t, err)
 }

@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 
 	janus "github.com/agentium-lab/Janus/sdk/go"
 	"github.com/spf13/cobra"
@@ -52,41 +51,15 @@ func TestDashboardCmd(t *testing.T) {
 	assert.Contains(t, out, "--port")
 }
 
-func TestDashboardCmd_ServeAndShutdown(t *testing.T) {
-	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/ws" {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer apiSrv.Close()
-
-	done := make(chan struct{})
-	var startErr error
-
-	serverURL = apiSrv.URL
-	tenantID = "test"
-
-	go func() {
-		defer close(done)
-		cmd := &cobra.Command{Use: "test", SilenceErrors: true, SilenceUsage: true}
-		cmd.SetOut(io.Discard)
-		cmd.AddCommand(dashboardCmd())
-		cmd.SetArgs([]string{"dashboard", "--port", "0"})
-		startErr = cmd.Execute()
-	}()
-
-	time.Sleep(200 * time.Millisecond)
-
-	select {
-	case <-done:
-		if startErr != nil {
-			t.Logf("dashboard exited: %v", startErr)
-		}
-	default:
-		t.Log("Dashboard started and is running (expected for ListenAndServe)")
-	}
+func TestDashboardCmd_Assembles(t *testing.T) {
+	// Previously this test started the dashboard server (http.ListenAndServe),
+	// which blocks forever and leaks a goroutine that reads package globals
+	// (serverURL). That caused intermittent data races under -race when other
+	// tests ran in parallel. Instead, verify the command assembles correctly
+	// and its flags parse, without binding a port.
+	cmd := dashboardCmd()
+	assert.Equal(t, "dashboard", cmd.Use)
+	assert.Equal(t, "8090", cmd.Flags().Lookup("port").DefValue)
 }
 
 func TestDashboardCmd_HelpOnly(t *testing.T) {
@@ -142,16 +115,25 @@ func TestAgentHeartbeat_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := newTestRoot(srv)
-	out, err := executeCommand(root, "agent", "heartbeat", "a1")
-	assert.NoError(t, err)
-	assert.Contains(t, out, "status: 500")
+	_, err := executeCommand(root, "agent", "heartbeat", "a1")
+	assert.Error(t, err)
 }
 
 func TestAgentStatus(t *testing.T) {
-	root := newTestRoot(nil)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/agents/a1")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":          "a1",
+			"tenant_id":   "test-tenant",
+			"display_name": "Agent One",
+			"status":      "online",
+		})
+	}))
+	defer srv.Close()
+	root := newTestRoot(srv)
 	out, err := executeCommand(root, "agent", "status", "a1")
 	assert.NoError(t, err)
-	assert.Contains(t, out, "not yet implemented")
+	assert.Contains(t, out, "online")
 }
 
 func TestTaskPublish_MissingFlags(t *testing.T) {
@@ -259,7 +241,7 @@ func TestMailboxPull_Empty(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := newTestRoot(srv)
-	out, err := executeCommand(root, "mailbox", "pull", "mb1")
+	out, err := executeCommand(root, "mailbox", "pull", "mb1", "--agent", "a1")
 	assert.NoError(t, err)
 	assert.Contains(t, out, "No messages available")
 }
@@ -318,7 +300,7 @@ func TestMailboxPull_ServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := newTestRoot(srv)
-	_, err := executeCommand(root, "mailbox", "pull", "mb1")
+	_, err := executeCommand(root, "mailbox", "pull", "mb1", "--agent", "a1")
 	assert.Error(t, err)
 }
 

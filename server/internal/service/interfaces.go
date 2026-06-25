@@ -10,6 +10,7 @@ import (
 type TenantRepo interface {
 	Create(ctx context.Context, id, name string) error
 	GetName(ctx context.Context, id string) (string, error)
+	ListIDs(ctx context.Context) ([]string, error)
 }
 
 type AgentRepo interface {
@@ -33,6 +34,7 @@ type TaskRepo interface {
 	ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error)
 	SetResultRef(ctx context.Context, tenantID, taskID, resultRef string) error
 	CountByStatus(ctx context.Context, tenantID string, status core.TaskStatus) (int, error)
+	CountRunningByAgent(ctx context.Context, tenantID, agentID string) (int, error)
 	ResetForReplay(ctx context.Context, tenantID, taskID string) error
 }
 

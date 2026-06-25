@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/api/annotations.proto";
+import "janus/v1/common.proto";
+
+// Mailbox message types
+
+message Mailbox {
+  string tenant_id = 1;
+  string id = 2;
+  string agent_id = 3;
+  string status = 4;
+  int32 max_concurrency = 5;
+  int32 ack_wait_seconds = 6;
+  int32 max_deliver = 7;
+  int32 retention_seconds = 8;
+}
+
+message CreateMailboxRequest {
+  string tenant_id = 1;
+  string id = 2;
+  string agent_id = 3;
+  int32 max_concurrency = 4;
+  int32 ack_wait_seconds = 5;
+  int32 max_deliver = 6;
+  int32 retention_seconds = 7;
+}
+
+message UpdateMailboxRequest {
+  string tenant_id = 1;
+  string mailbox_id = 2;
+  int32 max_concurrency = 3;
+  int32 ack_wait_seconds = 4;
+  int32 max_deliver = 5;
+  int32 retention_seconds = 6;
+}
+
+message GetMailboxRequest {
+  string tenant_id = 1;
+  string mailbox_id = 2;
+}
+
+message MailboxActionRequest {
+  string tenant_id = 1;
+  string mailbox_id = 2;
+}
+
+message MailboxActionResponse {
+  string status = 1;
+}
+
+service MailboxService {
+  rpc CreateMailbox(CreateMailboxRequest) returns (Mailbox) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/mailboxes" body: "*" };
+  }
+  rpc GetMailbox(GetMailboxRequest) returns (Mailbox) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}" };
+  }
+  rpc UpdateMailbox(UpdateMailboxRequest) returns (Mailbox) {
+    option (google.api.http) = { patch: "/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}" body: "*" };
+  }
+  rpc PauseMailbox(MailboxActionRequest) returns (MailboxActionResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}/pause" body: "*" };
+  }
+  rpc ResumeMailbox(MailboxActionRequest) returns (MailboxActionResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/mailboxes/{mailbox_id}/resume" body: "*" };
+  }
+}

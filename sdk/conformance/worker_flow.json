@@ -1,0 +1,91 @@
+{
+  "$schema": "janus-conformance-worker-v1",
+  "description": "Golden worker lifecycle flow that all SDK Workers (Go, Python, TypeScript) must satisfy. Defines the pull→start→heartbeat→ack and pull→start→heartbeat→nack sequences.",
+  "flows": [
+    {
+      "name": "worker_ack_flow",
+      "description": "Pull a task, start it, process successfully, ACK with result_ref and token_usage",
+      "steps": [
+        {
+          "action": "pull",
+          "mailbox_id": "mb-worker-1",
+          "agent_id": "agent-worker",
+          "expect": "task_with_lease"
+        },
+        {
+          "action": "start",
+          "task_id": "{task.id}",
+          "attempt": "{lease.attempt}",
+          "lease_id": "{lease.lease_id}",
+          "expect": "ok"
+        },
+        {
+          "action": "heartbeat",
+          "task_id": "{task.id}",
+          "attempt": "{lease.attempt}",
+          "lease_id": "{lease.lease_id}",
+          "expect": "ok"
+        },
+        {
+          "action": "ack",
+          "task_id": "{task.id}",
+          "lease_id": "{lease.lease_id}",
+          "attempt": "{lease.attempt}",
+          "result_ref": "result://worker-test/ok",
+          "token_usage": { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150 },
+          "expect": "ok"
+        },
+        {
+          "action": "verify_task_status",
+          "task_id": "{task.id}",
+          "expect_status": "completed"
+        }
+      ]
+    },
+    {
+      "name": "worker_nack_flow",
+      "description": "Pull a task, start it, handler fails, NACK as retriable",
+      "steps": [
+        {
+          "action": "pull",
+          "mailbox_id": "mb-worker-2",
+          "agent_id": "agent-worker",
+          "expect": "task_with_lease"
+        },
+        {
+          "action": "start",
+          "task_id": "{task.id}",
+          "attempt": "{lease.attempt}",
+          "lease_id": "{lease.lease_id}",
+          "expect": "ok"
+        },
+        {
+          "action": "nack",
+          "task_id": "{task.id}",
+          "lease_id": "{lease.lease_id}",
+          "attempt": "{lease.attempt}",
+          "retriable": true,
+          "error": { "code": "HANDLER_ERROR", "message": "processing failed" },
+          "expect": "ok"
+        },
+        {
+          "action": "verify_task_status",
+          "task_id": "{task.id}",
+          "expect_status_in": ["retry_scheduled", "dead_lettered"]
+        }
+      ]
+    },
+    {
+      "name": "worker_empty_mailbox_backoff",
+      "description": "Pull from empty mailbox returns null/None, worker backs off",
+      "steps": [
+        {
+          "action": "pull",
+          "mailbox_id": "mb-empty",
+          "agent_id": "agent-worker",
+          "expect": "null"
+        }
+      ]
+    }
+  ]
+}

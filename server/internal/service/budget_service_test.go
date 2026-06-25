@@ -60,7 +60,7 @@ func TestBudgetService_CheckConcurrency_AllowNoBudget(t *testing.T) {
 	svc := NewBudgetService(&mockBudgetRepo{})
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5, 5)
 	assert.NoError(t, err)
 }
 
@@ -73,7 +73,7 @@ func TestBudgetService_CheckConcurrency_AllowUnderLimit(t *testing.T) {
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5, 5)
 	assert.NoError(t, err)
 }
 
@@ -86,7 +86,7 @@ func TestBudgetService_CheckConcurrency_DenyOverLimit(t *testing.T) {
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 3)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 3, 3)
 	require.Error(t, err)
 	var bpErr *core.BackpressureError
 	require.ErrorAs(t, err, &bpErr)
@@ -102,7 +102,7 @@ func TestBudgetService_CheckConcurrency_FallbackToTenant(t *testing.T) {
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 5, 5)
 	require.Error(t, err)
 	var bpErr *core.BackpressureError
 	require.ErrorAs(t, err, &bpErr)
@@ -118,7 +118,7 @@ func TestBudgetService_CheckConcurrency_ZeroLimitIgnored(t *testing.T) {
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 100)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 100, 100)
 	assert.NoError(t, err)
 }
 
@@ -126,7 +126,7 @@ func TestBudgetService_CheckConcurrency_EmptyTenantID(t *testing.T) {
 	svc := NewBudgetService(&mockBudgetRepo{})
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "", "agent-1", 0)
+	err := svc.CheckConcurrency(ctx, "", "agent-1", 0, 0)
 	assert.EqualError(t, err, "tenant id is required")
 }
 
@@ -186,7 +186,7 @@ func TestBudgetService_CheckConcurrency_RepoError(t *testing.T) {
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
-	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 0)
+	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 0, 0)
 	assert.NoError(t, err)
 }
 

@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,6 +67,30 @@ func TestMiddleware_ValidKey_SetsTenantContext(t *testing.T) {
 	_ = gotTenant
 }
 
+func TestNewAPIKeyValidator(t *testing.T) {
+	v := NewAPIKeyValidator(nil)
+	assert.NotNil(t, v)
+}
+
+func TestValidate_ShortKey(t *testing.T) {
+	v := NewAPIKeyValidator(nil)
+	_, err := v.Validate(context.Background(), "short")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid api key format")
+}
+
+func TestMiddleware_InvalidKey_Returns401(t *testing.T) {
+	v := NewAPIKeyValidator(nil)
+	handler := Middleware(v)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("should not reach handler")
+	}))
+	r := httptest.NewRequest(http.MethodGet, "/v1/tenants", nil)
+	r.Header.Set("X-API-Key", "short")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
 func TestGenerateKey(t *testing.T) {
 	raw, prefix, hash, err := GenerateKey()
 	assert.NoError(t, err)
@@ -79,4 +104,70 @@ func TestGenerateKey(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEqual(t, raw, raw2)
 	assert.NotEqual(t, hash, hash2)
+}
+
+func TestTenantFromContext(t *testing.T) {
+	// No tenant set → empty.
+	assert.Equal(t, "", TenantFromContext(httptest.NewRequest("GET", "/", nil).Context()))
+
+	// Tenant set in context.
+	req := reqWithTenant("acme")
+	assert.Equal(t, "acme", TenantFromContext(req.Context()))
+}
+
+func TestTenantGuard_AllowsMatchingTenant(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	extract := func(path string) string { return "acme" }
+	guard := TenantGuard(extract)(next)
+
+	req := reqWithTenant("acme")
+	req.URL.Path = "/v1/tenants/acme/tasks"
+	guard.ServeHTTP(httptest.NewRecorder(), req)
+	assert.True(t, called)
+}
+
+func TestTenantGuard_BlocksMismatchedTenant(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	extract := func(path string) string { return "evil" }
+	guard := TenantGuard(extract)(next)
+
+	req := reqWithTenant("acme")
+	req.URL.Path = "/v1/tenants/evil/tasks"
+	rec := httptest.NewRecorder()
+	guard.ServeHTTP(rec, req)
+	assert.False(t, called)
+	assert.Equal(t, http.StatusForbidden, rec.Code)
+}
+
+func TestTenantGuard_NoAuthTenant_AllowsAll(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	guard := TenantGuard(func(p string) string { return "acme" })(next)
+
+	req := httptest.NewRequest("GET", "/v1/tenants/acme/tasks", nil)
+	guard.ServeHTTP(httptest.NewRecorder(), req)
+	assert.True(t, called, "no auth tenant → allow (for public endpoints)")
+}
+
+func TestTenantGuard_EmptyPathTenant_AllowsAll(t *testing.T) {
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	guard := TenantGuard(func(p string) string { return "" })(next)
+
+	req := reqWithTenant("acme")
+	req.URL.Path = "/healthz"
+	guard.ServeHTTP(httptest.NewRecorder(), req)
+	assert.True(t, called, "no path tenant → allow")
+}
+
+// reqWithTenant creates a request with the tenant ID set in context.
+func reqWithTenant(tenantID string) *http.Request {
+	req := httptest.NewRequest("GET", "/", nil)
+	return req.WithContext(context.WithValue(req.Context(), TenantCtxKey, tenantID))
 }

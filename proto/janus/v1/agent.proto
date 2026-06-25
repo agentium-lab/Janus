@@ -28,6 +28,7 @@ message Agent {
   google.protobuf.Timestamp created_at = 12;
   google.protobuf.Timestamp updated_at = 13;
   google.protobuf.Timestamp last_heartbeat_at = 14;
+  string team_id = 15;
 }
 
 message RegisterAgentRequest {
@@ -41,6 +42,7 @@ message RegisterAgentRequest {
   int32 max_concurrency = 8;
   int32 rpm = 9;
   int32 tpm = 10;
+  string team_id = 11;
 }
 
 message UpdateAgentRequest {

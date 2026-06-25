@@ -209,6 +209,7 @@ func (a *PipelineAgent) run(ctx context.Context, client *janus.Client, tenantID 
 			resultRef := fmt.Sprintf("result://%s/%s", a.id, task.ID)
 			if err := client.AckTask(ctx, task.ID, janus.AckRequest{
 				LeaseID:   result.Lease.LeaseID,
+				Attempt:   result.Lease.Attempt,
 				ResultRef: resultRef,
 			}); err != nil {
 				log.Printf("[Error] %s ACK failed for %s: %v", a.name, task.ID, err)

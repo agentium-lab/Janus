@@ -18,6 +18,8 @@ type mockDispatchQueueDriver struct {
 	events     []core.JanusEvent
 	fetchErr   error
 	ackErr     error
+	ackCalls   int
+	nackCalls  int
 }
 
 func (m *mockDispatchQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) error {
@@ -34,10 +36,12 @@ func (m *mockDispatchQueueDriver) FetchTasks(_ context.Context, mailbox string, 
 }
 
 func (m *mockDispatchQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error {
+	m.ackCalls++
 	return m.ackErr
 }
 
 func (m *mockDispatchQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error {
+	m.nackCalls++
 	return nil
 }
 
@@ -194,6 +198,9 @@ func (m *mockDispatchTaskRepo) UpdateRetryAt(_ context.Context, tenantID, taskID
 
 func (m *mockDispatchTaskRepo) SetResultRef(_ context.Context, _, _, _ string) error { return nil }
 func (m *mockDispatchTaskRepo) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
+	return 0, nil
+}
+func (m *mockDispatchTaskRepo) CountRunningByAgent(_ context.Context, _, _ string) (int, error) {
 	return 0, nil
 }
 func (m *mockDispatchTaskRepo) ResetForReplay(_ context.Context, _, _ string) error { return nil }

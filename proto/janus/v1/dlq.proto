@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package janus.v1;
+
+option go_package = "github.com/agentium-lab/Janus/proto/gen/janus/v1;janusv1";
+
+import "google/api/annotations.proto";
+import "janus/v1/common.proto";
+
+// DLQ message types
+
+message DLQQueryRequest {
+  string tenant_id = 1;
+  string mailbox_id = 2;
+  int32 limit = 3;
+}
+
+message DLQQueryResponse {
+  repeated Task tasks = 1;
+}
+
+message DLQActionRequest {
+  string tenant_id = 1;
+  string task_id = 2;
+}
+
+service DLQService {
+  rpc QueryDLQ(DLQQueryRequest) returns (DLQQueryResponse) {
+    option (google.api.http) = { get: "/v1/tenants/{tenant_id}/dlq" };
+  }
+  rpc ReplayDLQ(DLQActionRequest) returns (Task) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/dlq/{task_id}/replay" body: "*" };
+  }
+  rpc DiscardDLQ(DLQActionRequest) returns (DLQActionResponse) {
+    option (google.api.http) = { post: "/v1/tenants/{tenant_id}/dlq/{task_id}/discard" body: "*" };
+  }
+}
+
+message DLQActionResponse {
+  string status = 1;
+}

@@ -23,6 +23,9 @@ proto/gen/
 coverage.out
 *.test
 janus-api
+.cover/
+dump.rdb
+**/node_modules/
 
 # Python
 __pycache__/

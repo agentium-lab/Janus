@@ -27,3 +27,21 @@ func (r *TenantRepository) GetName(ctx context.Context, id string) (string, erro
 	err := r.pool.QueryRow(ctx, "SELECT name FROM tenants WHERE id = $1", id).Scan(&name)
 	return name, err
 }
+
+func (r *TenantRepository) ListIDs(ctx context.Context) ([]string, error) {
+	rows, err := r.pool.Query(ctx, "SELECT id FROM tenants ORDER BY id")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

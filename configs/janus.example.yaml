@@ -44,10 +44,21 @@ heartbeat:
   sweeper_interval: "30s"
   ttl: "60s"
 
+outbox:
+  enable: true
+  poll_interval: "500ms"
+  idle_backoff_max: "5s"
+  batch_size: 100
+  lease_duration: "60s"
+  max_retries: 5
+  listen_notify: true
+
 observability:
   metrics:
     enabled: true
-    port: 9091
+    path: "/metrics"
   tracing:
     enabled: false
     endpoint: ""
+    service_name: "janus-api"
+    insecure: true

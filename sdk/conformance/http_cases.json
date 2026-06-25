@@ -1,0 +1,116 @@
+{
+  "$schema": "janus-conformance-http-v1",
+  "description": "Golden HTTP contract cases that all SDKs (Go, Python, TypeScript) must satisfy. Each case defines a request and the expected response shape/status.",
+  "cases": [
+    {
+      "name": "create_task_returns_201",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/tasks",
+      "request_body": {
+        "id": "task-conformance-1",
+        "source_agent": "agent-1",
+        "target_type": "agent",
+        "target_value": "agent-2",
+        "mailbox_id": "mb-1",
+        "idempotency_key": "conf-key-1",
+        "envelope": {
+          "janus_version": "1",
+          "task_id": "task-conformance-1",
+          "tenant_id": "{tenant}",
+          "source_agent": "agent-1",
+          "target": { "type": "agent", "value": "agent-2" },
+          "payload": { "type": "json", "content": "{}" },
+          "trace": { "trace_id": "trace-conf-1" }
+        }
+      },
+      "expected_status": 201,
+      "expected_body_fields": ["id", "status"]
+    },
+    {
+      "name": "duplicate_create_returns_200_existing",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/tasks",
+      "request_body": {
+        "id": "task-conformance-1",
+        "source_agent": "agent-1",
+        "target_type": "agent",
+        "target_value": "agent-2",
+        "mailbox_id": "mb-1",
+        "idempotency_key": "conf-key-1",
+        "envelope": {
+          "janus_version": "1",
+          "task_id": "task-conformance-1",
+          "tenant_id": "{tenant}",
+          "source_agent": "agent-1",
+          "target": { "type": "agent", "value": "agent-2" },
+          "payload": { "type": "json", "content": "{}" },
+          "trace": { "trace_id": "trace-conf-1" }
+        }
+      },
+      "expected_status": 200,
+      "expected_body_fields": ["id", "status"]
+    },
+    {
+      "name": "get_task_returns_task",
+      "method": "GET",
+      "path": "/v1/tenants/{tenant}/tasks/task-conformance-1",
+      "expected_status": 200,
+      "expected_body_fields": ["id", "tenant_id", "status", "source_agent"]
+    },
+    {
+      "name": "get_nonexistent_task_returns_404",
+      "method": "GET",
+      "path": "/v1/tenants/{tenant}/tasks/nonexistent-999",
+      "expected_status": 404,
+      "expected_error_code": "NOT_FOUND"
+    },
+    {
+      "name": "cancel_task_returns_200",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/tasks/task-conformance-1/cancel",
+      "expected_status": 200
+    },
+    {
+      "name": "pull_empty_mailbox_returns_204",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/mailboxes/mb-empty/pull",
+      "request_body": { "agent_id": "agent-1" },
+      "expected_status": 204,
+      "expected_body": null
+    },
+    {
+      "name": "pull_missing_agent_id_returns_400",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/mailboxes/mb-1/pull",
+      "request_body": {},
+      "expected_status": 400,
+      "expected_error_code": "INVALID_ARGUMENT"
+    },
+    {
+      "name": "register_agent_returns_201",
+      "method": "POST",
+      "path": "/v1/tenants/{tenant}/agents",
+      "request_body": {
+        "id": "agent-conf-1",
+        "display_name": "Conformance Agent",
+        "protocol": "custom-sdk"
+      },
+      "expected_status": 201,
+      "expected_body_fields": ["id"]
+    },
+    {
+      "name": "list_agents_returns_array",
+      "method": "GET",
+      "path": "/v1/tenants/{tenant}/agents",
+      "expected_status": 200,
+      "expected_body_fields": ["agents"]
+    },
+    {
+      "name": "error_envelope_has_code_and_status",
+      "method": "GET",
+      "path": "/v1/tenants/{tenant}/tasks/nonexistent-err",
+      "expected_status": 404,
+      "expected_body_fields": ["error", "code", "message", "status"]
+    }
+  ]
+}

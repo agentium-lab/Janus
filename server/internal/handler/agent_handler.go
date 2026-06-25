@@ -29,6 +29,7 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	var req struct {
 		ID             string `json:"id"`
+		TeamID         string `json:"team_id"`
 		DisplayName    string `json:"display_name"`
 		Protocol       string `json:"protocol"`
 		Endpoint       string `json:"endpoint"`
@@ -41,7 +42,7 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	agent := core.Agent{
-		ID: req.ID, TenantID: tenantID, DisplayName: req.DisplayName,
+		ID: req.ID, TenantID: tenantID, TeamID: req.TeamID, DisplayName: req.DisplayName,
 		Protocol: core.AgentProtocol(req.Protocol), Endpoint: req.Endpoint,
 		Description: req.Description, MaxConcurrency: req.MaxConcurrency,
 		Status: core.AgentStatusOffline,

@@ -33,6 +33,7 @@ type AgentCapability struct {
 type Agent struct {
 	ID              string         `json:"id"`
 	TenantID        string         `json:"tenant_id"`
+	TeamID          string         `json:"team_id,omitempty"`
 	DisplayName     string         `json:"display_name"`
 	Protocol        AgentProtocol  `json:"protocol"`
 	Endpoint        string         `json:"endpoint"`

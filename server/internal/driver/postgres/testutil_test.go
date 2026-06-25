@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -52,8 +53,13 @@ func openTestDB(t *testing.T) *pgxpool.Pool {
 
 	testDB := fmt.Sprintf("janus_pgtest_%d", time.Now().UnixNano())
 
+	// Skip the whole package when PostgreSQL is not reachable, so local runs and
+	// CI without the postgres service do not fail. Set JANUS_PG_HOST / etc. to
+	// point at a running instance.
 	adminConn, err := pgx.Connect(ctx, adminDSN())
-	require.NoError(t, err, "connect to admin DB")
+	if err != nil {
+		t.Skipf("postgres not reachable (set JANUS_PG_HOST/PORT/USER/DBNAME to enable): %v", err)
+	}
 	_, err = adminConn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDB))
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
@@ -78,36 +84,41 @@ func openTestDB(t *testing.T) *pgxpool.Pool {
 func runMigration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	migrations := []string{
-		"000001_initial_schema.up.sql",
-		"000002_delivery_ref.up.sql",
-		"000003_api_keys.up.sql",
-		"000004_budget_usage.up.sql",
-		"000005_retry_at.up.sql",
-		"000006_context_refs.up.sql",
-		"000007_outbox.up.sql",
-		"000008_outbox_retry.up.sql",
+
+	// Discover all migrations by listing the migrations/ directory rather than
+	// hard-coding filenames. This keeps the test harness in sync with the
+	// migration set without manual edits whenever a new migration is added.
+	migrationsDir := filepath.Join(repoRoot(), "migrations")
+	entries, err := os.ReadDir(migrationsDir)
+	require.NoError(t, err, "read migrations dir")
+
+	var upFiles []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
+			upFiles = append(upFiles, e.Name())
+		}
 	}
-	for _, m := range migrations {
-		up, err := os.ReadFile(filepath.Join(repoRoot(), "migrations", m))
+	sort.Strings(upFiles)
+
+	for _, m := range upFiles {
+		up, err := os.ReadFile(filepath.Join(migrationsDir, m))
 		require.NoError(t, err, "read migration %s", m)
 		_, err = pool.Exec(ctx, string(up))
 		require.NoError(t, err, "run migration %s", m)
 	}
+
 	t.Cleanup(func() {
-		downFiles := []string{
-			"000008_outbox_retry.down.sql",
-			"000007_outbox.down.sql",
-			"000006_context_refs.down.sql",
-			"000005_retry_at.down.sql",
-			"000004_budget_usage.down.sql",
-			"000003_api_keys.down.sql",
-			"000002_delivery_ref.down.sql",
-			"000001_initial_schema.down.sql",
+		// Run down migrations in reverse order. Missing down files are skipped.
+		var downFiles []string
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".down.sql") {
+				downFiles = append(downFiles, e.Name())
+			}
 		}
+		sort.Sort(sort.Reverse(sort.StringSlice(downFiles)))
 		for _, m := range downFiles {
-			down, _ := os.ReadFile(filepath.Join(repoRoot(), "migrations", m))
-			if len(down) > 0 {
+			down, err := os.ReadFile(filepath.Join(migrationsDir, m))
+			if err == nil && len(down) > 0 {
 				pool.Exec(ctx, strings.TrimSpace(string(down)))
 			}
 		}

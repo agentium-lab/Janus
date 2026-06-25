@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
@@ -27,6 +28,25 @@ func (r *TaskAttemptRepository) Create(ctx context.Context, a core.TaskAttempt) 
 		usageJSON, _ = json.Marshal(a.TokenUsage)
 	}
 	_, err := r.pool.Exec(ctx,
+		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
+		  started_at, heartbeat_at, finished_at, error, token_usage)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		a.TenantID, a.TaskID, a.Attempt, a.AgentID, a.LeaseID, a.DeliveryRef, a.Status,
+		a.StartedAt, a.HeartbeatAt, a.FinishedAt, jsonOrNull(errorJSON), jsonOrNull(usageJSON),
+	)
+	return err
+}
+
+// CreateTx is the transactional variant of Create.
+func (r *TaskAttemptRepository) CreateTx(ctx context.Context, tx pgx.Tx, a core.TaskAttempt) error {
+	var errorJSON, usageJSON []byte
+	if a.Error != nil {
+		errorJSON, _ = json.Marshal(a.Error)
+	}
+	if a.TokenUsage != nil {
+		usageJSON, _ = json.Marshal(a.TokenUsage)
+	}
+	_, err := tx.Exec(ctx,
 		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
 		  started_at, heartbeat_at, finished_at, error, token_usage)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
@@ -91,6 +111,21 @@ func (r *TaskAttemptRepository) UpdateFinished(ctx context.Context, tenantID, ta
 
 func (r *TaskAttemptRepository) UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
 	tag, err := r.pool.Exec(ctx,
+		`UPDATE task_attempts SET status = $1, finished_at = now(), error = $2, token_usage = $3
+		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6 AND status IN ('claimed', 'running')`,
+		status, jsonOrNull(errJSON), jsonOrNull(usageJSON),
+		tenantID, taskID, attempt,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// UpdateFinishedWithCheckTx is the transactional variant of UpdateFinishedWithCheck.
+// It only updates attempts currently in claimed/running status (CAS guard).
+func (r *TaskAttemptRepository) UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+	tag, err := tx.Exec(ctx,
 		`UPDATE task_attempts SET status = $1, finished_at = now(), error = $2, token_usage = $3
 		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6 AND status IN ('claimed', 'running')`,
 		status, jsonOrNull(errJSON), jsonOrNull(usageJSON),

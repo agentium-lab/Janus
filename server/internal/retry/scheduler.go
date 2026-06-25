@@ -7,6 +7,8 @@ import (
 	"log"
 	"time"
 
+	cryptorand "crypto/rand"
+
 	"github.com/agentium-lab/Janus/core"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -53,7 +55,7 @@ func (s *Scheduler) Stop() {
 
 func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT tenant_id, id, mailbox_id, priority, envelope
+		`SELECT tenant_id, id, mailbox_id, priority, envelope, attempt_count
 		 FROM tasks
 		 WHERE status = 'retry_scheduled' AND retry_at IS NOT NULL AND retry_at <= now()`)
 	if err != nil {
@@ -63,17 +65,18 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	defer rows.Close()
 
 	type retryTask struct {
-		TenantID  string
-		ID        string
-		MailboxID string
-		Priority  core.Priority
-		Envelope  []byte
+		TenantID     string
+		ID           string
+		MailboxID    string
+		Priority     core.Priority
+		Envelope     []byte
+		AttemptCount int
 	}
 
 	var tasks []retryTask
 	for rows.Next() {
 		var t retryTask
-		if err := rows.Scan(&t.TenantID, &t.ID, &t.MailboxID, &t.Priority, &t.Envelope); err != nil {
+		if err := rows.Scan(&t.TenantID, &t.ID, &t.MailboxID, &t.Priority, &t.Envelope, &t.AttemptCount); err != nil {
 			log.Printf("retry scheduler scan: %v", err)
 			return
 		}
@@ -96,25 +99,21 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 		}
 
 		if t.MailboxID != "" {
-			var env core.TaskEnvelope
-			if err := json.Unmarshal(t.Envelope, &env); err == nil {
-				payload, _ := json.Marshal(env)
-				msg := core.TaskMessage{
-					TenantID:  t.TenantID,
-					MailboxID: t.MailboxID,
-					TaskID:    t.ID,
-					Priority:  t.Priority,
-					Payload:   payload,
-				}
-				if s.useOutbox {
-					queuePayload, _ := json.Marshal(msg)
-					_, _ = s.pool.Exec(ctx,
-						`INSERT INTO outbox_events (id, tenant_id, kind, payload) VALUES ($1, $2, 'task_publish', $3)`,
-						generateULID(), t.TenantID, queuePayload,
-					)
-				} else if s.queue != nil {
-					_ = s.queue.PublishTask(ctx, msg)
-				}
+			msg, ok := buildRetryMessage(t.TenantID, t.ID, t.MailboxID, t.Priority, t.Envelope)
+			if !ok {
+				continue
+			}
+			if s.useOutbox {
+				queuePayload, _ := json.Marshal(msg)
+				dedupeKey := buildRetryDedupeKey(t.TenantID, t.ID, t.AttemptCount)
+				_, _ = s.pool.Exec(ctx,
+					`INSERT INTO outbox_events (id, tenant_id, kind, payload, dedupe_key)
+					 VALUES ($1, $2, 'task_publish', $3, $4)
+					 ON CONFLICT (tenant_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
+					generateULID(), t.TenantID, queuePayload, dedupeKey,
+				)
+			} else if s.queue != nil {
+				_ = s.queue.PublishTask(ctx, msg)
 			}
 		}
 	}
@@ -122,6 +121,29 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	if len(tasks) > 0 {
 		log.Printf("retry scheduler: promoted %d tasks to queued", len(tasks))
 	}
+}
+
+// buildRetryDedupeKey constructs a stable dedupe key for a retry-driven
+// re-publish so the same delivery cannot be enqueued twice.
+func buildRetryDedupeKey(tenantID, taskID string, attemptCount int) string {
+	return fmt.Sprintf("task_publish:%s:%s:%d", tenantID, taskID, attemptCount)
+}
+
+// buildRetryMessage unmarshals a task envelope and constructs the
+// TaskMessage to re-publish. Returns ok=false if the envelope is invalid.
+func buildRetryMessage(tenantID, taskID, mailboxID string, priority core.Priority, envelopeJSON []byte) (core.TaskMessage, bool) {
+	var env core.TaskEnvelope
+	if err := json.Unmarshal(envelopeJSON, &env); err != nil {
+		return core.TaskMessage{}, false
+	}
+	payload, _ := json.Marshal(env)
+	return core.TaskMessage{
+		TenantID:  tenantID,
+		MailboxID: mailboxID,
+		TaskID:    taskID,
+		Priority:  priority,
+		Payload:   payload,
+	}, true
 }
 
 func generateULID() string {
@@ -132,10 +154,9 @@ func generateULID() string {
 		b[i] = byte(t & 0xff)
 		t >>= 8
 	}
+	// Use crypto/rand for the 6-byte entropy portion so IDs generated within
+	// the same millisecond do not collide.
 	randBytes := make([]byte, 6)
-	for i := range randBytes {
-		randBytes[i] = byte(t & 0xff)
-		t = t>>8 + uint64(i)
-	}
+	_, _ = cryptorand.Read(randBytes)
 	return fmt.Sprintf("%x%x", b, randBytes)
 }

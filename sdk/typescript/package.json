@@ -1,0 +1,16 @@
+{
+  "name": "@janus/sdk",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for Janus — the A2A-native durable agent broker",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/**/*.test.js"
+  },
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  }
+}

@@ -38,28 +38,33 @@ func (s *BudgetService) WithRateLimiter(rl RateLimiter) *BudgetService {
 	return s
 }
 
-func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID string, currentRunning int) error {
+// CheckConcurrency validates that the caller may start another concurrent task.
+// agentRunning is the count of in-flight tasks for this specific agent;
+// tenantRunning is the count for the whole tenant. These must be computed
+// separately because agent and tenant budgets are independent limits.
+func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID string, agentRunning, tenantRunning int) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant id is required")
 	}
 
+	// Agent-scoped limit first (more specific).
 	agentBudget, err := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
 	if err == nil && agentBudget.MaxConcurrency > 0 {
-		if currentRunning >= agentBudget.MaxConcurrency {
+		if agentRunning >= agentBudget.MaxConcurrency {
 			return &core.BackpressureError{
 				Reason:  core.ReasonAgentConcurrencyExceeded,
-				Message: fmt.Sprintf("agent %s: %d/%d concurrent tasks", agentID, currentRunning, agentBudget.MaxConcurrency),
+				Message: fmt.Sprintf("agent %s: %d/%d concurrent tasks", agentID, agentRunning, agentBudget.MaxConcurrency),
 			}
 		}
-		return nil
 	}
 
+	// Tenant-scoped limit.
 	tenantBudget, err := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
 	if err == nil && tenantBudget.MaxConcurrency > 0 {
-		if currentRunning >= tenantBudget.MaxConcurrency {
+		if tenantRunning >= tenantBudget.MaxConcurrency {
 			return &core.BackpressureError{
 				Reason:  core.ReasonAgentConcurrencyExceeded,
-				Message: fmt.Sprintf("tenant %s: %d/%d concurrent tasks", tenantID, currentRunning, tenantBudget.MaxConcurrency),
+				Message: fmt.Sprintf("tenant %s: %d/%d concurrent tasks", tenantID, tenantRunning, tenantBudget.MaxConcurrency),
 			}
 		}
 	}

@@ -24,6 +24,7 @@ func agentToProto(a *core.Agent) *pb.Agent {
 	pbAgent := &pb.Agent{
 		Id:             a.ID,
 		TenantId:       a.TenantID,
+		TeamId:         a.TeamID,
 		DisplayName:    a.DisplayName,
 		Protocol:       string(a.Protocol),
 		Endpoint:       a.Endpoint,
@@ -53,6 +54,7 @@ func registerReqToAgent(req *pb.RegisterAgentRequest) core.Agent {
 	return core.Agent{
 		TenantID:       req.TenantId,
 		ID:             req.Id,
+		TeamID:         req.TeamId,
 		DisplayName:    req.DisplayName,
 		Protocol:       core.AgentProtocol(req.Protocol),
 		Endpoint:       req.Endpoint,

@@ -207,3 +207,23 @@ func TestEventService_PublishEvent_NilPayload(t *testing.T) {
 	assert.Equal(t, []byte(`{}`), repo.events[0].Payload)
 	repo.mu.Unlock()
 }
+
+func TestEventService_QueryByTenant(t *testing.T) {
+	repo := &mockEventRepo{events: []core.JanusEvent{
+		{EventID: "e1", TenantID: "acme", EventType: core.EventTaskCreated},
+	}}
+	svc := NewEventService(repo)
+
+	events, err := svc.QueryByTenant(context.Background(), "acme", 10)
+	require.NoError(t, err)
+	assert.Len(t, events, 1)
+}
+
+func TestEventService_QueryByTenant_DefaultLimit(t *testing.T) {
+	repo := &mockEventRepo{}
+	svc := NewEventService(repo)
+
+	events, err := svc.QueryByTenant(context.Background(), "acme", 0)
+	require.NoError(t, err)
+	assert.Nil(t, events)
+}

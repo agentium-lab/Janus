@@ -37,7 +37,7 @@
 - 调用链路缺少统一审计。
 - 下游 Agent 被并发、RPM、TPM 或上下文窗口限制打爆。
 - 谁能调用谁、能携带哪些上下文、能访问哪些工具缺少统一策略。
-- 企业无法统一观察 Agent 拓扑、成本、失败率和安全风险。
+- 企业无法统一观察 Agent 拓扑、Janus 可见预算事实、失败率和安全风险。
 
 ### 2.2 Janus 的机会
 
@@ -51,7 +51,7 @@ Janus 应优先切入 **Coding / DevOps Agent 协作** 场景。这个场景具�
 
 - 任务链路清晰：需求、开发、审查、测试、安全、发布。
 - 异步协作天然存在：Agent 经常离线、排队、重试、等待审批。
-- 价值容易衡量：交付效率、失败恢复、审计可见性、Token 成本。
+- 价值容易衡量：交付效率、失败恢复、审计可见性、Janus 可见预算与容量控制。
 - 用户技术能力强：便于开源传播和早期集成。
 - 私有化诉求明确：代码、凭据、业务逻辑不能随意出域。
 
@@ -102,10 +102,11 @@ Janus 不应把自己变成工作流引擎或业务编排平台。它只负责 A
 
 Agent 网络一旦进入企业生产环境，治理不是附加功能，而是核心价值。
 
-Janus 必须默认支持：
+Janus Core 必须默认支持治理基础能力；完整企业 IAM 能力属于 Janus Enterprise：
 
 - Agent 身份
-- RBAC / ABAC
+- 基础授权边界与策略执行
+- RBAC / ABAC 扩展点
 - 租户隔离
 - 审计日志
 - Trace ID
@@ -148,7 +149,7 @@ Janus 在该链路中的价值：
 - 每个 Agent 有持久收件箱。
 - 每个任务有生命周期状态。
 - 失败任务可以重试或进入 DLQ。
-- 每一步的 Token 成本和执行时间可追踪。
+- 每一步经过 Janus 的任务交接、执行状态和调用方显式回传的 usage 可追踪。
 - 高风险任务可以进入人工审批。
 - 企业可以审计谁触发了什么操作、传递了什么上下文、产出了什么结果。
 
@@ -183,41 +184,40 @@ Agent 注册表负责维护 Agent 元数据。
 ```yaml
 agent_id: code-reviewer.team-a
 tenant_id: acme
-protocols:
-- a2a
-- custom-sdk
+team_id: team-a
+protocol: a2a
 capabilities:
-- code_review
-- python
-- security_check
-natural_language_description: Reviews Python code for correctness, security, and maintainability.
-runtime:
-type: k8s
+- capability: code.review
+description: Reviews Python code for correctness, security, and maintainability.
+schema: {"language":"python"}
+description: Reviews Python code for correctness, security, and maintainability.
 endpoint: https://reviewer.internal/a2a
 limits:
 max_concurrency: 4
 rpm: 60
 tpm: 200000
-policy:
-allowed_callers:
-- coding-agent.team-a
-- release-agent.team-a
-requires_approval_for:
-- production_release
 status: online
 ```
+
+Core GA 的 Agent Registry 契约以当前实现为准：每个 Agent 使用单一 `protocol` 字段，能力存入 `agent_capabilities`，`team_id` 是 team 级 policy / routing / budget 的显式边界，`description` 可参与 intent -> capability 解析和候选排序。多协议数组、runtime 编排元数据、per-agent `allowed_callers` / `requires_approval_for` 不写入 Core registry schema；这些约束必须通过 `policy_rules`、approval workflow 或未来 Janus Enterprise 的组织 / RBAC / ABAC 层表达。
+
+为了降低常见治理配置成本，Core 提供 policy template 入口，但模板不改变策略事实来源。`janus policy allow-agent --agent coding-agent --capability code_review`、`janus policy require-approval --capability prod_deploy`、`janus policy deny-tool --agent intern-agent --tool deploy.prod` 这类命令最终都会生成标准 `policy_rules`，并继续通过 `PolicyService.Evaluate` 执行。
+
+为了进一步降低配置成本，Core CLI 提供 `janus.project.yaml` 作为统一项目配置入口，支持多 tenant、声明式 agent/mailbox/budget/policy、`janus apply/diff/validate`，以及 `janus tenant add` / `janus agent add` 成功后固化回项目文件。项目配置只是控制面编译入口，最终仍写入 Agent Registry、Mailbox、Budget 和标准 `policy_rules`。
 
 ### 5.3 Task Lifecycle
 
 Janus 应定义清晰的任务生命周期：
 
 ```text
-created -> queued -> claimed -> running -> completed
--> blocked
--> failed -> retrying -> queued
--> dead_lettered
--> expired
--> cancelled
+created -> approval_pending -> queued -> claimed -> running -> completed
+created -> queued
+claimed -> failed -> retry_scheduled -> queued
+running -> blocked -> running
+running -> failed -> retry_scheduled -> queued
+running -> failed -> dead_lettered
+queued -> expired
+任意非终态 -> cancelled
 ```
 
 这些状态必须是可查询、可审计、可重放的。
@@ -264,14 +264,16 @@ created -> queued -> claimed -> running -> completed
 - 谁创建了任务
 - 谁接收了任务
 - 任务经过了哪些 Agent
-- 每一步使用了什么模型和工具
-- 消耗了多少 Token 和费用
+- 每一步经过 Janus 的任务交接、策略决策和可见工具型任务
+- 调用方通过 Task Envelope / ACK usage 显式回传的 Token 和费用
 - 输入输出摘要是什么
 - 哪些上下文被引用
 - 哪些策略被命中
 - 哪里失败，是否重试
 
 Replay 能力用于事故复盘、调试和回归验证。
+
+Janus 不侵入 Agent runtime 或 MCP Tool Server 内部。Agent 或 MCP tool 私有调用模型产生的成本、工具链细节和中间步骤不由 Janus 核算；Janus 只审计和治理经过 Janus 的任务、上下文引用、策略/预算/容量决策、result/error，以及 Janus 自身使用模型产生的成本。
 
 ### 5.7 Semantic Routing
 
@@ -317,10 +319,10 @@ v
 
 Janus Ingress Layer
 - A2A Gateway
-- ACP Adapter
+- ACP Gateway
 - SDK Gateway
 - WebSocket / gRPC Gateway
-- MCP Tool & Context Adapter
+- MCP Gateway / Tool & Context Adapter
 
 |
 v
@@ -531,10 +533,10 @@ Envelope 是 Janus 形成优势的关键。它让任务具备生产语义：
 | 开发语言 | Go | Rust | Broker、网关和队列适配层优先选择 Go，生态成熟、并发简单 |
 | 队列与事件后端 | NATS JetStream | Pulsar / Kafka / AutoMQ / RocketMQ | 默认用 NATS 统一覆盖任务投递与事件审计；后期通过 Queue/Event Driver 按规模和客户场景扩展 |
 | 元数据存储 | PostgreSQL | CockroachDB | 存储 Agent、任务、审计、租户、策略 |
-| 缓存 | Redis | KeyDB / Dragonfly | 存放短期状态、限流计数、租约 |
+| 实时状态与限流 | Redis | KeyDB / Dragonfly | MVP / 生产部署保留 Redis，用于 Agent heartbeat TTL、短期状态、限流计数和调度 hint；不承载 durable task / event / claim lease |
 | 策略引擎 | 内置规则 | OPA / Cedar | 初期不要过度复杂 |
 | 向量检索 | 内存索引 / Qdrant | Milvus / pgvector | 语义路由后置，不应阻塞 MVP |
-| API | gRPC + HTTP | WebSocket | gRPC 用于 Agent 通信，HTTP 用于管理面，WebSocket 用于流式任务 |
+| API | gRPC + HTTP + Dashboard WebSocket | WebSocket result streaming | gRPC 用于 Agent 通信，HTTP 用于管理面，轻量 WebSocket 只用于 Dashboard 实时状态推送 |
 | 部署 | Docker Compose / Helm | Operator | 先保证本地和单集群易部署 |
 | 可观测性 | OpenTelemetry | Prometheus / Grafana | Trace 语义应从第一天设计 |
 
@@ -546,32 +548,47 @@ Envelope 是 Janus 形成优势的关键。它让任务具备生产语义：
 
 Janus 适合采用 open-core：
 
+边界原则：
+
+- **Core 必须包含生产可靠性底座**：durable mailbox、ACK / NACK、retry、DLQ、lease timeout、redelivery reconciliation、transactional outbox、基础审计和基础策略都属于 Janus 能否成立的核心能力，不放入商业版。
+- **Enterprise 聚焦企业治理、隔离、合规和运营**：SSO / RBAC / ABAC、完整多租户物理隔离、高级 DLP / PII 检测、合规报表、成本中心、HA 运维包和高级策略管理属于商业化增强。
+- **协议互通优先开源**：A2A / ACP / MCP 的基础 adapter 和 Task Envelope 映射属于生态入口，应保留在 Core；Enterprise 只增强 catalog、审批、治理、审计和受控连接器。
+- **开发者采用能力优先开源**：Go / Python / TypeScript SDK、CLI、基础 Dashboard、基础 Helm chart、示例 adapter 和 Task Envelope spec 不应作为商业版门槛。
+
 开源核心：
 
-- A2A adapter
+- A2A / ACP adapter
+- MCP Tool / Context adapter 基础能力
 - Durable mailbox
 - Task lifecycle
-- ACK / Retry / DLQ
-- SDK
+- ACK / NACK / Retry / DLQ
+- Lease timeout / redelivery reconciliation
+- Transactional outbox
+- Basic tenant_id logical isolation
+- API key / mTLS 基础认证
+- Go / Python / TypeScript SDK
 - CLI
 - 本地 dashboard
 - 基础策略
-- 基础 trace
+- 基础审计
+- 基础 metrics / trace / OpenTelemetry export
+- Artifact/Object Store 抽象与基础实现
+- 基础语义路由候选排序
+- 自然语言 intent 到 capability target 的可审计解析，例如“我想审查这段代码”解析为 `code_review`
 - LangGraph / AutoGen / CrewAI / GitHub Actions 示例
 
 商业版：
 
-- 多租户
-- SSO / RBAC
-- 高级审计
-- DLP
-- 成本中心
-- 高可用集群
-- 企业策略引擎
-- 私有化部署支持
-- 合规报表
-- 高级拓扑分析
-- SLA 与优先级调度
+- 完整多租户隔离：独立 encryption key、NATS account / stream、artifact bucket、deployment namespace、tenant lifecycle 和 quota。
+- 企业身份与权限：OIDC / SSO / SAML、RBAC / ABAC、SCIM、IdP group 映射、tenant admin / auditor 角色。
+- 高级审计与合规：签名审计、WORM 存储、SIEM export、retention policy、合规报表、incident review。
+- DLP 与数据治理：PII 检测、脱敏策略、跨 tenant / region 数据流控制、SIEM export 前过滤和合规报表；Core 只提供 DLP hook 接口与关键调用点。
+- 成本中心：org / team / project 级预算、chargeback / showback、usage export、预算审批流。
+- 企业策略引擎：OPA / Cedar 集成、policy bundle、versioning、dry-run、审批流程。
+- HA 与私有化交付：HA Helm / Operator、backup / restore、upgrade runbook、SLO dashboard、alerting package、air-gapped 部署。
+- 高级拓扑分析：agent dependency graph、bottleneck analysis、topology drift、incident replay。
+- 受控商业集成包：LangGraph / AutoGen / CrewAI / GitHub Actions 的企业连接器、治理预设和最佳实践模板。
+- SLA 与优先级调度。
 
 ### 10.2 付费客户
 
@@ -671,53 +688,127 @@ Janus 应尽快嵌入高频生产链路：
 
 ## 12. 路线图
 
-### 12.1 0-3 个月：可信 MVP
+详细执行路线见 [Janus Core 生产级路线图](./docs/Janus-production-roadmap.md)。
 
-目标：证明多个 Agent 通过 Janus 协作比点对点调用更可靠、更可控。
+路线图不再按"先 MVP、再生态、再企业控制面"简单推进，而是按 Janus Core 是否满足生产级 broker 语义推进。
 
-交付：
+### 12.1 Milestone 0：基线冻结与工程卫生
 
-- A2A Agent Registry
-- Durable mailbox
-- Pull task
-- ACK / retry / DLQ
-- Basic token budget
-- Basic policy
-- Trace UI
-- Coding / DevOps demo
-- Docker Compose 一键启动
-
-### 12.2 3-6 个月：开发者采用
-
-目标：让开发者可以快速把 Janus 接进现有 Agent 项目。
+目标：让当前仓库、测试、文档和部署基线可控。
 
 交付：
 
-- SDK
-- CLI
-- Helm chart
-- LangGraph adapter
-- AutoGen adapter
-- CrewAI adapter
-- GitHub Actions integration
-- Janus Task Envelope spec
-- 示例模板和最佳实践
+- 固化 Core / Enterprise 边界。
+- 清理主设计文档换行和行尾空白，减少无关 diff。
+- 建立统一测试命令。
+- Docker Compose 可稳定启动 PostgreSQL、NATS、Redis、Janus API。
+- 当前 P0/P1/P2 backlog 明确化。
 
-### 12.3 6-12 个月：企业控制面
+### 12.2 Milestone 1：Core Reliability Alpha
 
-目标：服务企业私有化和合规场景。
+目标：补齐 Janus 作为生产级 durable broker 的可靠性闭环。
 
 交付：
 
-- SSO / RBAC
-- 多租户
-- 高可用部署
-- 审计报表
-- DLP Hook
-- 成本中心
-- SLA 调度
-- Agent topology
-- Replay and incident review
+- Transactional outbox 稳定 `dedupe_key`。
+- NATS publish 使用去重键。
+- `created` 只有在 mailbox publish 成功后才推进到 `queued`。
+- `TaskMessage` / `TaskDelivery` 携带 `attempt`。
+- ACK / NACK / Start / Heartbeat 校验 `(tenant_id, task_id, attempt, lease_id)`。
+- Redelivery reconciliation 覆盖旧 delivery、终态 task、retry_scheduled task。
+- Lease timeout、retry、DLQ、DLQ replay 全链路幂等。
+- API 启动时从 PostgreSQL tenants/mailboxes 自动 ensure NATS streams/consumers。
+
+退出标准：
+
+- NATS publish 成功但 DB 后置 transaction 失败可恢复。
+- DB completed 但 NATS ACK 失败后，旧 delivery redelivery 不重复执行。
+- API 重启不导致任务丢失或 ACK/NACK 失效。
+- retry exhausted 后进入 DLQ，DLQ replay 后可重新入队。
+
+### 12.3 Milestone 2：API / SDK Contract Beta
+
+目标：把 Core 可靠性语义稳定暴露给调用方。
+
+交付：
+
+- proto / HTTP / SDK 字段一致。
+- 标准 grpc-gateway 生成链路。
+- Go / Python SDK 补齐 attempt、API key、标准错误类型。
+- TypeScript SDK 进入 Core。
+- CLI 支持 task、mailbox、agent、DLQ、api-key 常用操作。
+- API key 管理 API/CLI。
+- mTLS 可选部署模式。
+
+### 12.4 Milestone 3：Interop + Routing Beta
+
+目标：接入真实 Agent 生态，而不是只服务内部 demo。
+
+交付：
+
+- Agent capabilities 完整注册、更新、查询和落库。
+- 基础 resolver 支持 mailbox、agent、capability、group、human。
+- A2A Gateway 完整映射 Agent Card、task/message、状态、错误、trace/context。
+- ACP Gateway beta 映射 Agent Manifest、run、状态、错误、trace/context。
+- MCP Gateway beta 映射 tool call、resource、状态、错误、trace/context。
+- Artifact/Object Store Core interface 和基础实现。
+- LangGraph / AutoGen / CrewAI / GitHub Actions 示例。
+
+### 12.5 Milestone 4：Ops + Observability RC
+
+目标：让 Janus Core 可以被部署、观察、升级和回滚。
+
+交付：
+
+- OpenTelemetry trace provider。
+- Prometheus metrics 覆盖 publish、pull、ACK/NACK、retry、DLQ、outbox backlog、mailbox backlog、lease timeout、policy deny、budget throttle。
+- 结构化 JSON log。
+- `/healthz`、`/readyz`、dependency readiness 分离。
+- 基础 Helm chart。
+- migration、backup/restore、rolling upgrade runbook。
+- Dashboard 展示 agent、mailbox、task lifecycle、outbox backlog、retry/DLQ、audit trace。
+
+### 12.6 Milestone 5：Production Beta
+
+目标：在真实但受控的生产链路中 dogfood。
+
+交付：
+
+- PR review、CI failure triage、自动修复、安全扫描、发布审批等 dogfood 场景。
+- 7 天 soak test。
+- API/NATS/PostgreSQL/Redis/Agent crash chaos test。
+- 1k active agents、10k mailboxes、100 task/s publish、500 event/s audit 负载基线。
+- API key rotation、mTLS deployment、tenant guard、secret handling 安全基线。
+
+### 12.7 Milestone 6：Core v1.0 GA
+
+目标：发布可以被外部用户部署到生产链路中的 Janus Core。
+
+GA 标准：
+
+- publish 不丢。
+- Agent 离线不丢。
+- ACK / NACK 幂等。
+- retry / DLQ 可恢复。
+- API 多实例可运行。
+- Task Envelope spec 稳定。
+- Go / Python / TypeScript SDK 可用。
+- Docker Compose、Helm、migration、backup/restore 文档齐全。
+- metrics / traces / logs 能解释主要故障。
+- API key、mTLS、tenant_id 逻辑隔离、基础 policy、基础 audit 可用。
+
+### 12.8 Enterprise 启动条件
+
+Janus-enterprise 不应早于 Core Reliability Alpha。
+
+启动条件：
+
+- Core outbox / ACK / NACK / retry / DLQ / lease timeout 故障测试通过。
+- API / SDK attempt 契约稳定。
+- tenant_id 逻辑隔离和 audit trace 贯穿核心链路。
+- Helm 单集群部署可用。
+
+Enterprise 第一阶段只做 OIDC/SSO、RBAC、per-tenant KMS key、audit export、高级 DLP / PII 检测引擎和 cost center UI，不复制 Core 可靠性逻辑。
 
 ---
 

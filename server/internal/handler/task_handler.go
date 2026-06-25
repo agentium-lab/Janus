@@ -88,6 +88,14 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The task tenant is always derived from the URL path. If the caller also
+	// supplies a tenant in the envelope it must agree with the path tenant,
+	// otherwise the request is rejected to prevent cross-tenant confusion.
+	if req.Envelope.TenantID != "" && req.Envelope.TenantID != tenantID {
+		writeError(w, http.StatusBadRequest, "envelope tenant_id does not match path tenant")
+		return
+	}
+
 	priority := core.Priority(req.Priority)
 	if priority == "" {
 		priority = core.PriorityNormal
@@ -165,7 +173,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 			JanusVersion:   req.Envelope.JanusVersion,
 			TaskID:         req.Envelope.TaskID,
 			IdempotencyKey: idempotencyKey,
-			TenantID:       req.Envelope.TenantID,
+			TenantID:       tenantID,
 			SourceAgent:    req.Envelope.SourceAgent,
 			Priority:       core.Priority(req.Envelope.Priority),
 			TTLSeconds:     req.Envelope.TTLSeconds,
@@ -189,6 +197,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	createStart := time.Now()
 	result, err := h.svc.Create(r.Context(), task)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -198,7 +207,15 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unexpected nil result"})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]string{
+	// Per the API contract: duplicate create with the same idempotency key
+	// returns the existing task with 200 OK. Dedup is detected by comparing
+	// the returned task's CreatedAt against a timestamp captured before Create;
+	// if they differ, the task pre-existed.
+	status := http.StatusCreated
+	if idempotencyKey != "" && result.CreatedAt.Before(createStart.Add(-1 * time.Millisecond)) {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]string{
 		"id":     result.ID,
 		"status": string(result.Status),
 	})

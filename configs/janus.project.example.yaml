@@ -1,0 +1,65 @@
+version: v1
+default_tenant: acme
+
+defaults:
+  protocol: custom-sdk
+  classification: internal
+  capacity:
+    max_concurrency: 1
+  mailbox:
+    ack_wait_seconds: 300
+    max_deliver: 5
+    retention_seconds: 604800
+  policy:
+    priority: 100
+
+tenants:
+  acme:
+    name: Acme Engineering
+
+    agents:
+      code-review:
+        team: engineering
+        capabilities:
+          - id: code_review
+            data_classifications: [public, internal, confidential]
+        concurrency: 4
+
+      test-runner:
+        team: engineering
+        capabilities: [test_run]
+        concurrency: 8
+
+    budgets:
+      tenant:
+        tpm: 2000000
+        daily_usd: 500
+      teams:
+        engineering:
+          concurrency: 20
+          tpm: 600000
+
+    policies:
+      approve:
+        capabilities: [prod_deploy]
+        tools: [deploy.prod]
+      allow:
+        - agent: code-review
+          capability: code_review
+      deny:
+        - agent: intern-agent
+          tool: deploy.prod
+      data_classification:
+        allow:
+          - team: engineering
+            classifications: [public, internal, confidential]
+        deny:
+          - team: interns
+            classifications: [confidential, restricted]
+
+  sandbox:
+    name: Sandbox
+    agents:
+      demo-agent:
+        capabilities: [demo]
+        concurrency: 1

@@ -64,7 +64,47 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeJSON(w, status, map[string]string{"error": msg})
+	writeErrorWithCode(w, status, errorCodeForStatus(status), msg)
+}
+
+// writeErrorWithCode writes a structured APIError envelope with an explicit
+// ErrorCode. Per docs/Janus-api-contract.md §2, all error responses use the
+// shape {error, code, message, status}.
+func writeErrorWithCode(w http.ResponseWriter, status int, code string, msg string) {
+	writeJSON(w, status, map[string]interface{}{
+		"error":   msg,
+		"code":    code,
+		"message": msg,
+		"status":  status,
+	})
+}
+
+// errorCodeForStatus maps an HTTP status to the canonical ErrorCode string
+// per docs/Janus-api-contract.md §2.
+func errorCodeForStatus(status int) string {
+	switch status {
+	case 400:
+		return "INVALID_ARGUMENT"
+	case 401:
+		return "UNAUTHENTICATED"
+	case 403:
+		return "PERMISSION_DENIED"
+	case 404:
+		return "NOT_FOUND"
+	case 409:
+		return "CONFLICT"
+	case 429:
+		return "RESOURCE_EXHAUSTED"
+	case 503:
+		return "UNAVAILABLE"
+	case 500:
+		return "INTERNAL"
+	default:
+		if status >= 500 {
+			return "INTERNAL"
+		}
+		return "UNKNOWN"
+	}
 }
 
 func readJSON(r *http.Request, v interface{}) error {

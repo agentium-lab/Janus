@@ -163,6 +163,7 @@ func runAgent(ctx context.Context, t *testing.T, client *janus.Client, tenant st
 			resultRef := fmt.Sprintf("result://%s/%s", def.id, task.ID)
 			if err := client.AckTask(ctx, task.ID, janus.AckRequest{
 				LeaseID:   result.Lease.LeaseID,
+				Attempt:   result.Lease.Attempt,
 				ResultRef: resultRef,
 			}); err != nil {
 				t.Logf("[WARN] %s ack failed for %s: %v", def.id, task.ID, err)

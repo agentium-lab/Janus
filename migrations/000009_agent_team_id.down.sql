@@ -1,0 +1,2 @@
+DROP INDEX IF EXISTS agents_team_idx;
+ALTER TABLE agents DROP COLUMN IF EXISTS team_id;

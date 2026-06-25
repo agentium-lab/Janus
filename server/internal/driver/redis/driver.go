@@ -71,9 +71,11 @@ func (d *Driver) ScanExpired(ctx context.Context, tenantID string) ([]string, er
 	key := heartbeatSetKey(tenantID)
 	now := float64(time.Now().UTC().UnixMilli())
 
-	members, err := d.rdb.ZRangeByScore(ctx, key, &go_redis.ZRangeBy{
-		Min: "-inf",
-		Max: fmt.Sprintf("%f", now),
+	members, err := d.rdb.ZRangeArgs(ctx, go_redis.ZRangeArgs{
+		Key:     key,
+		Start:   "-inf",
+		Stop:    now,
+		ByScore: true,
 	}).Result()
 	if err != nil {
 		return nil, fmt.Errorf("scan expired heartbeats for tenant %s: %w", tenantID, err)

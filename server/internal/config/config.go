@@ -18,6 +18,7 @@ type Config struct {
 	Migration  MigrationConfig `mapstructure:"migration"`
 	Heartbeat  HeartbeatConfig `mapstructure:"heartbeat"`
 	Auth       AuthConfig     `mapstructure:"auth"`
+	TLS        TLSConfig      `mapstructure:"tls"`
 }
 
 type PostgresConfig struct {
@@ -61,6 +62,16 @@ type HeartbeatConfig struct {
 
 type AuthConfig struct {
 	Enabled bool `mapstructure:"enabled"`
+}
+
+// TLSConfig configures optional TLS/mTLS for the HTTP and gRPC servers.
+// When CertFile and KeyFile are both set, servers use TLS. When ClientCAFile
+// is also set, client certificates are verified (mTLS).
+type TLSConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	CertFile     string `mapstructure:"cert_file"`
+	KeyFile      string `mapstructure:"key_file"`
+	ClientCAFile string `mapstructure:"client_ca_file"`
 }
 
 func Load() *Config {
@@ -111,6 +122,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("heartbeat.sweeper_interval", "30s")
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", false)
+	v.SetDefault("tls.enabled", false)
 }
 
 func bindEnvVars(v *viper.Viper) {
@@ -132,6 +144,10 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_HB_SWEEPER_INTERVAL":   "heartbeat.sweeper_interval",
 		"JANUS_HB_TTL":                "heartbeat.ttl",
 		"JANUS_AUTH_ENABLED":          "auth.enabled",
+		"JANUS_TLS_ENABLED":           "tls.enabled",
+		"JANUS_TLS_CERT_FILE":         "tls.cert_file",
+		"JANUS_TLS_KEY_FILE":          "tls.key_file",
+		"JANUS_TLS_CLIENT_CA_FILE":    "tls.client_ca_file",
 	}
 
 	v.SetEnvPrefix("")

@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"time"
 
+	crand "crypto/rand"
+
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
@@ -20,6 +23,7 @@ type TaskService struct {
 	outboxRepo  *postgres.OutboxRepo
 	policySvc   *PolicyService
 	approvalSvc *ApprovalService
+	lifecycle   *LifecycleService
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -38,6 +42,14 @@ func (s *TaskService) WithPolicy(policySvc *PolicyService) *TaskService {
 
 func (s *TaskService) WithApproval(approvalSvc *ApprovalService) *TaskService {
 	s.approvalSvc = approvalSvc
+	return s
+}
+
+// WithLifecycle wires the transaction wrapper so management transitions
+// (cancel/block/unblock/replay) route their events through the outbox inside a
+// transaction. When nil, the service falls back to direct publish.
+func (s *TaskService) WithLifecycle(lc *LifecycleService) *TaskService {
+	s.lifecycle = lc
 	return s
 }
 
@@ -280,6 +292,25 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
 	}
+
+	// Lifecycle path: status update + blocked event in one tx via outbox.
+	if s.lifecycle != nil {
+		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
+			err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+				if uerr := pgTaskRepo.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
+					return fmt.Errorf("block task: %w", uerr)
+				}
+				payload, _ := json.Marshal(core.JanusEvent{
+					EventType: core.EventTaskBlocked, TenantID: tenantID, TaskID: taskID,
+					Payload: mustMarshal(map[string]string{"reason": reason}),
+				})
+				return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload)
+			})
+			return err
+		}
+	}
+
+	// Fallback path.
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusBlocked, 0); err != nil {
 		return fmt.Errorf("block task: %w", err)
 	}
@@ -323,7 +354,8 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		}
 		if s.outboxRepo != nil {
 			queuePayload, _ := json.Marshal(msg)
-			if err := s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "task_publish", queuePayload); err != nil {
+			dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay", tenantID, taskID)
+			if err := s.outboxRepo.InsertDirectWithDedupe(ctx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
 				return nil, fmt.Errorf("outbox insert replay: %w", err)
 			}
 		} else {
@@ -335,13 +367,19 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	}
 
 	metrics.TasksCreated.WithLabelValues(tenantID).Inc()
-	_ = s.publishEvent(ctx, core.JanusEvent{
+	createdEvent := core.JanusEvent{
 		EventType:   core.EventTaskCreated,
 		TenantID:    tenantID,
 		TaskID:      taskID,
 		SourceAgent: task.SourceAgent,
 		Payload:     mustMarshal(map[string]string{"status": "replayed"}),
-	})
+	}
+	if s.outboxRepo != nil {
+		payload, _ := json.Marshal(createdEvent)
+		_ = s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "event_publish", payload)
+	} else {
+		_ = s.publishEvent(ctx, createdEvent)
+	}
 
 	return s.taskRepo.Get(ctx, tenantID, taskID)
 }
@@ -370,6 +408,33 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 	if !core.CanTransition(current.Status, status) {
 		return fmt.Errorf("invalid transition: %s -> %s for task %s", current.Status, status, taskID)
 	}
+
+	// Lifecycle path: CAS + event outbox in one tx (when PG repos + lifecycle).
+	if s.lifecycle != nil {
+		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
+			err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+				ok, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, current.Status, status, attemptInc)
+				if err := uerr; err != nil {
+					return fmt.Errorf("update task status to %s: %w", status, err)
+				}
+				if !ok {
+					return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, current.Status)
+				}
+				payload, _ := json.Marshal(core.JanusEvent{
+					EventType: eventType, TenantID: tenantID, TaskID: taskID,
+					Payload: mustMarshal(map[string]string{"status": string(status)}),
+				})
+				return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload)
+			})
+			if err != nil {
+				return err
+			}
+			recordTaskMetric(tenantID, status)
+			return nil
+		}
+	}
+
+	// Fallback path (no lifecycle or non-PG repo).
 	ok, err := s.taskRepo.UpdateStatusWithCheck(ctx, tenantID, taskID, current.Status, status, attemptInc)
 	if err != nil {
 		return fmt.Errorf("update task status to %s: %w", status, err)
@@ -425,10 +490,9 @@ func ulid() string {
 		b[i] = byte(t & 0xff)
 		t >>= 8
 	}
+	// Use crypto/rand for the entropy portion so IDs generated within the same
+	// millisecond do not collide.
 	randBytes := make([]byte, 6)
-	for i := range randBytes {
-		randBytes[i] = byte(t & 0xff)
-		t = t>>8 + uint64(i)
-	}
+	_, _ = crand.Read(randBytes)
 	return fmt.Sprintf("%x%x", b, randBytes)
 }

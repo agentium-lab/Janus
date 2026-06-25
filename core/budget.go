@@ -37,6 +37,7 @@ const (
 	ReasonModelRPMExceeded      BackpressureReason = "model_rpm_exceeded"
 	ReasonDailyBudgetExceeded   BackpressureReason = "daily_budget_exceeded"
 	ReasonApprovalRequired      BackpressureReason = "approval_required"
+	ReasonPolicyDenied			BackpressureReason = "policy_denied"
 )
 
 // BackpressureError is returned when dispatch is blocked.
@@ -47,4 +48,19 @@ type BackpressureError struct {
 
 func (e *BackpressureError) Error() string {
 	return string(e.Reason) + ": " + e.Message
+}
+
+// LedgerEntry is one idempotent budget settlement record for a task attempt.
+// Primary key (TenantID, TaskID, Attempt, ScopeType, ScopeID) guarantees a
+// given attempt is settled at most once per scope.
+type LedgerEntry struct {
+	TenantID         string
+	TaskID           string
+	Attempt          int
+	ScopeType        string // "tenant" | "agent"
+	ScopeID          string
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CostUSD          float64
 }

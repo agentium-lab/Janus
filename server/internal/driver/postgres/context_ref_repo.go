@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -23,10 +24,16 @@ func (r *ContextRefRepo) Insert(ctx context.Context, ref core.ContextRef) error 
 	if ref.ExpiresAt != "" {
 		expiresAt = &ref.ExpiresAt
 	}
+	var createdAt interface{}
+	if ref.CreatedAt != "" {
+		createdAt = ref.CreatedAt
+	} else {
+		createdAt = time.Now()
+	}
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO context_refs (tenant_id, id, type, uri, hash, classification, access_scope, expires_at, created_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9::timestamptz)`,
-		ref.TenantID, ref.ID, ref.Type, ref.URI, ref.Hash, ref.Classification, scopeJSON, expiresAt, ref.CreatedAt,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
+		ref.TenantID, ref.ID, ref.Type, ref.URI, ref.Hash, ref.Classification, scopeJSON, expiresAt, createdAt,
 	)
 	return err
 }

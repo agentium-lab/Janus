@@ -29,13 +29,26 @@ func (r *ApprovalRepo) Create(ctx context.Context, a core.Approval) error {
 func (r *ApprovalRepo) Get(ctx context.Context, tenantID, approvalID string) (*core.Approval, error) {
 	var a core.Approval
 	var decidedAt *time.Time
+	var requestedBy, approver, reason, decision *string
 	err := r.pool.QueryRow(ctx,
 		`SELECT tenant_id, id, task_id, status, requested_by, approver, reason, decision, expires_at, created_at, decided_at
 		 FROM approvals WHERE tenant_id = $1 AND id = $2`,
 		tenantID, approvalID,
-	).Scan(&a.TenantID, &a.ID, &a.TaskID, &a.Status, &a.RequestedBy, &a.Approver, &a.Reason, &a.Decision, &a.ExpiresAt, &a.CreatedAt, &decidedAt)
+	).Scan(&a.TenantID, &a.ID, &a.TaskID, &a.Status, &requestedBy, &approver, &reason, &decision, &a.ExpiresAt, &a.CreatedAt, &decidedAt)
 	if err != nil {
 		return nil, err
+	}
+	if requestedBy != nil {
+		a.RequestedBy = *requestedBy
+	}
+	if approver != nil {
+		a.Approver = *approver
+	}
+	if reason != nil {
+		a.Reason = *reason
+	}
+	if decision != nil {
+		a.Decision = *decision
 	}
 	a.DecidedAt = decidedAt
 	return &a, nil
@@ -81,8 +94,21 @@ func (r *ApprovalRepo) ListPending(ctx context.Context, tenantID string, limit i
 	for rows.Next() {
 		var a core.Approval
 		var decidedAt *time.Time
-		if err := rows.Scan(&a.TenantID, &a.ID, &a.TaskID, &a.Status, &a.RequestedBy, &a.Approver, &a.Reason, &a.Decision, &a.ExpiresAt, &a.CreatedAt, &decidedAt); err != nil {
+		var requestedBy, approver, reason, decision *string
+		if err := rows.Scan(&a.TenantID, &a.ID, &a.TaskID, &a.Status, &requestedBy, &approver, &reason, &decision, &a.ExpiresAt, &a.CreatedAt, &decidedAt); err != nil {
 			return nil, err
+		}
+		if requestedBy != nil {
+			a.RequestedBy = *requestedBy
+		}
+		if approver != nil {
+			a.Approver = *approver
+		}
+		if reason != nil {
+			a.Reason = *reason
+		}
+		if decision != nil {
+			a.Decision = *decision
 		}
 		a.DecidedAt = decidedAt
 		result = append(result, &a)

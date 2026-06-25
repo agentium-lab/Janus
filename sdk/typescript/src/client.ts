@@ -1,0 +1,193 @@
+// Janus TypeScript SDK — HTTP client
+
+import { JanusAPIError } from "./error";
+import type {
+  Agent,
+  RegisterAgentRequest,
+  CreateMailboxRequest,
+  Mailbox,
+  Task,
+  PublishTaskRequest,
+  PullResult,
+  AckRequest,
+  NackRequest,
+  BudgetRequest,
+  BudgetSpec,
+  PolicyRule,
+  PolicyRuleTemplateRequest,
+  CreatedAPIKey,
+  APIKey,
+  CreateAPIKeyRequest,
+} from "./types";
+
+export interface ClientConfig {
+  baseURL: string;
+  tenantID: string;
+  apiKey?: string;
+  timeout?: number;
+}
+
+export class Client {
+  private baseURL: string;
+  private tenantID: string;
+  private apiKey?: string;
+  private timeout: number;
+
+  constructor(config: ClientConfig) {
+    this.baseURL = config.baseURL.replace(/\/$/, "");
+    this.tenantID = config.tenantID;
+    this.apiKey = config.apiKey;
+    this.timeout = config.timeout || 30000;
+  }
+
+  private get prefix(): string {
+    return `/v1/tenants/${this.tenantID}`;
+  }
+
+  private url(path: string): string {
+    return `${this.baseURL}${this.prefix}${path}`;
+  }
+
+  private async doFetch(method: string, path: string, body?: unknown): Promise<Response> {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.apiKey) headers["X-API-Key"] = this.apiKey;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const resp = await fetch(this.url(path), {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        let errBody: { error?: string; code?: string; message?: string; status?: number } = {};
+        try { errBody = await resp.json() as any; } catch { /* non-JSON error */ }
+        throw new JanusAPIError(resp.status, errBody);
+      }
+      return resp;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async json<T>(method: string, path: string, body?: unknown): Promise<T> {
+    const resp = await this.doFetch(method, path, body);
+    return resp.json() as Promise<T>;
+  }
+
+  // --- Tenant ---
+
+  async getTenant(id: string): Promise<{ id: string }> {
+    return this.json("GET", `/../${id}`);
+  }
+
+  // --- Agent ---
+
+  async registerAgent(req: RegisterAgentRequest): Promise<{ id: string }> {
+    return this.json("POST", "/agents", req);
+  }
+
+  async listAgents(): Promise<Agent[]> {
+    const data = await this.json<{ agents?: Agent[] }>("GET", "/agents");
+    return data.agents || [];
+  }
+
+  async getAgent(agentID: string): Promise<Agent> {
+    return this.json("GET", `/agents/${agentID}`);
+  }
+
+  async heartbeatAgent(agentID: string): Promise<void> {
+    await this.doFetch("POST", `/agents/${agentID}/heartbeat`);
+  }
+
+  // --- Mailbox ---
+
+  async createMailbox(req: CreateMailboxRequest): Promise<Mailbox> {
+    return this.json("POST", "/mailboxes", req);
+  }
+
+  async getMailbox(mailboxID: string): Promise<Mailbox> {
+    return this.json("GET", `/mailboxes/${mailboxID}`);
+  }
+
+  // --- Task ---
+
+  async publishTask(req: PublishTaskRequest): Promise<Task> {
+    return this.json("POST", "/tasks", req);
+  }
+
+  async getTask(taskID: string): Promise<Task> {
+    return this.json("GET", `/tasks/${taskID}`);
+  }
+
+  async cancelTask(taskID: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/cancel`);
+  }
+
+  async replayTask(taskID: string): Promise<Task> {
+    return this.json("POST", `/tasks/${taskID}/replay`);
+  }
+
+  // --- Dispatch lifecycle ---
+
+  async pullTask(mailboxID: string, agentID: string): Promise<PullResult | null> {
+    const resp = await this.doFetch("POST", `/mailboxes/${mailboxID}/pull`, { agent_id: agentID });
+    if (resp.status === 204) return null;
+    const text = await resp.text();
+    if (!text) return null;
+    return JSON.parse(text) as PullResult;
+  }
+
+  async startTask(taskID: string, attempt: number, leaseID: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/start`, { attempt, lease_id: leaseID });
+  }
+
+  async heartbeat(taskID: string, attempt: number, leaseID: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/heartbeat`, { attempt, lease_id: leaseID });
+  }
+
+  async ackTask(taskID: string, req: AckRequest): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/ack`, req);
+  }
+
+  async nackTask(taskID: string, req: NackRequest): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/nack`, req);
+  }
+
+  // --- API Keys ---
+
+  async createAPIKey(req: CreateAPIKeyRequest): Promise<CreatedAPIKey> {
+    return this.json("POST", "/api-keys", req);
+  }
+
+  async listAPIKeys(): Promise<APIKey[]> {
+    const data = await this.json<{ api_keys?: APIKey[] }>("GET", "/api-keys");
+    return data.api_keys || [];
+  }
+
+  async revokeAPIKey(keyID: string): Promise<APIKey> {
+    return this.json("POST", `/api-keys/${keyID}/revoke`);
+  }
+
+  // --- Governance ---
+
+  async createPolicyRuleFromTemplate(req: PolicyRuleTemplateRequest): Promise<PolicyRule> {
+    return this.json("POST", "/policy-rules/templates", req);
+  }
+
+  async listPolicyRules(): Promise<PolicyRule[]> {
+    const data = await this.json<{ policy_rules?: PolicyRule[] }>("GET", "/policy-rules");
+    return data.policy_rules || [];
+  }
+
+  async upsertBudget(req: BudgetRequest): Promise<BudgetSpec> {
+    return this.json("POST", "/budgets", req);
+  }
+
+  async getBudget(scopeType: string, scopeID: string): Promise<BudgetSpec> {
+    return this.json("GET", `/budgets/${scopeType}/${scopeID}`);
+  }
+}

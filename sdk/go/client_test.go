@@ -176,13 +176,13 @@ func TestClient_PullTask_NoMessages(t *testing.T) {
 
 func TestClient_StartTask(t *testing.T) {
 	c := newTestClient(t, testMux())
-	err := c.StartTask(context.Background(), "task-1", "lease-abc")
+	err := c.StartTask(context.Background(), "task-1", 1, "lease-abc")
 	require.NoError(t, err)
 }
 
 func TestClient_Heartbeat(t *testing.T) {
 	c := newTestClient(t, testMux())
-	err := c.Heartbeat(context.Background(), "task-1", "lease-abc")
+	err := c.Heartbeat(context.Background(), "task-1", 1, "lease-abc")
 	require.NoError(t, err)
 }
 
@@ -190,6 +190,7 @@ func TestClient_AckTask(t *testing.T) {
 	c := newTestClient(t, testMux())
 	err := c.AckTask(context.Background(), "task-1", AckRequest{
 		LeaseID:   "lease-abc",
+		Attempt:   1,
 		ResultRef: "s3://results/1",
 		TokenUsage: &core.TokenUsage{PromptTokens: 10000, CompletionTokens: 5000, TotalTokens: 15000},
 	})
@@ -200,6 +201,7 @@ func TestClient_NackTask(t *testing.T) {
 	c := newTestClient(t, testMux())
 	err := c.NackTask(context.Background(), "task-1", NackRequest{
 		LeaseID:   "lease-abc",
+		Attempt:   1,
 		Retriable: true,
 		Error:     &core.TaskError{Code: "TIMEOUT", Message: "agent timed out"},
 	})
@@ -238,7 +240,7 @@ func TestClient_ServerError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	c := newTestClient(t, mux)
-	err := c.StartTask(context.Background(), "task-1", "lease-abc")
+	err := c.StartTask(context.Background(), "task-1", 1, "lease-abc")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 }
@@ -340,12 +342,12 @@ func TestClient_CancelTask_NilBody(t *testing.T) {
 
 func TestClient_AckTask_NoTokenUsage(t *testing.T) {
 	c := newTestClient(t, testMux())
-	err := c.AckTask(context.Background(), "task-1", AckRequest{LeaseID: "lease-abc"})
+	err := c.AckTask(context.Background(), "task-1", AckRequest{LeaseID: "lease-abc", Attempt: 1})
 	require.NoError(t, err)
 }
 
 func TestClient_NackTask_NoError(t *testing.T) {
 	c := newTestClient(t, testMux())
-	err := c.NackTask(context.Background(), "task-1", NackRequest{LeaseID: "lease-abc", Retriable: false})
+	err := c.NackTask(context.Background(), "task-1", NackRequest{LeaseID: "lease-abc", Attempt: 1, Retriable: false})
 	require.NoError(t, err)
 }

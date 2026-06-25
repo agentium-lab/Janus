@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -14,6 +15,7 @@ type NackReason string
 
 const (
 	NackRetriable    NackReason = "retriable"
+	NackRetriableDelayed NackReason = "retriable_delayed"
 	NackNonRetriable NackReason = "non_retriable"
 )
 
@@ -28,17 +30,43 @@ type TaskMessage struct {
 	TenantID string
 	MailboxID string
 	TaskID   string
+	Attempt	  int
 	Priority Priority
 	Payload  []byte
+	DedupeKey   string
 	Headers  map[string]string
 }
 
 // TaskDelivery is a task fetched from a mailbox.
 type TaskDelivery struct {
 	TaskID          string
+	Attempt			int
 	Payload         []byte
 	DeliveryRef     DeliveryRef
 	RedeliveryCount int
+}
+
+// DLQMessage is the outbox payload used to publish a task to a mailbox DLQ
+type DLQMessage struct {
+	Message		TaskMessage  `json:"message"`
+	ErrorPayload 	json.RawMessage  `json:"error_payload"`
+}
+
+type DLQStreamMessage struct {
+	TenantID		string		`json:"tenant_id"`
+	MailboxID		string		`json:"mailbox_id"`
+	TaskID			string		`json:"task_id"`
+	Attempt			int			`json:"attempt"`
+	AttemptCount	int			`json:"attempt_count,omitempty"`
+	Priority 		Priority	`json:"priority,omitempty"`
+	OriginalEnvelope json.RawMessage	`json:"original_envelope,omitempty"`
+	ErrorPayload	json.RawMessage 	`json:"error_payload,omitempty"`
+	FailureReason	string		`json:"failure_reason,omitempty"`
+	PolicyDecisionID	string	`json:"policy_decision_id,omitempty"`
+	FirstFailedAt	*time.Time	`json:"first_failed_at,omitempty"`
+	DeadLetteredAt	*time.Time	`json:"dead_lettered_at"`
+	DedupeKey		string		`json:"dedupe_key,omitempty"`
+	Headers			map[string]string	`json:"headers,omitempty"`
 }
 
 // MailboxSpec defines the configuration for creating a mailbox in the driver.

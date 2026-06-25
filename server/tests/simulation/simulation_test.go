@@ -238,6 +238,18 @@ func (r *simTaskRepo) CountByStatus(_ context.Context, tenantID string, status c
 	return count, nil
 }
 
+func (r *simTaskRepo) CountRunningByAgent(_ context.Context, tenantID, agentID string) (int, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	count := 0
+	for _, t := range r.tasks {
+		if t.TenantID == tenantID && t.SourceAgent == agentID && (t.Status == core.TaskStatusClaimed || t.Status == core.TaskStatusRunning) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 func (r *simTaskRepo) ResetForReplay(_ context.Context, tenantID, taskID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

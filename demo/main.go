@@ -141,7 +141,7 @@ func (a *PipelineAgent) run(ctx context.Context) {
 		log.Printf("[%s] Pulled task %s", a.name, task.ID)
 
 		if result.Lease.LeaseID != "" {
-			_ = a.client.StartTask(ctx, task.ID, result.Lease.LeaseID)
+			_ = a.client.StartTask(ctx, task.ID, result.Lease.Attempt, result.Lease.LeaseID)
 		}
 
 		output := a.onTask(ctx, task, a.client, a.tenant)
@@ -149,6 +149,7 @@ func (a *PipelineAgent) run(ctx context.Context) {
 		if result.Lease.LeaseID != "" {
 			err = a.client.AckTask(ctx, task.ID, janus.AckRequest{
 				LeaseID:   result.Lease.LeaseID,
+				Attempt:   result.Lease.Attempt,
 				ResultRef: fmt.Sprintf("result://%s/%s", a.id, task.ID),
 			})
 			if err != nil {

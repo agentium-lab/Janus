@@ -207,6 +207,56 @@ func (r *TaskRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID
 	return err
 }
 
+// UpdateStatusWithCheckTx is the transactional variant of UpdateStatusWithCheck.
+// It performs a compare-and-set: only updates if the current status matches
+// expectedStatus. Returns true if a row was updated.
+func (r *TaskRepository) UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error) {
+	var tag pgconn.CommandTag
+	var err error
+	if attemptIncrement > 0 {
+		tag, err = tx.Exec(ctx,
+			`UPDATE tasks SET status = $1, attempt_count = attempt_count + $2, updated_at = now()
+			 WHERE tenant_id = $3 AND id = $4 AND status = $5`,
+			string(newStatus), attemptIncrement, tenantID, taskID, string(expectedStatus),
+		)
+	} else if newStatus == core.TaskStatusCompleted {
+		tag, err = tx.Exec(ctx,
+			`UPDATE tasks SET status = $1, updated_at = now(), completed_at = now()
+			 WHERE tenant_id = $2 AND id = $3 AND status = $4`,
+			string(newStatus), tenantID, taskID, string(expectedStatus),
+		)
+	} else {
+		tag, err = tx.Exec(ctx,
+			`UPDATE tasks SET status = $1, updated_at = now()
+			 WHERE tenant_id = $2 AND id = $3 AND status = $4`,
+			string(newStatus), tenantID, taskID, string(expectedStatus),
+		)
+	}
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// SetResultRefTx is the transactional variant of SetResultRef.
+func (r *TaskRepository) SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE tasks SET result_ref = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		resultRef, tenantID, taskID,
+	)
+	return err
+}
+
+// UpdateRetryAtTx is the transactional variant of UpdateRetryAt. It also sets
+// status to retry_scheduled (matching the non-tx variant's behavior).
+func (r *TaskRepository) UpdateRetryAtTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, retryAt time.Time) error {
+	_, err := tx.Exec(ctx,
+		`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
+		retryAt, tenantID, taskID,
+	)
+	return err
+}
+
 func (r *TaskRepository) UpdateRetryAt(ctx context.Context, tenantID, taskID string, retryAt time.Time) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now() WHERE tenant_id = $2 AND id = $3`,
@@ -366,6 +416,18 @@ func (r *TaskRepository) CountByStatus(ctx context.Context, tenantID string, sta
 	err := r.pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM tasks WHERE tenant_id = $1 AND status = $2`,
 		tenantID, status,
+	).Scan(&count)
+	return count, err
+}
+
+// CountRunningByAgent counts tasks currently claimed/running for a specific
+// agent within a tenant. Used for per-agent concurrency budget checks.
+func (r *TaskRepository) CountRunningByAgent(ctx context.Context, tenantID, agentID string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tasks
+		 WHERE tenant_id = $1 AND source_agent = $2 AND status IN ('claimed', 'running')`,
+		tenantID, agentID,
 	).Scan(&count)
 	return count, err
 }

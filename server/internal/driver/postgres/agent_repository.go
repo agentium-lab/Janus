@@ -20,9 +20,9 @@ func NewAgentRepository(pool *pgxpool.Pool) *AgentRepository {
 
 func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO agents (id, tenant_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		agent.ID, agent.TenantID, agent.DisplayName, string(agent.Protocol),
+		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		agent.ID, agent.TenantID, nilIfEmpty(agent.TeamID), agent.DisplayName, string(agent.Protocol),
 		nilIfEmpty(agent.Endpoint), string(agent.Status), nilIfEmpty(agent.Description),
 		agent.MaxConcurrency, nilIfZero(agent.RPM), nilIfZero(agent.TPM),
 	)
@@ -32,18 +32,18 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 func (r *AgentRepository) Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error) {
 	var a core.Agent
 	var protocol, status string
-	var endpoint, description *string
+	var teamID, endpoint, description *string
 	var maxConc int
 	var rpm, tpm *int
 	var lastHB *time.Time
 
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, tenant_id, display_name, protocol, endpoint, status, description,
+		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
 		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 AND id = $2`,
 		tenantID, agentID,
 	).Scan(
-		&a.ID, &a.TenantID, &a.DisplayName, &protocol, &endpoint, &status, &description,
+		&a.ID, &a.TenantID, &teamID, &a.DisplayName, &protocol, &endpoint, &status, &description,
 		&maxConc, &rpm, &tpm, &a.CreatedAt, &a.UpdatedAt, &lastHB,
 	)
 	if err != nil {
@@ -52,6 +52,9 @@ func (r *AgentRepository) Get(ctx context.Context, tenantID, agentID string) (*c
 
 	a.Protocol = core.AgentProtocol(protocol)
 	a.Status = core.AgentStatus(status)
+	if teamID != nil {
+		a.TeamID = *teamID
+	}
 	if endpoint != nil {
 		a.Endpoint = *endpoint
 	}
@@ -90,7 +93,7 @@ func (r *AgentRepository) UpdateHeartbeat(ctx context.Context, tenantID, agentID
 
 func (r *AgentRepository) List(ctx context.Context, tenantID string) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, tenant_id, display_name, protocol, endpoint, status, description,
+		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
 		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 ORDER BY id`,
 		tenantID,
@@ -104,7 +107,7 @@ func (r *AgentRepository) List(ctx context.Context, tenantID string) ([]*core.Ag
 
 func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, status core.AgentStatus) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, tenant_id, display_name, protocol, endpoint, status, description,
+		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
 		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 AND status = $2 ORDER BY id`,
 		tenantID, string(status),
@@ -118,7 +121,7 @@ func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, sta
 
 func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, tenant_id, display_name, protocol, endpoint, status, description,
+		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
 		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE status = $1 ORDER BY id`,
 		string(status),
@@ -132,7 +135,7 @@ func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.Agent
 
 func (r *AgentRepository) FindByCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT DISTINCT a.id, a.tenant_id, a.display_name, a.protocol, a.endpoint, a.status, a.description,
+		`SELECT DISTINCT a.id, a.tenant_id, a.team_id, a.display_name, a.protocol, a.endpoint, a.status, a.description,
 		        a.max_concurrency, a.rpm, a.tpm, a.created_at, a.updated_at, a.last_heartbeat_at
 		 FROM agents a
 		 JOIN agent_capabilities ac ON a.tenant_id = ac.tenant_id AND a.id = ac.agent_id
@@ -152,13 +155,13 @@ func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 	for rows.Next() {
 		var a core.Agent
 		var protocol, status string
-		var endpoint, description *string
+		var teamID, endpoint, description *string
 		var maxConc int
 		var rpm, tpm *int
 		var lastHB *time.Time
 
 		err := rows.Scan(
-			&a.ID, &a.TenantID, &a.DisplayName, &protocol, &endpoint, &status, &description,
+			&a.ID, &a.TenantID, &teamID, &a.DisplayName, &protocol, &endpoint, &status, &description,
 			&maxConc, &rpm, &tpm, &a.CreatedAt, &a.UpdatedAt, &lastHB,
 		)
 		if err != nil {
@@ -166,6 +169,9 @@ func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 		}
 		a.Protocol = core.AgentProtocol(protocol)
 		a.Status = core.AgentStatus(status)
+		if teamID != nil {
+			a.TeamID = *teamID
+		}
 		if endpoint != nil {
 			a.Endpoint = *endpoint
 		}

@@ -31,6 +31,7 @@ type PolicyInput struct {
 type PolicyActor struct {
 	Type string `json:"type"` // "agent", "user", "system"
 	ID   string `json:"id"`
+	TeamID	string	`json:"team_id,omitempty"`
 }
 
 // PolicyResource represents the target of an action.
@@ -44,6 +45,8 @@ type PolicyContextData struct {
 	DataClassification string  `json:"data_classification,omitempty"`
 	Tools              []string `json:"tools,omitempty"`
 	CostEstimateUSD    float64 `json:"cost_estimate_usd,omitempty"`
+	TargetAgentID		string `json:"target_agent_id,omitempty"`
+	TargetTeamID		string	`json:"target_team_id,omitempty"`
 }
 
 // PolicyDecision is the output of a policy evaluation.
