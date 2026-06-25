@@ -1,10 +1,11 @@
 name: CI
 
+# Temporarily disabled — re-enable when infra is stable
 on:
   push:
-    branches: [main]
+    branches: [never]
   pull_request:
-    branches: [main]
+    branches: [never]
 
 jobs:
   build:
