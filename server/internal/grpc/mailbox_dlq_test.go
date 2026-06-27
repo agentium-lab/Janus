@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -171,3 +172,111 @@ var errTestNotFound = errNotFound("task not found")
 type errNotFound string
 
 func (e errNotFound) Error() string { return string(e) }
+
+type mockMailboxSvcErr struct{}
+
+func (m *mockMailboxSvcErr) Create(_ context.Context, mb core.Mailbox) error  { return fmt.Errorf("create error") }
+func (m *mockMailboxSvcErr) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
+	return nil, fmt.Errorf("get error")
+}
+func (m *mockMailboxSvcErr) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
+	return fmt.Errorf("update error")
+}
+func (m *mockMailboxSvcErr) Pause(_ context.Context, _, _ string) error  { return fmt.Errorf("pause error") }
+func (m *mockMailboxSvcErr) Resume(_ context.Context, _, _ string) error { return fmt.Errorf("resume error") }
+
+func TestMailboxGRPC_CreateMailbox_Error(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
+	_, err := srv.CreateMailbox(context.Background(), &pb.CreateMailboxRequest{TenantId: "acme", Id: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_CreateMailbox_EmptyTenant(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvc{}}
+	_, err := srv.CreateMailbox(context.Background(), &pb.CreateMailboxRequest{Id: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_GetMailbox_Error(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
+	_, err := srv.GetMailbox(context.Background(), &pb.GetMailboxRequest{TenantId: "acme", MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_UpdateMailbox_Error(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
+	_, err := srv.UpdateMailbox(context.Background(), &pb.UpdateMailboxRequest{TenantId: "acme", MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_UpdateMailbox_EmptyTenant(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvc{}}
+	_, err := srv.UpdateMailbox(context.Background(), &pb.UpdateMailboxRequest{MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_PauseMailbox_Error(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
+	_, err := srv.PauseMailbox(context.Background(), &pb.MailboxActionRequest{TenantId: "acme", MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
+func TestMailboxGRPC_ResumeMailbox_Error(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
+	_, err := srv.ResumeMailbox(context.Background(), &pb.MailboxActionRequest{TenantId: "acme", MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
+type mockDLQSvcErr struct{}
+
+func (m *mockDLQSvcErr) QueryDLQ(_ context.Context, _, _ string, _ int) ([]*core.Task, error) {
+	return nil, fmt.Errorf("query error")
+}
+func (m *mockDLQSvcErr) ReplayDLQ(_ context.Context, _, _ string) (*core.Task, error) {
+	return nil, fmt.Errorf("replay error")
+}
+func (m *mockDLQSvcErr) DiscardDLQ(_ context.Context, _, _ string) error {
+	return fmt.Errorf("discard error")
+}
+
+func TestDLQGRPC_QueryDLQ_Error(t *testing.T) {
+	srv := &DLQServiceServer{svc: &mockDLQSvcErr{}}
+	_, err := srv.QueryDLQ(context.Background(), &pb.DLQQueryRequest{TenantId: "acme"})
+	assert.Error(t, err)
+}
+
+func TestDLQGRPC_ReplayDLQ_Error(t *testing.T) {
+	srv := &DLQServiceServer{svc: &mockDLQSvcErr{}}
+	_, err := srv.ReplayDLQ(context.Background(), &pb.DLQActionRequest{TenantId: "acme", TaskId: "t1"})
+	assert.Error(t, err)
+}
+
+func TestDLQGRPC_DiscardDLQ_Error(t *testing.T) {
+	srv := &DLQServiceServer{svc: &mockDLQSvcErr{}}
+	_, err := srv.DiscardDLQ(context.Background(), &pb.DLQActionRequest{TenantId: "acme", TaskId: "t1"})
+	assert.Error(t, err)
+}
+
+func TestDLQGRPC_DiscardDLQ_EmptyTenant(t *testing.T) {
+	srv := &DLQServiceServer{svc: &mockDLQSvc{}}
+	_, err := srv.DiscardDLQ(context.Background(), &pb.DLQActionRequest{TaskId: "t1"})
+	assert.Error(t, err)
+}
+
+type mockAuditSvcErr struct{}
+
+func (m *mockAuditSvcErr) QueryByTask(_ context.Context, _, _ string, _ int) ([]*core.JanusEvent, error) {
+	return nil, fmt.Errorf("audit task error")
+}
+func (m *mockAuditSvcErr) QueryByTrace(_ context.Context, _, _ string, _ int) ([]*core.JanusEvent, error) {
+	return nil, fmt.Errorf("audit trace error")
+}
+func (m *mockAuditSvcErr) QueryByTenant(_ context.Context, _ string, _ int) ([]*core.JanusEvent, error) {
+	return nil, fmt.Errorf("audit tenant error")
+}
+
+func TestAuditGRPC_ListEvents_Error(t *testing.T) {
+	srv := &AuditServiceServer{svc: &mockAuditSvcErr{}}
+	_, err := srv.ListEvents(context.Background(), &pb.ListEventsRequest{TenantId: "acme", TraceId: "tr-1"})
+	assert.Error(t, err)
+}

@@ -240,3 +240,104 @@ func (d *recordingDriver) EnsureTenant(_ context.Context, _ string) error       
 func (d *recordingDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
 func (d *recordingDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
 func (d *recordingDriver) Close() error                                              { return nil }
+
+type errorDriver struct{}
+
+func (d *errorDriver) PublishTask(_ context.Context, _ core.TaskMessage) error {
+	return fmt.Errorf("nats publish failed")
+}
+func (d *errorDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+	return nil, nil
+}
+func (d *errorDriver) AckTask(_ context.Context, _ core.DeliveryRef) error  { return nil }
+func (d *errorDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+	return nil
+}
+func (d *errorDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
+	return fmt.Errorf("dlq publish failed")
+}
+func (d *errorDriver) PublishEvent(_ context.Context, _ core.JanusEvent) error {
+	return fmt.Errorf("event publish failed")
+}
+func (d *errorDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
+	return nil, nil
+}
+func (d *errorDriver) EnsureTenant(_ context.Context, _ string) error          { return nil }
+func (d *errorDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *errorDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
+func (d *errorDriver) Close() error                                              { return nil }
+
+func TestPublisher_PublishBatch_PublishError(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	msg := core.TaskMessage{TenantID: "acme", MailboxID: "mb-1", TaskID: "task-err-1"}
+	payload, _ := json.Marshal(msg)
+	insertOutboxEntry(t, pool, "ob-err", "acme", "task_publish", "pending", payload)
+
+	drv := &errorDriver{}
+	pub := NewPublisher(repo, drv)
+	pub.publishBatch(ctx)
+
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-err").Scan(&status)
+	assert.Equal(t, "retry", status)
+}
+
+func TestPublisher_PublishBatch_EventPublishError(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	evt := core.JanusEvent{EventID: "e1", TenantID: "acme", EventType: core.EventTaskCreated}
+	payload, _ := json.Marshal(evt)
+	insertOutboxEntry(t, pool, "ob-evt-err", "acme", "event_publish", "pending", payload)
+
+	drv := &errorDriver{}
+	pub := NewPublisher(repo, drv)
+	pub.publishBatch(ctx)
+
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-evt-err").Scan(&status)
+	assert.Equal(t, "retry", status)
+}
+
+func TestPublisher_PublishBatch_DLQPublishError(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	msg := core.TaskMessage{TenantID: "acme", MailboxID: "mb-1", TaskID: "task-dlq-1"}
+	payload, _ := json.Marshal(msg)
+	insertOutboxEntry(t, pool, "ob-dlq-err", "acme", "dlq_publish", "pending", payload)
+
+	drv := &errorDriver{}
+	pub := NewPublisher(repo, drv)
+	pub.publishBatch(ctx)
+
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-dlq-err").Scan(&status)
+	assert.Equal(t, "retry", status)
+}
+
+func TestPublisher_PublishBatch_UnknownKind_NoOp(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	insertOutboxEntry(t, pool, "ob-unknown", "acme", "unknown_kind", "pending", []byte(`{}`))
+
+	drv := &recordingDriver{}
+	pub := NewPublisher(repo, drv)
+	pub.publishBatch(ctx)
+
+	// Unknown kind: publishOne returns nil (no-op), MarkPublished should be called.
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-unknown").Scan(&status)
+	assert.Equal(t, "published", status)
+}

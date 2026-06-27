@@ -15,6 +15,8 @@ func newTestClientMux(handler http.HandlerFunc) *Client {
 	return NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
 }
 
+func intPtr(v int) *int { return &v }
+
 func TestClient_GetTenant(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/v1/tenants/test-tenant", r.URL.Path)
@@ -264,4 +266,168 @@ func TestClient_QueryDLQ(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, tasks, 1)
 	assert.Equal(t, "task-1", tasks[0].ID)
+}
+
+func TestClient_UpdateMailbox(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPatch, r.Method)
+		assert.Equal(t, "/v1/tenants/test-tenant/mailboxes/mb-1", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"mb-1","status":"active"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	resp, err := c.UpdateMailbox(context.Background(), "mb-1", UpdateMailboxRequest{MaxConcurrency: intPtr(5)})
+	require.NoError(t, err)
+	assert.Equal(t, "mb-1", resp.ID)
+}
+
+func TestClient_UpdateMailbox_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"code":"INVALID","message":"bad request"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	_, err := c.UpdateMailbox(context.Background(), "mb-1", UpdateMailboxRequest{})
+	assert.Error(t, err)
+}
+
+func TestClient_PauseMailbox(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/tenants/test-tenant/mailboxes/mb-1/pause", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"mb-1","status":"paused"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	resp, err := c.PauseMailbox(context.Background(), "mb-1")
+	require.NoError(t, err)
+	assert.Equal(t, "mb-1", resp.ID)
+}
+
+func TestClient_PauseMailbox_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"code":"INTERNAL","message":"server error"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	_, err := c.PauseMailbox(context.Background(), "mb-1")
+	assert.Error(t, err)
+}
+
+func TestClient_ResumeMailbox(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/tenants/test-tenant/mailboxes/mb-1/resume", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"mb-1","status":"active"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	resp, err := c.ResumeMailbox(context.Background(), "mb-1")
+	require.NoError(t, err)
+	assert.Equal(t, "mb-1", resp.ID)
+}
+
+func TestClient_ResumeMailbox_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"code":"NOT_FOUND","message":"mailbox not found"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	_, err := c.ResumeMailbox(context.Background(), "mb-1")
+	assert.Error(t, err)
+}
+
+func TestClient_doGet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"id":"test"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	var result struct{ ID string `json:"id"` }
+	err := c.doGet(context.Background(), "/v1/test", &result)
+	require.NoError(t, err)
+	assert.Equal(t, "test", result.ID)
+}
+
+func TestClient_doGet_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"code":"BAD","message":"error"}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	var result struct{ ID string }
+	err := c.doGet(context.Background(), "/v1/test", &result)
+	assert.Error(t, err)
+}
+
+func TestAPIError_Full(t *testing.T) {
+	err := &APIError{StatusCode: 404, Code: "NOT_FOUND", Message: "task not found"}
+	assert.Contains(t, err.Error(), "404")
+	assert.Contains(t, err.Error(), "NOT_FOUND")
+	assert.Contains(t, err.Error(), "task not found")
+}
+
+func TestAPIError_MessageOnly(t *testing.T) {
+	err := &APIError{StatusCode: 500, Message: "internal error"}
+	assert.Contains(t, err.Error(), "500")
+	assert.Contains(t, err.Error(), "internal error")
+	assert.NotContains(t, err.Error(), "(0") // Code is empty
+}
+
+func TestAPIError_StatusCodeOnly(t *testing.T) {
+	err := &APIError{StatusCode: 503}
+	assert.Contains(t, err.Error(), "503")
+}
+
+func TestAPIError_Nil(t *testing.T) {
+	var err *APIError
+	assert.Equal(t, "", err.Error())
+}
+
+func TestAPIErrorCode(t *testing.T) {
+	assert.Equal(t, "INVALID_ARGUMENT", apiErrorCode(http.StatusBadRequest))
+	assert.Equal(t, "UNAUTHENTICATED", apiErrorCode(http.StatusUnauthorized))
+	assert.Equal(t, "PERMISSION_DENIED", apiErrorCode(http.StatusForbidden))
+	assert.Equal(t, "NOT_FOUND", apiErrorCode(http.StatusNotFound))
+	assert.Equal(t, "CONFLICT", apiErrorCode(http.StatusConflict))
+	assert.Equal(t, "RESOURCE_EXHAUSTED", apiErrorCode(http.StatusTooManyRequests))
+	assert.Equal(t, "UNAVAILABLE", apiErrorCode(http.StatusServiceUnavailable))
+	assert.Equal(t, "INTERNAL", apiErrorCode(http.StatusInternalServerError))
+	assert.Equal(t, "INTERNAL", apiErrorCode(http.StatusNotImplemented))
+	assert.Equal(t, "UNKNOWN", apiErrorCode(http.StatusTeapot))
+}
+
+func TestClient_PullTask_EmptyResp(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"task":null}`))
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	result, err := c.PullTask(context.Background(), "mb-1", "agent-1")
+	require.NoError(t, err)
+	assert.Nil(t, result.Task)
+}
+
+func TestClient_PullTask_EmptyAgentID(t *testing.T) {
+	c := NewClient(Config{BaseURL: "http://localhost", TenantID: "test-tenant"})
+	_, err := c.PullTask(context.Background(), "mb-1", "")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "agent id is required")
 }

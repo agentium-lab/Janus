@@ -14,6 +14,7 @@ import (
 type mockApprovalRepo struct {
 	approvals map[string]*core.Approval
 	err       error
+	updateErr error
 }
 
 func (m *mockApprovalRepo) Create(_ context.Context, a core.Approval) error {
@@ -47,6 +48,9 @@ func (m *mockApprovalRepo) GetPendingByTask(_ context.Context, tenantID, taskID 
 }
 
 func (m *mockApprovalRepo) UpdateDecision(_ context.Context, tenantID, approvalID, decision, approver, reason string) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	if m.err != nil {
 		return m.err
 	}
@@ -254,4 +258,92 @@ func TestApprovalService_RequestApproval_RepoError(t *testing.T) {
 	})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "create approval")
+}
+
+type mockOutboxWriter struct {
+	inserts   int
+	insertErr error
+}
+
+func (m *mockOutboxWriter) InsertDirect(_ context.Context, _, _, _ string, _ []byte) error {
+	m.inserts++
+	if m.insertErr != nil {
+		return m.insertErr
+	}
+	return nil
+}
+
+func TestApprovalService_Approve_WithOutbox(t *testing.T) {
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:apr-ob": {TenantID: "acme", ID: "apr-ob", TaskID: "task-ob", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
+	}}
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:task-ob": {TenantID: "acme", ID: "task-ob", Status: core.TaskStatusApprovalPending, MailboxID: "mb-1"},
+	}}
+	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	svc := NewApprovalService(repo, taskSvc, nil)
+	outbox := &mockOutboxWriter{}
+	svc.WithOutbox(outbox)
+
+	err := svc.Approve(context.Background(), "acme", "apr-ob", "admin", "looks good")
+	require.NoError(t, err)
+	assert.Equal(t, 1, outbox.inserts)
+}
+
+func TestApprovalService_Approve_WithQueueDriver(t *testing.T) {
+	qdrv := &mockQueueDriver{}
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:apr-qd": {TenantID: "acme", ID: "apr-qd", TaskID: "task-qd", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
+	}}
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:task-qd": {TenantID: "acme", ID: "task-qd", Status: core.TaskStatusApprovalPending, MailboxID: "mb-1"},
+	}}
+	taskSvc := NewTaskService(taskRepo, qdrv, nil, nil)
+	svc := NewApprovalService(repo, taskSvc, qdrv)
+
+	err := svc.Approve(context.Background(), "acme", "apr-qd", "admin", "ok")
+	require.NoError(t, err)
+	assert.Equal(t, 1, len(qdrv.publishedTasks))
+}
+
+func TestApprovalService_Approve_NoMailbox(t *testing.T) {
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:apr-nm": {TenantID: "acme", ID: "apr-nm", TaskID: "task-nm", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
+	}}
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:task-nm": {TenantID: "acme", ID: "task-nm", Status: core.TaskStatusApprovalPending, MailboxID: ""},
+	}}
+	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	svc := NewApprovalService(repo, taskSvc, nil)
+
+	err := svc.Approve(context.Background(), "acme", "apr-nm", "admin", "ok")
+	require.NoError(t, err)
+}
+
+func TestApprovalService_Approve_TransitionError(t *testing.T) {
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:apr-te": {TenantID: "acme", ID: "apr-te", TaskID: "task-te", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
+	}}
+	taskRepo := &mockTaskRepo{err: fmt.Errorf("db down")}
+	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	svc := NewApprovalService(repo, taskSvc, nil)
+
+	err := svc.Approve(context.Background(), "acme", "apr-te", "admin", "ok")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "queue task")
+}
+
+func TestApprovalService_Approve_UpdateDecisionError(t *testing.T) {
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:apr-ud": {TenantID: "acme", ID: "apr-ud", TaskID: "task-ud", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
+	}, updateErr: fmt.Errorf("db locked")}
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:task-ud": {TenantID: "acme", ID: "task-ud", Status: core.TaskStatusApprovalPending},
+	}}
+	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
+	svc := NewApprovalService(repo, taskSvc, nil)
+
+	err := svc.Approve(context.Background(), "acme", "apr-ud", "admin", "ok")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "update approval")
 }

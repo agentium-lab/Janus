@@ -2,6 +2,7 @@ package heartbeat
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -173,4 +174,64 @@ func TestSweeper_ScanExpiredEmptyForTenant(t *testing.T) {
 	if len(status.updates) != 0 {
 		t.Fatalf("expected 0 updates, got %d", len(status.updates))
 	}
+}
+
+type mockHBScannerErr struct{}
+
+func (m *mockHBScannerErr) ScanExpired(ctx context.Context, tenantID string) ([]string, error) {
+	return nil, fmt.Errorf("scan error")
+}
+
+type mockAgentStatusListErr struct{}
+
+func (m *mockAgentStatusListErr) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
+	return nil
+}
+
+func (m *mockAgentStatusListErr) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	return nil, fmt.Errorf("list error")
+}
+
+func TestSweeper_ListError_Returns(t *testing.T) {
+	scanner := &mockHBScanner{expired: map[string][]string{}}
+	status := &mockAgentStatusListErr{}
+
+	s := NewSweeper(scanner, status, 10*time.Second)
+	s.sweep(context.Background())
+}
+
+func TestSweeper_ScanExpiredError_ContinuesLoop(t *testing.T) {
+	scanner := &mockHBScannerErr{}
+	status := &mockAgentStatus{
+		online: []*core.Agent{
+			{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline},
+		},
+	}
+
+	s := NewSweeper(scanner, status, 10*time.Second)
+	s.sweep(context.Background())
+
+	if len(status.updates) != 0 {
+		t.Fatalf("expected 0 updates on scan error, got %d", len(status.updates))
+	}
+}
+
+type mockAgentStatusUpdateErr struct{}
+
+func (m *mockAgentStatusUpdateErr) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
+	return fmt.Errorf("update error")
+}
+
+func (m *mockAgentStatusUpdateErr) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	return []*core.Agent{
+		{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline},
+	}, nil
+}
+
+func TestSweeper_UpdateStatusError_LogsAndContinues(t *testing.T) {
+	scanner := &mockHBScanner{expired: map[string][]string{"t1": {"a1"}}}
+	status := &mockAgentStatusUpdateErr{}
+
+	s := NewSweeper(scanner, status, 10*time.Second)
+	s.sweep(context.Background())
 }
