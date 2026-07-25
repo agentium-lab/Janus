@@ -113,6 +113,18 @@ export class Client {
     return this.json("GET", `/mailboxes/${mailboxID}`);
   }
 
+  async updateMailbox(mailboxID: string, config: { max_concurrency?: number; ack_wait_seconds?: number; max_deliver?: number; retention_seconds?: number }): Promise<Mailbox> {
+    return this.json("PATCH", `/mailboxes/${mailboxID}`, config);
+  }
+
+  async pauseMailbox(mailboxID: string): Promise<{ status: string }> {
+    return this.json("POST", `/mailboxes/${mailboxID}/pause`);
+  }
+
+  async resumeMailbox(mailboxID: string): Promise<{ status: string }> {
+    return this.json("POST", `/mailboxes/${mailboxID}/resume`);
+  }
+
   // --- Task ---
 
   async publishTask(req: PublishTaskRequest): Promise<Task> {
@@ -129,6 +141,11 @@ export class Client {
 
   async replayTask(taskID: string): Promise<Task> {
     return this.json("POST", `/tasks/${taskID}/replay`);
+  }
+
+  async getTaskEvents(taskID: string): Promise<unknown[]> {
+    const data = await this.json<{ events?: unknown[] } | unknown[]>("GET", `/tasks/${taskID}/events`);
+    return Array.isArray(data) ? data : (data as { events?: unknown[] }).events || [];
   }
 
   // --- Dispatch lifecycle ---
@@ -189,5 +206,34 @@ export class Client {
 
   async getBudget(scopeType: string, scopeID: string): Promise<BudgetSpec> {
     return this.json("GET", `/budgets/${scopeType}/${scopeID}`);
+  }
+
+  async listBudgets(): Promise<BudgetSpec[]> {
+    const data = await this.json<{ budgets?: BudgetSpec[] }>("GET", "/budgets");
+    return data.budgets || [];
+  }
+
+  // --- DLQ ---
+
+  async queryDLQ(opts?: { mailbox?: string; limit?: number }): Promise<Task[]> {
+    const params = new URLSearchParams();
+    if (opts?.mailbox) params.set("mailbox", opts.mailbox);
+    if (opts?.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    const path = qs ? `/dlq?${qs}` : "/dlq";
+    const data = await this.json<{ tasks?: Task[] }>("GET", path);
+    return data.tasks || [];
+  }
+
+  async replayDLQ(taskID: string): Promise<Task> {
+    return this.json("POST", `/dlq/${taskID}/replay`);
+  }
+
+  async discardDLQ(taskID: string): Promise<void> {
+    await this.doFetch("POST", `/dlq/${taskID}/discard`);
+  }
+
+  async createPolicyRule(req: { name: string; status?: string; priority?: number; condition?: unknown; action?: unknown }): Promise<PolicyRule> {
+    return this.json("POST", "/policy-rules", req);
   }
 }

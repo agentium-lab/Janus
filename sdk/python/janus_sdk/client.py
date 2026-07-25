@@ -133,6 +133,126 @@ class JanusClient:
         data = resp.json()
         return data.get("events", data) if isinstance(data, dict) else data
 
+    def create_tenant(self, tenant_id: str, name: str) -> dict:
+        resp = self._client.post(
+            f"{self._base_url}/v1/tenants",
+            json={"id": tenant_id, "name": name},
+        )
+        self._check(resp)
+        return resp.json()
+
+    def get_tenant(self, tenant_id: str) -> dict:
+        resp = self._client.get(f"{self._base_url}/v1/tenants/{tenant_id}")
+        self._check(resp)
+        return resp.json()
+
+    def create_mailbox(self, req) -> dict:
+        resp = self._client.post(self._url("/mailboxes"), json=req.model_dump(exclude_none=True))
+        self._check(resp)
+        return resp.json()
+
+    def get_mailbox(self, mailbox_id: str) -> dict:
+        resp = self._client.get(self._url(f"/mailboxes/{mailbox_id}"))
+        self._check(resp)
+        return resp.json()
+
+    def update_mailbox(self, mailbox_id: str, req) -> dict:
+        resp = self._client.patch(self._url(f"/mailboxes/{mailbox_id}"), json=req.model_dump(exclude_none=True))
+        self._check(resp)
+        return resp.json()
+
+    def pause_mailbox(self, mailbox_id: str) -> dict:
+        resp = self._client.post(self._url(f"/mailboxes/{mailbox_id}/pause"))
+        self._check(resp)
+        return resp.json()
+
+    def resume_mailbox(self, mailbox_id: str) -> dict:
+        resp = self._client.post(self._url(f"/mailboxes/{mailbox_id}/resume"))
+        self._check(resp)
+        return resp.json()
+
+    def heartbeat_agent(self, agent_id: str) -> dict:
+        resp = self._client.post(self._url(f"/agents/{agent_id}/heartbeat"))
+        self._check(resp)
+        return resp.json()
+
+    def list_agents(self) -> list[dict]:
+        resp = self._client.get(self._url("/agents"))
+        self._check(resp)
+        return resp.json().get("agents", [])
+
+    def get_agent(self, agent_id: str) -> dict:
+        resp = self._client.get(self._url(f"/agents/{agent_id}"))
+        self._check(resp)
+        return resp.json()
+
+    def query_dlq(self, mailbox_id: str = "", limit: int = 50) -> list[dict]:
+        params = {"limit": str(limit)}
+        if mailbox_id:
+            params["mailbox"] = mailbox_id
+        resp = self._client.get(self._url("/dlq"), params=params)
+        self._check(resp)
+        return resp.json().get("tasks", [])
+
+    def replay_dlq(self, task_id: str) -> dict:
+        resp = self._client.post(self._url(f"/dlq/{task_id}/replay"))
+        self._check(resp)
+        return resp.json()
+
+    def discard_dlq(self, task_id: str) -> None:
+        resp = self._client.post(self._url(f"/dlq/{task_id}/discard"))
+        self._check(resp)
+
+    def create_api_key(self, name: str) -> dict:
+        resp = self._client.post(self._url("/api-keys"), json={"name": name})
+        self._check(resp)
+        return resp.json()
+
+    def list_api_keys(self) -> list[dict]:
+        resp = self._client.get(self._url("/api-keys"))
+        self._check(resp)
+        return resp.json().get("api_keys", [])
+
+    def revoke_api_key(self, key_id: str) -> dict:
+        resp = self._client.post(self._url(f"/api-keys/{key_id}/revoke"))
+        self._check(resp)
+        return resp.json()
+
+    def create_policy_rule(self, req) -> dict:
+        resp = self._client.post(self._url("/policy-rules"), json=req.model_dump(exclude_none=True))
+        self._check(resp)
+        return resp.json()
+
+    def create_policy_rule_from_template(self, req) -> dict:
+        resp = self._client.post(self._url("/policy-rules/templates"), json=req.model_dump(exclude_none=True))
+        self._check(resp)
+        return resp.json()
+
+    def list_policy_rules(self) -> list[dict]:
+        resp = self._client.get(self._url("/policy-rules"))
+        self._check(resp)
+        return resp.json().get("policy_rules", [])
+
+    def upsert_budget(self, req) -> dict:
+        resp = self._client.post(self._url("/budgets"), json=req.model_dump(exclude_none=True))
+        self._check(resp)
+        return resp.json()
+
+    def get_budget(self, scope_type: str, scope_id: str) -> dict:
+        resp = self._client.get(self._url(f"/budgets/{scope_type}/{scope_id}"))
+        self._check(resp)
+        return resp.json()
+
+    def list_budgets(self) -> list[dict]:
+        resp = self._client.get(self._url("/budgets"))
+        self._check(resp)
+        return resp.json().get("budgets", [])
+
+    def replay_task(self, task_id: str) -> dict:
+        resp = self._client.post(self._url(f"/tasks/{task_id}/replay"))
+        self._check(resp)
+        return resp.json()
+
     def close(self) -> None:
         self._client.close()
 
