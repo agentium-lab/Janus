@@ -19,6 +19,11 @@ type Config struct {
 	Heartbeat  HeartbeatConfig `mapstructure:"heartbeat"`
 	Auth       AuthConfig     `mapstructure:"auth"`
 	TLS        TLSConfig      `mapstructure:"tls"`
+	Log        LogConfig      `mapstructure:"log"`
+	Metrics    MetricsConfig  `mapstructure:"metrics"`
+	Tracing    TracingConfig  `mapstructure:"tracing"`
+	Outbox     OutboxConfig   `mapstructure:"outbox"`
+	Artifacts  ArtifactsConfig `mapstructure:"artifacts"`
 }
 
 type PostgresConfig struct {
@@ -74,6 +79,34 @@ type TLSConfig struct {
 	ClientCAFile string `mapstructure:"client_ca_file"`
 }
 
+type LogConfig struct {
+	Level  string `mapstructure:"level"`
+	Format string `mapstructure:"format"`
+}
+
+type MetricsConfig struct {
+	Enabled bool `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"`
+}
+
+type TracingConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"`
+	ServiceName  string `mapstructure:"service_name"`
+}
+
+type OutboxConfig struct {
+	WorkerInterval  string `mapstructure:"worker_interval"`
+	BatchSize       int    `mapstructure:"batch_size"`
+	LeaseDuration   string `mapstructure:"lease_duration"`
+	MaxAttempts     int    `mapstructure:"max_attempts"`
+}
+
+type ArtifactsConfig struct {
+	StoreType string `mapstructure:"store_type"`
+	LocalDir  string `mapstructure:"local_dir"`
+}
+
 func Load() *Config {
 	v := viper.New()
 
@@ -123,6 +156,19 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", false)
 	v.SetDefault("tls.enabled", false)
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.format", "json")
+	v.SetDefault("metrics.enabled", true)
+	v.SetDefault("metrics.path", "/metrics")
+	v.SetDefault("tracing.enabled", false)
+	v.SetDefault("tracing.otlp_endpoint", "localhost:4317")
+	v.SetDefault("tracing.service_name", "janus-api")
+	v.SetDefault("outbox.worker_interval", "1s")
+	v.SetDefault("outbox.batch_size", 50)
+	v.SetDefault("outbox.lease_duration", "60s")
+	v.SetDefault("outbox.max_attempts", 10)
+	v.SetDefault("artifacts.store_type", "local")
+	v.SetDefault("artifacts.local_dir", "/tmp/janus-artifacts")
 }
 
 func bindEnvVars(v *viper.Viper) {
@@ -148,6 +194,19 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_TLS_CERT_FILE":         "tls.cert_file",
 		"JANUS_TLS_KEY_FILE":          "tls.key_file",
 		"JANUS_TLS_CLIENT_CA_FILE":    "tls.client_ca_file",
+		"JANUS_LOG_LEVEL":             "log.level",
+		"JANUS_LOG_FORMAT":            "log.format",
+		"JANUS_METRICS_ENABLED":       "metrics.enabled",
+		"JANUS_METRICS_PATH":          "metrics.path",
+		"JANUS_TRACING_ENABLED":       "tracing.enabled",
+		"JANUS_TRACING_OTLP_ENDPOINT": "tracing.otlp_endpoint",
+		"JANUS_TRACING_SERVICE_NAME":  "tracing.service_name",
+		"JANUS_OUTBOX_WORKER_INTERVAL": "outbox.worker_interval",
+		"JANUS_OUTBOX_BATCH_SIZE":      "outbox.batch_size",
+		"JANUS_OUTBOX_LEASE_DURATION":  "outbox.lease_duration",
+		"JANUS_OUTBOX_MAX_ATTEMPTS":    "outbox.max_attempts",
+		"JANUS_ARTIFACTS_STORE_TYPE":   "artifacts.store_type",
+		"JANUS_ARTIFACTS_LOCAL_DIR":    "artifacts.local_dir",
 	}
 
 	v.SetEnvPrefix("")
