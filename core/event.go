@@ -69,6 +69,14 @@ const (
 	EventNodeUnhealthy      EventType = "node.unhealthy"
 )
 
+// Security audit events (SEC-09)
+const (
+	EventSecurityAPIKeyCreated      EventType = "security.api_key_created"
+	EventSecurityAPIKeyRevoked      EventType = "security.api_key_revoked"
+	EventSecurityAuthFailed         EventType = "security.auth_failed"
+	EventSecurityTenantGuardDenied  EventType = "security.tenant_guard_denied"
+)
+
 // JanusEvent is the immutable fact record in Janus.
 type JanusEvent struct {
 	EventID     string    `json:"event_id"`

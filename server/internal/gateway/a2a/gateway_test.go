@@ -2,6 +2,7 @@ package a2a
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -201,4 +202,112 @@ func TestMessageToTask_EmptyParts(t *testing.T) {
 	}
 	task := MessageToTask(msg, "t1", "a1", "mb-1")
 	assert.Equal(t, "", task.Envelope.Payload.Content)
+}
+
+type mockStatusGetter struct {
+	task *core.Task
+	err  error
+}
+
+func (m *mockStatusGetter) Get(_ context.Context, _, _ string) (*core.Task, error) {
+	return m.task, m.err
+}
+
+func TestGateway_TaskStatus(t *testing.T) {
+	statusSvc := &mockStatusGetter{task: &core.Task{ID: "task-1", Status: core.TaskStatusCompleted}}
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, statusSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/a2a/task/task-1/status?tenant_id=acme", nil)
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGateway_TaskStatus_NotFound(t *testing.T) {
+	statusSvc := &mockStatusGetter{err: fmt.Errorf("not found")}
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, statusSvc)
+
+	req := httptest.NewRequest(http.MethodGet, "/a2a/task/missing/status?tenant_id=acme", nil)
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestGateway_TaskStatus_NoStatusSvc(t *testing.T) {
+	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
+
+	req := httptest.NewRequest(http.MethodGet, "/a2a/task/task-1/status?tenant_id=acme", nil)
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+func TestGateway_JSONRPC_TaskSend(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, nil)
+
+	body := `{"jsonrpc":"2.0","method":"task/send","params":{"id":"msg-1","params":{"message":{"role":"user","parts":[{"type":"text","text":"rpc hello"}]}}},"id":1}`
+	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme&source_agent=agent-1&mailbox_id=mb-1", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGateway_JSONRPC_TaskGet(t *testing.T) {
+	statusSvc := &mockStatusGetter{task: &core.Task{ID: "task-1", Status: core.TaskStatusRunning}}
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, statusSvc)
+
+	body := `{"jsonrpc":"2.0","method":"task/get","params":{"task_id":"task-1"},"id":2}`
+	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestGateway_JSONRPC_MethodNotFound(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, nil)
+
+	body := `{"jsonrpc":"2.0","method":"unknown/method","params":{},"id":3}`
+	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp jsonRPCResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	assert.NotNil(t, resp.Error)
+}
+
+func TestGateway_JSONRPC_InvalidJSON(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader("bad json"))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestGateway_JSONRPC_InvalidParams(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, nil)
+
+	body := `{"jsonrpc":"2.0","method":"task/send","params":"not an object","id":4}`
+	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp jsonRPCResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	assert.NotNil(t, resp.Error)
+}
+
+func TestGateway_NewGatewayWithStatus(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, &mockStatusGetter{})
+	require.NotNil(t, gw)
+	require.NotNil(t, gw.statusSvc)
 }

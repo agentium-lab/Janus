@@ -150,22 +150,30 @@ type TraceContext struct {
 	SpanID       string `json:"span_id,omitempty"`
 }
 
+type ToolInvocation struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Namespace      string `json:"namespace,omitempty"`
+	SourceProtocol string `json:"source_protocol,omitempty"`
+}
+
 // TaskEnvelope is the standard message envelope for all Janus tasks.
 type TaskEnvelope struct {
-	JanusVersion   string        `json:"janus_version"`
-	TaskID         string        `json:"task_id"`
-	IdempotencyKey string        `json:"idempotency_key,omitempty"`
-	TenantID       string        `json:"tenant_id"`
-	SourceAgent    string        `json:"source_agent"`
-	Target         Target        `json:"target"`
-	Priority       Priority      `json:"priority"`
-	Deadline       *time.Time    `json:"deadline,omitempty"`
-	TTLSeconds     int           `json:"ttl_seconds,omitempty"`
-	Budget         *Budget       `json:"budget,omitempty"`
-	Policy         *PolicyContext `json:"policy,omitempty"`
-	ContextRefs    []ContextRef  `json:"context_refs,omitempty"`
-	Payload        Payload       `json:"payload"`
-	Trace          TraceContext  `json:"trace"`
+	JanusVersion    string           `json:"janus_version"`
+	TaskID          string           `json:"task_id"`
+	IdempotencyKey  string           `json:"idempotency_key,omitempty"`
+	TenantID        string           `json:"tenant_id"`
+	SourceAgent     string           `json:"source_agent"`
+	Target          Target           `json:"target"`
+	Priority        Priority         `json:"priority"`
+	Deadline        *time.Time       `json:"deadline,omitempty"`
+	TTLSeconds      int              `json:"ttl_seconds,omitempty"`
+	Budget          *Budget          `json:"budget,omitempty"`
+	Policy          *PolicyContext   `json:"policy,omitempty"`
+	ContextRefs     []ContextRef     `json:"context_refs,omitempty"`
+	Payload         Payload          `json:"payload"`
+	Trace           TraceContext     `json:"trace"`
+	ToolInvocation  *ToolInvocation  `json:"tool_invocation,omitempty"`
 }
 
 // Task represents the current state of a task in Janus.
