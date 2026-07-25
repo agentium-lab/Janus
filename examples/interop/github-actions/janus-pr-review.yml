@@ -1,0 +1,58 @@
+name: Janus PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Janus SDK
+        run: pip install httpx pydantic
+
+      - name: Send PR to Janus for review
+        env:
+          JANUS_URL: ${{ secrets.JANUS_URL }}
+          JANUS_API_KEY: ${{ secrets.JANUS_API_KEY }}
+          JANUS_TENANT: ${{ secrets.JANUS_TENANT }}
+        run: |
+          python3 -c "
+          import httpx, json, os
+
+          url = os.environ['JANUS_URL']
+          key = os.environ.get('JANUS_API_KEY', '')
+          tenant = os.environ.get('JANUS_TENANT', 'default')
+          headers = {'Content-Type': 'application/json'}
+          if key:
+              headers['X-API-Key'] = key
+
+          pr_data = {
+              'id': f'pr-${{ github.event.pull_request.number }}',
+              'source_agent': 'github-actions',
+              'target_type': 'capability',
+              'target_value': 'code_review',
+              'envelope': {
+                  'janus_version': '0.3',
+                  'task_id': f'pr-${{ github.event.pull_request.number }}',
+                  'tenant_id': tenant,
+                  'source_agent': 'github-actions',
+                  'target': {'type': 'capability', 'value': 'code_review'},
+                  'payload': {
+                      'type': 'pr_review',
+                      'content': json.dumps({
+                          'repo': '${{ github.repository }}',
+                          'pr': '${{ github.event.pull_request.number }}',
+                          'diff_url': '${{ github.event.pull_request.diff_url }}',
+                      })
+                  },
+                  'trace': {'trace_id': f'gha-pr-${{ github.event.pull_request.number }}'}
+              }
+          }
+
+          resp = httpx.post(f'{url}/v1/tenants/{tenant}/tasks', json=pr_data, headers=headers, timeout=30)
+          resp.raise_for_status()
+          print(f'Task accepted: {resp.json()}')
+          "
