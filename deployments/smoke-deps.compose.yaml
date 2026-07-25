@@ -1,0 +1,99 @@
+version: "3.8"
+
+services:
+  janus-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+      redis:
+        condition: service_started
+    environment:
+      JANUS_PG_HOST: postgres
+      JANUS_PG_PORT: "5432"
+      JANUS_PG_USER: janus
+      JANUS_PG_PASSWORD: janus
+      JANUS_PG_DATABASE: janus
+      JANUS_NATS_URL: "nats://nats:4222"
+      JANUS_REDIS_ADDR: "redis:6379"
+      JANUS_MIGRATION_AUTO: "true"
+      JANUS_MIGRATION_PATH: "/migrations"
+      JANUS_AUTH_ENABLED: "false"
+      JANUS_METRICS_ENABLED: "true"
+      JANUS_TRACING_ENABLED: "false"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: janus
+      POSTGRES_PASSWORD: janus
+      POSTGRES_DB: janus
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U janus"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  nats:
+    image: nats:2-alpine
+    command: -js -m 8222
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deployments/prometheus:/etc/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./deployments/grafana:/etc/grafana/provisioning
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    command: -config.file=/etc/tempo.yaml
+    volumes:
+      - ./deployments/tempo.yaml:/etc/tempo.yaml
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    ports:
+      - "4319:4317"
+    depends_on:
+      - tempo
+    command:
+      - --config=/etc/otelcol/config.yaml
+    volumes:
+      - ./deployments/otel-collector.yaml:/etc/otelcol/config.yaml
