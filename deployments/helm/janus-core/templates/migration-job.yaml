@@ -1,0 +1,54 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "janus-core.fullname" . }}-migration
+  labels:
+    {{- include "janus-core.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "janus-core.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migration
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "janus-core.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: migration
+          image: "migrate/migrate:v4.19.1"
+          imagePullPolicy: IfNotPresent
+          command:
+            - /migrate
+          args:
+            - -path
+            - {{ .Values.config.migration.path }}
+            - -database
+            - postgres://{{ .Values.postgres.user }}:$(JANUS_PG_PASSWORD)@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode=disable
+            - up
+          env:
+            - name: JANUS_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "janus-core.postgresPasswordSecret" . }}
+                  key: {{ .Values.postgres.secretKey }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: migrations
+              mountPath: {{ .Values.config.migration.path }}
+              readOnly: true
+      volumes:
+        - name: migrations
+          configMap:
+            name: {{ include "janus-core.fullname" . }}-migrations

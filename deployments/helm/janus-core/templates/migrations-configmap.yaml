@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "janus-core.fullname" . }}-migrations
+  labels:
+    {{- include "janus-core.labels" . | nindent 4 }}
+data:
+{{- range $path, $_ := .Files.Glob "migrations/*" }}
+  {{ base $path }}: |
+{{ $.Files.Get $path | indent 4 }}
+{{- end }}

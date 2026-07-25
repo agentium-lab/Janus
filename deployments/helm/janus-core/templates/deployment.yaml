@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "janus-core.fullname" . }}
+  labels:
+    {{- include "janus-core.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "janus-core.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "janus-core.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "janus-core.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.httpPort }}
+              protocol: TCP
+            - name: grpc
+              containerPort: {{ .Values.config.grpcPort }}
+              protocol: TCP
+          env:
+            - name: JANUS_HTTP_PORT
+              value: "{{ .Values.config.httpPort }}"
+            - name: JANUS_GRPC_PORT
+              value: "{{ .Values.config.grpcPort }}"
+            - name: JANUS_PG_HOST
+              value: "{{ .Values.postgres.host }}"
+            - name: JANUS_PG_PORT
+              value: "{{ .Values.postgres.port }}"
+            - name: JANUS_PG_USER
+              value: "{{ .Values.postgres.user }}"
+            - name: JANUS_PG_DATABASE
+              value: "{{ .Values.postgres.database }}"
+            - name: JANUS_PG_MAX_CONNS
+              value: "{{ .Values.postgres.maxConns }}"
+            - name: JANUS_PG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "janus-core.postgresPasswordSecret" . }}
+                  key: {{ .Values.postgres.secretKey }}
+            - name: JANUS_NATS_URL
+              value: "{{ .Values.nats.url }}"
+            - name: JANUS_REDIS_ADDR
+              value: "{{ .Values.redis.addr }}"
+            - name: JANUS_REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "janus-core.redisPasswordSecret" . }}
+                  key: {{ .Values.redis.secretKey }}
+            - name: JANUS_REDIS_DB
+              value: "{{ .Values.redis.db }}"
+            - name: JANUS_MIGRATION_AUTO
+              value: "false"
+            - name: JANUS_MIGRATION_PATH
+              value: "{{ .Values.config.migration.path }}"
+            - name: JANUS_HB_SWEEPER_INTERVAL
+              value: "{{ .Values.config.heartbeat.sweeperInterval }}"
+            - name: JANUS_HB_TTL
+              value: "{{ .Values.config.heartbeat.ttl }}"
+            - name: JANUS_AUTH_ENABLED
+              value: "{{ .Values.config.auth.enabled }}"
+            - name: JANUS_TLS_ENABLED
+              value: "{{ .Values.config.tls.enabled }}"
+            - name: JANUS_CONFIG_FILE
+              value: "/etc/janus/janus.yaml"
+          {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          envFrom:
+          {{- with .Values.extraEnvFrom }}
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          livenessProbe:
+            {{- if .Values.probes.liveness.enabled }}
+            httpGet:
+              path: {{ .Values.probes.liveness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+            {{- end }}
+          readinessProbe:
+            {{- if .Values.probes.readiness.enabled }}
+            httpGet:
+              path: {{ .Values.probes.readiness.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/janus
+            {{- if .Values.artifacts.enabled }}
+            - name: artifacts
+              mountPath: {{ .Values.artifacts.mountPath }}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "janus-core.fullname" . }}
+        {{- if .Values.artifacts.enabled }}
+        - name: artifacts
+          persistentVolumeClaim:
+            claimName: {{ include "janus-core.fullname" . }}-artifacts
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

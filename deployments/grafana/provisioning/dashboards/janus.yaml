@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: 'janus-core'
+    orgId: 1
+    folder: 'Janus'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

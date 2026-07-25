@@ -1,0 +1,11 @@
+drop table if exists outbox_events;
+drop table if exists audit_event_projection;
+drop table if exists approvals;
+drop table if exists policy_rules;
+drop table if exists budgets;
+drop table if exists task_attempts;
+drop table if exists tasks;
+drop table if exists agent_capabilities;
+drop table if exists mailboxes;
+drop table if exists agents;
+drop table if exists tenants;

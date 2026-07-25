@@ -1,0 +1,135 @@
+replicaCount: 2
+
+image:
+  repository: ghcr.io/agentium-lab/janus-core
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  httpPort: 8080
+  grpcPort: 9090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+probes:
+  liveness:
+    enabled: true
+    path: /healthz
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    enabled: true
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+config:
+  httpPort: 8080
+  grpcPort: 9090
+  auth:
+    enabled: false
+  tls:
+    enabled: false
+  heartbeat:
+    sweeperInterval: 30s
+    ttl: 60s
+  migration:
+    auto: false
+    path: /app/migrations
+
+postgres:
+  host: "postgres"
+  port: 5432
+  user: "janus"
+  password: ""
+  database: "janus"
+  maxConns: 20
+  existingSecret: ""
+  secretKey: "password"
+
+nats:
+  url: "nats://nats:4222"
+
+redis:
+  addr: "redis:6379"
+  password: ""
+  db: 0
+  existingSecret: ""
+  secretKey: "password"
+
+artifacts:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /app/artifacts
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+extraEnv: []
+
+extraEnvFrom: []
+
+extraVolumes: []
+
+extraVolumeMounts: []
+
+prometheus:
+  enabled: true
+  port: 8080
+  path: /metrics

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "janus-core.fullname" . }}-artifacts
+  labels:
+    {{- include "janus-core.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.artifacts.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.artifacts.size }}
+  {{- if .Values.artifacts.storageClass }}
+  storageClassName: {{ .Values.artifacts.storageClass }}
+  {{- end }}
