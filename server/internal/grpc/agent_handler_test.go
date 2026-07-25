@@ -123,6 +123,48 @@ func TestAgentServiceServer_RegisterAgent_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+type mockAgentServiceRegisterOnly struct {
+	registered map[string]bool
+}
+
+func (m *mockAgentServiceRegisterOnly) Register(_ context.Context, a core.Agent) error {
+	if m.registered == nil {
+		m.registered = make(map[string]bool)
+	}
+	m.registered[a.TenantID+":"+a.ID] = true
+	return nil
+}
+func (m *mockAgentServiceRegisterOnly) Get(_ context.Context, _, _ string) (*core.Agent, error) {
+	return nil, fmt.Errorf("agent not found after registration")
+}
+func (m *mockAgentServiceRegisterOnly) UpdateStatus(_ context.Context, _, _ string, _ core.AgentStatus) error {
+	return nil
+}
+func (m *mockAgentServiceRegisterOnly) Heartbeat(_ context.Context, _, _ string) error {
+	return nil
+}
+func (m *mockAgentServiceRegisterOnly) List(_ context.Context, _ string) ([]*core.Agent, error) {
+	return nil, nil
+}
+func (m *mockAgentServiceRegisterOnly) ListByStatus(_ context.Context, _ string, _ core.AgentStatus) ([]*core.Agent, error) {
+	return nil, nil
+}
+
+func TestAgentServiceServer_RegisterAgent_RegisterSucceedsGetFails(t *testing.T) {
+	mock := &mockAgentServiceRegisterOnly{}
+	s := &AgentServiceServer{svc: mock}
+
+	_, err := s.RegisterAgent(context.Background(), &pb.RegisterAgentRequest{
+		TenantId:    "acme",
+		Id:          "agent-1",
+		DisplayName: "test-agent",
+		Protocol:    "http",
+		Endpoint:    "http://localhost:8080",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
 func TestAgentServiceServer_GetAgent(t *testing.T) {
 	mock := &mockAgentService{agents: map[string]*core.Agent{
 		"acme:agent-1": makeTestAgent("acme", "agent-1"),

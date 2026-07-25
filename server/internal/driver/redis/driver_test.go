@@ -67,6 +67,9 @@ func openDriver(t *testing.T) *Driver {
 	d, err := NewDriver(Config{Addr: redisAddr})
 	require.NoError(t, err)
 	t.Cleanup(func() { d.Close() })
+	if err := d.rdb.FlushDB(context.Background()).Err(); err != nil {
+		t.Fatalf("flush db: %v", err)
+	}
 	return d
 }
 

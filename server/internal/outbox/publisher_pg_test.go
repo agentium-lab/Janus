@@ -341,3 +341,78 @@ func TestPublisher_PublishBatch_UnknownKind_NoOp(t *testing.T) {
 	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-unknown").Scan(&status)
 	assert.Equal(t, "published", status)
 }
+
+// mockOutboxRepo allows controlling error returns for testing.
+type mockOutboxRepo struct {
+	entries            []postgres.OutboxEntry
+	fetchErr           error
+	markPublishedErr   error
+	markFailedErr      error
+	markFailedCalled   bool
+	markFailedID       string
+	markPublishedCalled bool
+	markPublishedID    string
+}
+
+func (m *mockOutboxRepo) FetchPending(_ context.Context, _ int) ([]postgres.OutboxEntry, error) {
+	return m.entries, m.fetchErr
+}
+
+func (m *mockOutboxRepo) MarkPublished(_ context.Context, id string) error {
+	m.markPublishedCalled = true
+	m.markPublishedID = id
+	return m.markPublishedErr
+}
+
+func (m *mockOutboxRepo) MarkFailedWithReason(_ context.Context, id string, _ string) error {
+	m.markFailedCalled = true
+	m.markFailedID = id
+	return m.markFailedErr
+}
+
+func TestPublisher_PublishBatch_FetchPendingError(t *testing.T) {
+	drv := &fakeDriver{}
+	repo := &mockOutboxRepo{
+		fetchErr: fmt.Errorf("database connection lost"),
+	}
+	pub := NewPublisher(repo, drv)
+
+	pub.publishBatch(context.Background())
+
+	assert.Empty(t, drv.publishedTasks)
+	assert.False(t, repo.markPublishedCalled)
+}
+
+func TestPublisher_PublishBatch_MarkPublishedError(t *testing.T) {
+	drv := &fakeDriver{}
+	repo := &mockOutboxRepo{
+		entries: []postgres.OutboxEntry{
+			{ID: "ob-mp-err", TenantID: "acme", Kind: "task_publish", Payload: json.RawMessage(`{"task_id":"task-x"}`)},
+		},
+		markPublishedErr: fmt.Errorf("connection pool closed"),
+	}
+	pub := NewPublisher(repo, drv)
+
+	pub.publishBatch(context.Background())
+
+	assert.Len(t, drv.publishedTasks, 1)
+	assert.True(t, repo.markPublishedCalled)
+	assert.Equal(t, "ob-mp-err", repo.markPublishedID)
+}
+
+func TestPublisher_PublishBatch_MarkFailedError(t *testing.T) {
+	drv := &fakeDriver{publishErr: fmt.Errorf("NATS down")}
+	repo := &mockOutboxRepo{
+		entries: []postgres.OutboxEntry{
+			{ID: "ob-mf-err", TenantID: "acme", Kind: "task_publish", Payload: json.RawMessage(`{"task_id":"task-y"}`)},
+		},
+		markFailedErr: fmt.Errorf("db write failed"),
+	}
+	pub := NewPublisher(repo, drv)
+
+	pub.publishBatch(context.Background())
+
+	assert.Empty(t, drv.publishedTasks)
+	assert.True(t, repo.markFailedCalled)
+	assert.Equal(t, "ob-mf-err", repo.markFailedID)
+}

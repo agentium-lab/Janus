@@ -3,9 +3,13 @@ package retry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -107,4 +111,105 @@ func TestGenerateULID_Unique(t *testing.T) {
 		ids[generateULID()] = true
 	}
 	assert.Len(t, ids, 100, "100 generated ULIDs should all be unique")
+}
+
+type mockRowsScanError struct{}
+
+func (r *mockRowsScanError) Next() bool { return true }
+func (r *mockRowsScanError) Scan(dest ...any) error { return fmt.Errorf("scan error") }
+func (r *mockRowsScanError) Err() error { return nil }
+func (r *mockRowsScanError) Close()    {}
+
+type mockRowsErr struct{ closed bool }
+
+func (r *mockRowsErr) Next() bool                            { return false }
+func (r *mockRowsErr) Scan(dest ...any) error                { return nil }
+func (r *mockRowsErr) Err() error                             { return fmt.Errorf("rows error") }
+func (r *mockRowsErr) Close()                                { r.closed = true }
+
+func TestScheduler_Start_TickerFires(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping ticker test in short mode")
+	}
+	pool := openRetryTestDBForTicker(t)
+	sched := NewScheduler(pool, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		sched.Start(ctx, 20*time.Millisecond)
+		close(done)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start did not exit after context cancel")
+	}
+	pool.Close()
+}
+
+func openRetryTestDBForTicker(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	host := os.Getenv("JANUS_PG_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("JANUS_PG_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("JANUS_PG_USER")
+	if user == "" {
+		user = "janus"
+	}
+	testDB := fmt.Sprintf("janus_retrytest_%d", time.Now().UnixNano())
+
+	ctx := context.Background()
+	adminDSN := fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
+	adminConn, err := pgx.Connect(ctx, adminDSN)
+	if err != nil {
+		t.Skipf("postgres not reachable: %v", err)
+	}
+	_, err = adminConn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDB))
+	require.NoError(t, err)
+	adminConn.Close(ctx)
+
+	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	require.NoError(t, pool.Ping(ctx))
+
+	t.Cleanup(func() {
+		pool.Close()
+		c, err := pgx.Connect(ctx, adminDSN)
+		if err == nil {
+			c.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", testDB))
+			c.Close(ctx)
+		}
+	})
+	return pool
+}
+
+func TestProcessReadyRetries_UpdateErrorContinue(t *testing.T) {
+	pool := openRetryTestDB(t)
+	drv := &fakeQueueDriver{}
+	sched := NewScheduler(pool, drv)
+	sched.useOutbox = true
+	ctx := context.Background()
+
+	seedRetryTask(t, pool, "task-update-success", true)
+	seedRetryTask(t, pool, "task-update-still-runs", true)
+
+	sched.processReadyRetries(ctx)
+
+	var status1, status2 string
+	pool.QueryRow(ctx, "SELECT status FROM tasks WHERE id = $1", "task-update-success").Scan(&status1)
+	pool.QueryRow(ctx, "SELECT status FROM tasks WHERE id = $1", "task-update-still-runs").Scan(&status2)
+
+	assert.Equal(t, "queued", status1, "first task should be promoted")
+	assert.Equal(t, "queued", status2, "second task should also be promoted")
 }

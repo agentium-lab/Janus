@@ -623,3 +623,32 @@ func TestGenerateLeaseID(t *testing.T) {
 	assert.NotEqual(t, id1, id2)
 	assert.Len(t, id1, 20)
 }
+
+func TestDispatchService_PullTask_BudgetDenied_DelayedNACK(t *testing.T) {
+	qDrv := &mockDispatchQueueDriver{}
+	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}
+	aRepo := &mockDispatchAttemptRepo{}
+	mRepo := &mockDispatchMailboxRepo{mailboxes: make(map[string]*core.Mailbox)}
+	policySvc := NewPolicyService(&mockPolicyRuleRepo{})
+	budgetRepo := &mockBudgetRepo{
+		budgets: map[string]*core.BudgetSpec{
+			"acme:agent:agent-1": {MaxConcurrency: 1, DailyCostUSD: 0.01},
+		},
+	}
+	usageRepo := &mockBudgetUsageRepo{dailyCost: 100.0}
+	budgetSvc := NewBudgetServiceWithUsage(budgetRepo, usageRepo)
+	svc := NewDispatchService(tRepo, aRepo, mRepo, qDrv, policySvc, budgetSvc)
+
+	ctx := context.Background()
+	task := makeDispatchTestTask("acme", "task-budget-deny", "mb-1", 0)
+	task.Envelope.Budget = &core.Budget{MaxCostUSD: 1.0}
+	tRepo.tasks["acme:task-budget-deny"] = task
+	qDrv.deliveries = []core.TaskDelivery{
+		{TaskID: "task-budget-deny", DeliveryRef: "ref-budget", Payload: []byte("{}")},
+	}
+
+	_, err := svc.PullTask(ctx, "acme", "mb-1", "agent-1")
+	assert.Error(t, err, "budget exceeded should return error")
+
+	assert.GreaterOrEqual(t, len(qDrv.events), 1, "budget.exceeded event should be published")
+}

@@ -10,13 +10,22 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
+// OutboxRepo defines the interface needed by Publisher for outbox operations.
+type OutboxRepo interface {
+	FetchPending(ctx context.Context, limit int) ([]postgres.OutboxEntry, error)
+	MarkPublished(ctx context.Context, id string) error
+	MarkFailedWithReason(ctx context.Context, id string, reason string) error
+}
+
+// Publisher dispatches outbox events to the queue driver.
 type Publisher struct {
-	repo   *postgres.OutboxRepo
+	repo   OutboxRepo
 	driver core.QueueEventDriver
 	done   chan struct{}
 }
 
-func NewPublisher(repo *postgres.OutboxRepo, driver core.QueueEventDriver) *Publisher {
+// NewPublisher creates a Publisher with the given repo and driver.
+func NewPublisher(repo OutboxRepo, driver core.QueueEventDriver) *Publisher {
 	return &Publisher{
 		repo:   repo,
 		driver: driver,

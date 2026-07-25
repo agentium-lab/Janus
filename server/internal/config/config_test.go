@@ -11,6 +11,10 @@ import (
 func TestLoad_Defaults(t *testing.T) {
 	os.Unsetenv("JANUS_HTTP_PORT")
 	os.Unsetenv("JANUS_PG_HOST")
+	os.Unsetenv("JANUS_PG_USER")
+	os.Unsetenv("JANUS_PG_DATABASE")
+	os.Unsetenv("JANUS_NATS_URL")
+	os.Unsetenv("JANUS_REDIS_ADDR")
 	os.Unsetenv("JANUS_CONFIG_FILE")
 
 	cfg := Load()

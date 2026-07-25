@@ -203,6 +203,45 @@ func TestTaskServiceServer_CancelTask_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
+type mockTaskServiceCancelGetError struct {
+	tasks map[string]*core.Task
+}
+
+func (m *mockTaskServiceCancelGetError) Create(_ context.Context, task core.Task) (*core.Task, error) {
+	if m.tasks == nil {
+		m.tasks = make(map[string]*core.Task)
+	}
+	m.tasks[task.TenantID+":"+task.ID] = &task
+	return &task, nil
+}
+func (m *mockTaskServiceCancelGetError) Get(_ context.Context, tenantID, taskID string) (*core.Task, error) {
+	return nil, fmt.Errorf("get after cancel failed")
+}
+func (m *mockTaskServiceCancelGetError) Cancel(_ context.Context, tenantID, taskID string) error {
+	key := tenantID + ":" + taskID
+	if t, ok := m.tasks[key]; ok {
+		t.Status = core.TaskStatusCancelled
+	}
+	return nil
+}
+func (m *mockTaskServiceCancelGetError) Replay(_ context.Context, tenantID, taskID string) (*core.Task, error) {
+	return nil, nil
+}
+
+func TestTaskServiceServer_CancelTask_GetAfterCancelError(t *testing.T) {
+	mock := &mockTaskServiceCancelGetError{
+		tasks: map[string]*core.Task{
+			"acme:task-1": makeTestTask("acme", "task-1"),
+		},
+	}
+	s := &TaskServiceServer{svc: mock}
+
+	_, err := s.CancelTask(context.Background(), &pb.CancelTaskRequest{
+		TenantId: "acme", TaskId: "task-1",
+	})
+	assert.Error(t, err)
+}
+
 func TestTaskServiceServer_ReplayTask_Error(t *testing.T) {
 	mock := &mockTaskService{err: assert.AnError}
 	s := &TaskServiceServer{svc: mock}

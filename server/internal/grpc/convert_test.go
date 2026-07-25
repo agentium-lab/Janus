@@ -112,3 +112,44 @@ func TestCreateTaskReqToCore_Minimal(t *testing.T) {
 	assert.Equal(t, "t1", task.ID)
 	assert.Nil(t, task.Deadline)
 }
+
+func TestEnvelopeToProto_NilDeadline(t *testing.T) {
+	env := core.TaskEnvelope{
+		JanusVersion:   "0.4.0",
+		TaskID:         "t1",
+		TenantID:       "acme",
+		Target:         core.Target{Type: "agent", Value: "a1"},
+		Priority:       core.PriorityHigh,
+		TTLSeconds:     300,
+		Budget:         nil, // explicitly nil
+		Trace:          core.TraceContext{TraceID: "trace-1", ParentTaskID: "parent-1", SpanID: "span-1"},
+		Payload:        core.Payload{Type: "text", Content: "hello"},
+	}
+	pbEnv := envelopeToProto(env)
+	assert.Equal(t, "t1", pbEnv.TaskId)
+	assert.Equal(t, "acme", pbEnv.TenantId)
+	assert.Equal(t, "high", pbEnv.Priority)
+	assert.Nil(t, pbEnv.Deadline) // nil deadline path
+	assert.Nil(t, pbEnv.Budget)    // nil budget path
+	assert.Equal(t, "trace-1", pbEnv.Trace.TraceId)
+	assert.Equal(t, "parent-1", pbEnv.Trace.ParentTaskId)
+}
+
+func TestEnvelopeToProto_NilBudget(t *testing.T) {
+	dl := time.Now()
+	env := core.TaskEnvelope{
+		JanusVersion: "0.4.0",
+		TaskID:       "t1",
+		TenantID:     "acme",
+		Target:       core.Target{Type: "agent", Value: "a1"},
+		Priority:     core.PriorityNormal,
+		TTLSeconds:    60,
+		Deadline:      &dl,
+		Budget:        nil, // explicitly nil
+		Trace:         core.TraceContext{},
+		Payload:       core.Payload{Type: "text", Content: "hi"},
+	}
+	pbEnv := envelopeToProto(env)
+	assert.NotNil(t, pbEnv.Deadline)  // deadline is set
+	assert.Nil(t, pbEnv.Budget)        // budget is nil
+}

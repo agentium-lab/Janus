@@ -39,6 +39,9 @@ func newTestRoot(srv *httptest.Server) *cobra.Command {
 	root.AddCommand(agentCmd())
 	root.AddCommand(taskCmd())
 	root.AddCommand(mailboxCmd())
+	root.AddCommand(apiKeyCmd())
+	root.AddCommand(policyCmd())
+	root.AddCommand(dlqCmd())
 	root.AddCommand(dashboardCmd())
 	return root
 }

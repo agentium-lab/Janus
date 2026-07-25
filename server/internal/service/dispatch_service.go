@@ -149,6 +149,18 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	}
 
 	if err := s.budgetSvc.Reserve(ctx, tenantID, agentID, task.Envelope.Budget); err != nil {
+		s.publishEvent(ctx, core.JanusEvent{
+			EventType: core.EventType("budget.exceeded"),
+			TenantID:  tenantID, TaskID: task.ID,
+			Payload: mustMarshal(map[string]string{
+				"agent_id": agentID, "delivery_ref": string(delivery.DeliveryRef),
+				"reason": err.Error(),
+			}),
+		})
+		time.AfterFunc(5*time.Second, func() {
+			bgCtx := context.Background()
+			_ = s.queueDriver.NackTask(bgCtx, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
+		})
 		return nil, err
 	}
 

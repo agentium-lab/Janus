@@ -17,7 +17,7 @@ func openLeaseTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	host := os.Getenv("JANUS_PG_HOST")
 	if host == "" {
-		host = "localhost"
+		host = "/tmp"
 	}
 	port := os.Getenv("JANUS_PG_PORT")
 	if port == "" {

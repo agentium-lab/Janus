@@ -197,6 +197,44 @@ func TestMailboxGRPC_CreateMailbox_EmptyTenant(t *testing.T) {
 	assert.Error(t, err)
 }
 
+type mockMailboxSvcCreateSuccessGetError struct{}
+
+func (m *mockMailboxSvcCreateSuccessGetError) Create(_ context.Context, mb core.Mailbox) error {
+	return nil
+}
+func (m *mockMailboxSvcCreateSuccessGetError) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
+	return nil, fmt.Errorf("get after create failed")
+}
+func (m *mockMailboxSvcCreateSuccessGetError) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
+	return nil
+}
+func (m *mockMailboxSvcCreateSuccessGetError) Pause(_ context.Context, _, _ string) error  { return nil }
+func (m *mockMailboxSvcCreateSuccessGetError) Resume(_ context.Context, _, _ string) error { return nil }
+
+func TestMailboxGRPC_CreateMailbox_GetAfterCreateError(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcCreateSuccessGetError{}}
+	_, err := srv.CreateMailbox(context.Background(), &pb.CreateMailboxRequest{TenantId: "acme", Id: "mb-1"})
+	assert.Error(t, err)
+}
+
+type mockMailboxSvcUpdateSuccessGetError struct{}
+
+func (m *mockMailboxSvcUpdateSuccessGetError) Create(_ context.Context, mb core.Mailbox) error  { return nil }
+func (m *mockMailboxSvcUpdateSuccessGetError) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
+	return nil, fmt.Errorf("get after update failed")
+}
+func (m *mockMailboxSvcUpdateSuccessGetError) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
+	return nil
+}
+func (m *mockMailboxSvcUpdateSuccessGetError) Pause(_ context.Context, _, _ string) error  { return nil }
+func (m *mockMailboxSvcUpdateSuccessGetError) Resume(_ context.Context, _, _ string) error { return nil }
+
+func TestMailboxGRPC_UpdateMailbox_GetAfterUpdateError(t *testing.T) {
+	srv := &MailboxServiceServer{svc: &mockMailboxSvcUpdateSuccessGetError{}}
+	_, err := srv.UpdateMailbox(context.Background(), &pb.UpdateMailboxRequest{TenantId: "acme", MailboxId: "mb-1"})
+	assert.Error(t, err)
+}
+
 func TestMailboxGRPC_GetMailbox_Error(t *testing.T) {
 	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
 	_, err := srv.GetMailbox(context.Background(), &pb.GetMailboxRequest{TenantId: "acme", MailboxId: "mb-1"})

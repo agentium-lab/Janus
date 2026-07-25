@@ -160,6 +160,145 @@ func TestProcessReadyRetries_WithDirectQueue(t *testing.T) {
 	assert.Equal(t, "task-retry-direct", drv.publishedTasks[0].TaskID)
 }
 
+func TestProcessReadyRetries_QueryError(t *testing.T) {
+	pool := openRetryTestDB(t)
+	pool.Close()
+
+	sched := NewScheduler(pool, nil)
+	ctx := context.Background()
+
+	sched.processReadyRetries(ctx)
+}
+
+func TestProcessReadyRetries_ScanError(t *testing.T) {
+	pool := openRetryTestDB(t)
+	ctx := context.Background()
+
+	pool.Exec(ctx, "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", "acme", "Acme")
+	pool.Exec(ctx, `INSERT INTO agents (id, tenant_id, display_name, protocol, status)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, "agent-1", "acme", "A1", "a2a", "offline")
+	pool.Exec(ctx, `INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, "mb-1", "acme", "agent-1", "active")
+
+	envelope := []byte(`{}`)
+
+	_, err := pool.Exec(ctx,
+		`INSERT INTO tasks (id, tenant_id, source_agent, target_type, target_value, mailbox_id,
+		  status, priority, envelope, retry_at, attempt_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
+		"task-scan-error", "acme", "agent-1", "mailbox", "mb-1", "mb-1",
+		"retry_scheduled", "invalid_priority_not_an_enum", envelope, time.Now().Add(-1*time.Minute))
+	require.NoError(t, err)
+
+	sched := NewScheduler(pool, &fakeQueueDriver{})
+	sched.processReadyRetries(ctx)
+}
+
+func TestProcessReadyRetries_UpdateError(t *testing.T) {
+	pool := openRetryTestDB(t)
+	ctx := context.Background()
+
+	pool.Exec(ctx, "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", "acme", "Acme")
+	pool.Exec(ctx, `INSERT INTO agents (id, tenant_id, display_name, protocol, status)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, "agent-1", "acme", "A1", "a2a", "offline")
+	pool.Exec(ctx, `INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, "mb-1", "acme", "agent-1", "active")
+
+	envelope := []byte(`{}`)
+	_, err := pool.Exec(ctx,
+		`INSERT INTO tasks (id, tenant_id, source_agent, target_type, target_value, mailbox_id,
+		  status, priority, envelope, retry_at, attempt_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
+		"task-update-error", "acme", "agent-1", "mailbox", "mb-1", "mb-1",
+		"retry_scheduled", "normal", envelope, time.Now().Add(-1*time.Minute))
+	require.NoError(t, err)
+
+	pool.Exec(ctx, `CREATE OR REPLACE FUNCTION raise_update_error() RETURNS trigger AS $$
+	BEGIN
+		RAISE EXCEPTION 'intentional update error';
+	END;
+	$$ LANGUAGE plpgsql`)
+
+	pool.Exec(ctx, `CREATE TRIGGER task_update_error_trigger
+		BEFORE UPDATE ON tasks
+		FOR EACH ROW
+		WHEN (NEW.id = 'task-update-error')
+		EXECUTE FUNCTION raise_update_error()`)
+
+	sched := NewScheduler(pool, &fakeQueueDriver{})
+	sched.processReadyRetries(ctx)
+
+	pool.Exec(ctx, "DROP TRIGGER IF EXISTS task_update_error_trigger ON tasks")
+	pool.Exec(ctx, "DROP FUNCTION IF EXISTS raise_update_error()")
+
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM tasks WHERE id = 'task-update-error'").Scan(&status)
+	assert.Equal(t, "retry_scheduled", status, "task should remain in retry_scheduled due to update error")
+}
+
+func TestProcessReadyRetries_BuildRetryMessageFails(t *testing.T) {
+	pool := openRetryTestDB(t)
+	ctx := context.Background()
+
+	pool.Exec(ctx, "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", "acme", "Acme")
+	pool.Exec(ctx, `INSERT INTO agents (id, tenant_id, display_name, protocol, status)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, "agent-1", "acme", "A1", "a2a", "offline")
+	pool.Exec(ctx, `INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, "mb-1", "acme", "agent-1", "active")
+
+	envelope := []byte(`{"janus_version": 123}`)
+	_, err := pool.Exec(ctx,
+		`INSERT INTO tasks (id, tenant_id, source_agent, target_type, target_value, mailbox_id,
+		  status, priority, envelope, retry_at, attempt_count)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
+		"task-invalid-env", "acme", "agent-1", "mailbox", "mb-1", "mb-1",
+		"retry_scheduled", "normal", envelope, time.Now().Add(-1*time.Minute))
+	require.NoError(t, err)
+
+	sched := NewScheduler(pool, &fakeQueueDriver{})
+	sched.useOutbox = true
+	sched.processReadyRetries(ctx)
+
+	var status string
+	pool.QueryRow(ctx, "SELECT status FROM tasks WHERE id = $1", "task-invalid-env").Scan(&status)
+	assert.Equal(t, "queued", status, "task status should be updated to queued")
+
+	var outboxCount int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM outbox_events WHERE tenant_id = 'acme' AND kind = 'task_publish'").Scan(&outboxCount)
+	assert.Equal(t, 0, outboxCount, "no outbox event should be created for invalid envelope")
+}
+
+func TestProcessReadyRetries_MultipleTasksProcessed(t *testing.T) {
+	pool := openRetryTestDB(t)
+	ctx := context.Background()
+
+	pool.Exec(ctx, "INSERT INTO tenants (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING", "acme", "Acme")
+	pool.Exec(ctx, `INSERT INTO agents (id, tenant_id, display_name, protocol, status)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING`, "agent-1", "acme", "A1", "a2a", "offline")
+	pool.Exec(ctx, `INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, "mb-1", "acme", "agent-1", "active")
+
+	envelope := []byte(`{}`)
+	for i := 0; i < 3; i++ {
+		taskID := fmt.Sprintf("task-multi-%d", i)
+		_, err := pool.Exec(ctx,
+			`INSERT INTO tasks (id, tenant_id, source_agent, target_type, target_value, mailbox_id,
+			  status, priority, envelope, retry_at, attempt_count)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 1)`,
+			taskID, "acme", "agent-1", "mailbox", "mb-1", "mb-1",
+			"retry_scheduled", "normal", envelope, time.Now().Add(-1*time.Minute))
+		require.NoError(t, err)
+	}
+
+	sched := NewScheduler(pool, &fakeQueueDriver{})
+	sched.useOutbox = true
+	sched.processReadyRetries(ctx)
+
+	var count int
+	pool.QueryRow(ctx, "SELECT COUNT(*) FROM tasks WHERE status = 'queued' AND id LIKE 'task-multi-%'").Scan(&count)
+	assert.Equal(t, 3, count, "all 3 tasks should be promoted to queued")
+}
+
 // fakeQueueDriver implements core.QueueEventDriver for retry tests.
 type fakeQueueDriver struct {
 	publishedTasks []core.TaskMessage

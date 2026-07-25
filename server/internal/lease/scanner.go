@@ -53,6 +53,9 @@ func (s *Scanner) Stop() {
 }
 
 func (s *Scanner) scan(ctx context.Context) {
+	if s.pool == nil {
+		return
+	}
 	n, err := s.ExpireLeases(ctx)
 	if err != nil {
 		log.Printf("lease scanner: %v", err)

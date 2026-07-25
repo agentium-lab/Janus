@@ -3,6 +3,9 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
 	svc "github.com/agentium-lab/Janus/server/internal/service"
@@ -26,6 +29,9 @@ func NewMailboxServiceServer(s *svc.MailboxService) *MailboxServiceServer {
 }
 
 func (s *MailboxServiceServer) CreateMailbox(ctx context.Context, req *pb.CreateMailboxRequest) (*pb.Mailbox, error) {
+	if req.TenantId == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
 	mb := core.Mailbox{
 		TenantID:        req.TenantId,
 		ID:              req.Id,
@@ -52,6 +58,9 @@ func (s *MailboxServiceServer) GetMailbox(ctx context.Context, req *pb.GetMailbo
 }
 
 func (s *MailboxServiceServer) UpdateMailbox(ctx context.Context, req *pb.UpdateMailboxRequest) (*pb.Mailbox, error) {
+	if req.TenantId == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
 	if err := s.svc.UpdateConfig(ctx, req.TenantId, req.MailboxId,
 		int(req.MaxConcurrency), int(req.AckWaitSeconds), int(req.MaxDeliver), int(req.RetentionSeconds)); err != nil {
 		return nil, err

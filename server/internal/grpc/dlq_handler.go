@@ -3,6 +3,9 @@ package grpc
 import (
 	"context"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/handler"
@@ -48,6 +51,9 @@ func (s *DLQServiceServer) ReplayDLQ(ctx context.Context, req *pb.DLQActionReque
 }
 
 func (s *DLQServiceServer) DiscardDLQ(ctx context.Context, req *pb.DLQActionRequest) (*pb.DLQActionResponse, error) {
+	if req.TenantId == "" {
+		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
+	}
 	if err := s.svc.DiscardDLQ(ctx, req.TenantId, req.TaskId); err != nil {
 		return nil, err
 	}
