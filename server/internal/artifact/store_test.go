@@ -106,3 +106,48 @@ func TestLocalArtifactStore_SHA256Integrity(t *testing.T) {
 
 	assert.Equal(t, art.Hash, gotArt.Hash, "hash should match between store and get")
 }
+
+func TestLocalArtifactStore_PathTraversal_TenantID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewLocalArtifactStore(dir)
+	ctx := context.Background()
+
+	_, err := store.Store(ctx, "../../etc", "passwd", bytes.NewReader([]byte("x")), "text/plain")
+	assert.Error(t, err)
+
+	_, _, err = store.Get(ctx, "../../etc", "passwd")
+	assert.Error(t, err)
+}
+
+func TestLocalArtifactStore_PathTraversal_ArtifactID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewLocalArtifactStore(dir)
+	ctx := context.Background()
+
+	_, err := store.Store(ctx, "acme", "../../../etc/passwd", bytes.NewReader([]byte("x")), "text/plain")
+	assert.Error(t, err)
+
+	err = store.Delete(ctx, "acme", "../../secret")
+	assert.Error(t, err)
+}
+
+func TestLocalArtifactStore_DotDot_ArtifactID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewLocalArtifactStore(dir)
+	ctx := context.Background()
+
+	_, err := store.Store(ctx, "acme", "..", bytes.NewReader([]byte("x")), "text/plain")
+	assert.Error(t, err)
+}
+
+func TestLocalArtifactStore_EmptyID(t *testing.T) {
+	dir := t.TempDir()
+	store := NewLocalArtifactStore(dir)
+	ctx := context.Background()
+
+	_, err := store.Store(ctx, "", "art-1", bytes.NewReader([]byte("x")), "text/plain")
+	assert.Error(t, err)
+
+	_, err = store.Store(ctx, "acme", "", bytes.NewReader([]byte("x")), "text/plain")
+	assert.Error(t, err)
+}
