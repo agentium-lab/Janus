@@ -27,7 +27,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 20, cfg.Postgres.MaxConns)
 	assert.Equal(t, "nats://localhost:4222", cfg.NATS.URL)
 	assert.Equal(t, "localhost:6379", cfg.Redis.Addr)
-	assert.False(t, cfg.Auth.Enabled)
+	assert.True(t, cfg.Auth.Enabled)
 	assert.True(t, cfg.Migration.Auto)
 }
 

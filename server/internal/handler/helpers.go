@@ -64,7 +64,7 @@ func writeJSON(w http.ResponseWriter, status int, v interface{}) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	writeErrorWithCode(w, status, errorCodeForStatus(status), msg)
+	writeErrorWithCode(w, status, errorCodeForStatus(status), sanitizeError(msg, status))
 }
 
 // writeErrorWithCode writes a structured APIError envelope with an explicit
@@ -112,6 +112,7 @@ func readJSON(r *http.Request, v interface{}) error {
 		return fmt.Errorf("request body is required")
 	}
 	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(nil, r.Body, 10<<20)
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
@@ -130,4 +131,25 @@ func isDuplicateKeyError(err error) bool {
 		return false
 	}
 	return strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "23505")
+}
+
+var internalPatterns = []string{
+	"sql:", "pq:", "pgx:", "connection refused", "dial tcp",
+	"no rows in result set", "context deadline exceeded",
+	"panic:", "goroutine", "runtime error",
+}
+
+func sanitizeError(msg string, status int) string {
+	if status < 500 {
+		return msg
+	}
+	for _, pattern := range internalPatterns {
+		if strings.Contains(strings.ToLower(msg), pattern) {
+			return "internal server error"
+		}
+	}
+	if len(msg) > 200 {
+		return "internal server error"
+	}
+	return msg
 }

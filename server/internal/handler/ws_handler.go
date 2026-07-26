@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/agentium-lab/Janus/core"
@@ -11,7 +12,17 @@ import (
 )
 
 var wsUpgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true
+		}
+		host := r.Host
+		if host == "" {
+			return false
+		}
+		return strings.Contains(origin, host)
+	},
 }
 
 type EventBroadcaster interface {

@@ -217,13 +217,20 @@ func main() {
 		handler = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(combined))
 		log.Println("api key authentication enabled")
 	} else {
-		log.Println("WARNING: authentication disabled (JANUS_AUTH_ENABLED=false)")
+		log.Println("WARNING: authentication disabled — all API endpoints are unauthenticated. Set JANUS_AUTH_ENABLED=true for production.")
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	log.Printf("janus-api listening HTTP=%s gRPC=%s", addr, grpcAddr)
 
-	srv := &http.Server{Addr: addr, Handler: handler}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
 	go func() {
 		if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
 			tlsCfg, err := buildTLSConfig(cfg.TLS)
