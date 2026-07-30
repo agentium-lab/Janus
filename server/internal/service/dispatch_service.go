@@ -68,6 +68,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, fmt.Errorf("tenant id, mailbox id, and agent id are required")
 	}
 
+	mb, mbErr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+	if mbErr == nil && mb != nil && mb.AgentID != "" && mb.AgentID != agentID {
+		return nil, fmt.Errorf("agent %s is not the owner of mailbox %s", agentID, mailboxID)
+	}
+
 	ctx = natsdriver.ContextWithTenant(ctx, tenantID)
 
 	decision, err := s.policySvc.Evaluate(ctx, core.PolicyInput{
@@ -146,6 +151,31 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		// owns the task.
 		_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
+	}
+
+	dispatchDecision, dispatchErr := s.policySvc.Evaluate(ctx, core.PolicyInput{
+		TenantID: tenantID,
+		Actor:    core.PolicyActor{Type: "agent", ID: agentID},
+		Action:   "dispatch",
+		Resource: core.PolicyResource{Type: "task", Value: task.ID},
+	})
+	if dispatchErr == nil && dispatchDecision.Decision == core.PolicyDecisionDeny {
+		s.publishEvent(ctx, core.JanusEvent{
+			EventType: core.EventPolicyDenied,
+			TenantID:  tenantID, TaskID: task.ID,
+			Payload: mustMarshal(map[string]string{
+				"agent_id": agentID, "delivery_ref": string(delivery.DeliveryRef),
+				"reason": dispatchDecision.Reason,
+			}),
+		})
+		time.AfterFunc(5*time.Second, func() {
+			bgCtx := context.Background()
+			_ = s.queueDriver.NackTask(bgCtx, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
+		})
+		return nil, &core.BackpressureError{
+			Reason:  core.ReasonApprovalRequired,
+			Message: fmt.Sprintf("dispatch policy denied: %s", dispatchDecision.Reason),
+		}
 	}
 
 	if err := s.budgetSvc.Reserve(ctx, tenantID, agentID, task.Envelope.Budget); err != nil {

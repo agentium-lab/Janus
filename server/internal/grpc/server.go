@@ -4,11 +4,26 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	svc "github.com/agentium-lab/Janus/server/internal/service"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/status"
+)
+
+var (
+	grpcRequestsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{Name: "janus_grpc_requests_total", Help: "Total gRPC requests"},
+		[]string{"method", "status"},
+	)
+	grpcRequestDuration = promauto.NewHistogramVec(
+		prometheus.HistogramOpts{Name: "janus_grpc_request_duration_seconds", Help: "gRPC request duration"},
+		[]string{"method"},
+	)
 )
 
 type listenFunc func(network, addr string) (net.Listener, error)
@@ -39,10 +54,21 @@ func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, d
 // errorMappingInterceptor maps service-layer errors to gRPC status codes via
 // toGRPCError, so handlers can return plain errors without explicit mapping.
 func errorMappingInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	start := time.Now()
+	method := ""
+	if info != nil {
+		method = info.FullMethod
+	}
 	resp, err := handler(ctx, req)
 	if err != nil {
-		return nil, toGRPCError(err)
+		mapped := toGRPCError(err)
+		st, _ := status.FromError(mapped)
+		grpcRequestsTotal.WithLabelValues(method, st.Code().String()).Inc()
+		grpcRequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
+		return nil, mapped
 	}
+	grpcRequestsTotal.WithLabelValues(method, "OK").Inc()
+	grpcRequestDuration.WithLabelValues(method).Observe(time.Since(start).Seconds())
 	return resp, nil
 }
 

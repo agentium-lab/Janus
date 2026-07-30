@@ -91,6 +91,12 @@ func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			Target:       core.Target{Type: targetType, Value: req.Target},
 			Payload:      core.Payload{Type: "mcp_tool_call", Content: req.Arguments},
 			Trace:        core.TraceContext{TraceID: fmt.Sprintf("mcp-%s", callID)},
+			ToolInvocation: &core.ToolInvocation{
+				ID:             callID,
+				Name:           req.ToolName,
+				Namespace:      "mcp",
+				SourceProtocol: "mcp",
+			},
 		},
 	}
 
