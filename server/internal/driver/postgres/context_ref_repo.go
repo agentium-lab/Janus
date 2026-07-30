@@ -94,6 +94,24 @@ func (r *ContextRefRepo) ListByTask(ctx context.Context, tenantID, taskID string
 	return refs, rows.Err()
 }
 
+func (r *ContextRefRepo) BindToTask(ctx context.Context, tenantID, taskID, contextRefID string) error {
+	_, err := r.pool.Exec(ctx,
+		`INSERT INTO task_context_refs (tenant_id, task_id, context_ref_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT DO NOTHING`,
+		tenantID, taskID, contextRefID,
+	)
+	return err
+}
+
+func (r *ContextRefRepo) UnbindFromTask(ctx context.Context, tenantID, taskID, contextRefID string) error {
+	_, err := r.pool.Exec(ctx,
+		`DELETE FROM task_context_refs WHERE tenant_id = $1 AND task_id = $2 AND context_ref_id = $3`,
+		tenantID, taskID, contextRefID,
+	)
+	return err
+}
+
 func (r *ContextRefRepo) Delete(ctx context.Context, tenantID, id string) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM context_refs WHERE tenant_id = $1 AND id = $2`, tenantID, id)
 	return err

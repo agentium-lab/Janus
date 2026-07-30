@@ -15,6 +15,8 @@ type ContextRefRepo interface {
 	Get(ctx context.Context, tenantID, id string) (*core.ContextRef, error)
 	ListByTask(ctx context.Context, tenantID, taskID string) ([]*core.ContextRef, error)
 	Delete(ctx context.Context, tenantID, id string) error
+	BindToTask(ctx context.Context, tenantID, taskID, contextRefID string) error
+	UnbindFromTask(ctx context.Context, tenantID, taskID, contextRefID string) error
 }
 
 type ContextRefService struct {
@@ -65,6 +67,43 @@ func (s *ContextRefService) ListByTask(ctx context.Context, tenantID, taskID str
 
 func (s *ContextRefService) Detach(ctx context.Context, tenantID, id string) error {
 	return s.repo.Delete(ctx, tenantID, id)
+}
+
+func (s *ContextRefService) NormalizeAndBind(ctx context.Context, tenantID, taskID string, refs []core.ContextRef) error {
+	for i := range refs {
+		ref := &refs[i]
+		if ref.TenantID == "" {
+			ref.TenantID = tenantID
+		}
+		if ref.TenantID != tenantID {
+			return fmt.Errorf("context ref tenant mismatch: ref tenant=%s, task tenant=%s", ref.TenantID, tenantID)
+		}
+		if ref.ID == "" {
+			if ref.Type == "" || ref.URI == "" {
+				continue
+			}
+			id, err := generateContextRefID()
+			if err != nil {
+				return err
+			}
+			ref.ID = id
+			if err := s.repo.Insert(ctx, *ref); err != nil {
+				return fmt.Errorf("insert context ref: %w", err)
+			}
+		} else {
+			existing, err := s.repo.Get(ctx, tenantID, ref.ID)
+			if err != nil {
+				return fmt.Errorf("context ref %s not found in tenant %s: %w", ref.ID, tenantID, err)
+			}
+			if existing.TenantID != tenantID {
+				return fmt.Errorf("cross-tenant context ref access denied")
+			}
+		}
+		if err := s.repo.BindToTask(ctx, tenantID, taskID, ref.ID); err != nil {
+			return fmt.Errorf("bind context ref %s to task %s: %w", ref.ID, taskID, err)
+		}
+	}
+	return nil
 }
 
 func generateContextRefID() (string, error) {

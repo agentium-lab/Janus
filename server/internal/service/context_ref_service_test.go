@@ -9,7 +9,8 @@ import (
 )
 
 type mockContextRefRepo struct {
-	refs map[string]*core.ContextRef
+	refs   map[string]*core.ContextRef
+	binds  []string
 }
 
 func newMockContextRefRepo() *mockContextRefRepo {
@@ -35,6 +36,15 @@ func (m *mockContextRefRepo) ListByTask(ctx context.Context, tenantID, taskID st
 
 func (m *mockContextRefRepo) Delete(ctx context.Context, tenantID, id string) error {
 	delete(m.refs, id)
+	return nil
+}
+
+func (m *mockContextRefRepo) BindToTask(ctx context.Context, tenantID, taskID, contextRefID string) error {
+	m.binds = append(m.binds, taskID+":"+contextRefID)
+	return nil
+}
+
+func (m *mockContextRefRepo) UnbindFromTask(ctx context.Context, tenantID, taskID, contextRefID string) error {
 	return nil
 }
 
@@ -104,5 +114,75 @@ func TestContextRefService_ListByTask(t *testing.T) {
 	}
 	if len(refs) != 0 {
 		t.Errorf("expected empty, got %d", len(refs))
+	}
+}
+
+func TestContextRefService_NormalizeAndBind_NewRefs(t *testing.T) {
+	repo := newMockContextRefRepo()
+	svc := NewContextRefService(repo)
+
+	refs := []core.ContextRef{
+		{Type: "git_pr", URI: "github://acme/repo/pull/1", Classification: "internal"},
+		{Type: "artifact", URI: "artifact://local/acme/result.json"},
+	}
+
+	err := svc.NormalizeAndBind(context.Background(), "t1", "task-1", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.binds) != 2 {
+		t.Errorf("expected 2 binds, got %d", len(repo.binds))
+	}
+	if refs[0].ID == "" || refs[1].ID == "" {
+		t.Error("expected IDs to be generated")
+	}
+	if refs[0].TenantID != "t1" {
+		t.Error("expected tenant_id to be set from task tenant")
+	}
+}
+
+func TestContextRefService_NormalizeAndBind_ExistingRef(t *testing.T) {
+	repo := newMockContextRefRepo()
+	repo.refs["ctxref_existing"] = &core.ContextRef{ID: "ctxref_existing", TenantID: "t1", Type: "doc", URI: "file:///doc"}
+	svc := NewContextRefService(repo)
+
+	refs := []core.ContextRef{
+		{ID: "ctxref_existing", TenantID: "t1"},
+	}
+
+	err := svc.NormalizeAndBind(context.Background(), "t1", "task-1", refs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(repo.binds) != 1 {
+		t.Errorf("expected 1 bind, got %d", len(repo.binds))
+	}
+}
+
+func TestContextRefService_NormalizeAndBind_CrossTenant(t *testing.T) {
+	repo := newMockContextRefRepo()
+	svc := NewContextRefService(repo)
+
+	refs := []core.ContextRef{
+		{ID: "ctxref_other", TenantID: "other-tenant", Type: "doc", URI: "file:///secret"},
+	}
+
+	err := svc.NormalizeAndBind(context.Background(), "t1", "task-1", refs)
+	if err == nil {
+		t.Fatal("expected cross-tenant error")
+	}
+}
+
+func TestContextRefService_NormalizeAndBind_NotFoundRef(t *testing.T) {
+	repo := newMockContextRefRepo()
+	svc := NewContextRefService(repo)
+
+	refs := []core.ContextRef{
+		{ID: "ctxref_nonexistent", TenantID: "t1"},
+	}
+
+	err := svc.NormalizeAndBind(context.Background(), "t1", "task-1", refs)
+	if err == nil {
+		t.Fatal("expected not-found error")
 	}
 }

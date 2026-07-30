@@ -238,6 +238,14 @@ func (m *mockContextRefRepo) Delete(_ context.Context, tenantID, id string) erro
 	return m.err
 }
 
+func (m *mockContextRefRepo) BindToTask(_ context.Context, _, _, _ string) error {
+	return m.err
+}
+
+func (m *mockContextRefRepo) UnbindFromTask(_ context.Context, _, _, _ string) error {
+	return m.err
+}
+
 func TestContextRefHandler_Attach(t *testing.T) {
 	svc := service.NewContextRefService(&mockContextRefRepo{})
 	h := NewContextRefHandler(svc)

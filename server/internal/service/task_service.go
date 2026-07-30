@@ -16,14 +16,26 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
+type IntentResolver interface {
+	Resolve(ctx context.Context, tenantID, intentValue string, payload core.Payload, contextRefs []core.ContextRef, policyHints []string) (*IntentResolveResult, error)
+}
+
+type IntentResolveResult struct {
+	ResolvedCapability string
+	Confidence         float64
+	Reason             string
+}
+
 type TaskService struct {
-	taskRepo    TaskRepo
-	queueDriver QueueDriver
-	pool        *pgxpool.Pool
-	outboxRepo  *postgres.OutboxRepo
-	policySvc   *PolicyService
-	approvalSvc *ApprovalService
-	lifecycle   *LifecycleService
+	taskRepo       TaskRepo
+	queueDriver    QueueDriver
+	pool           *pgxpool.Pool
+	outboxRepo     *postgres.OutboxRepo
+	policySvc      *PolicyService
+	approvalSvc    *ApprovalService
+	lifecycle      *LifecycleService
+	intentResolver IntentResolver
+	contextRefSvc  *ContextRefService
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -53,6 +65,16 @@ func (s *TaskService) WithLifecycle(lc *LifecycleService) *TaskService {
 	return s
 }
 
+func (s *TaskService) WithIntentResolver(r IntentResolver) *TaskService {
+	s.intentResolver = r
+	return s
+}
+
+func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService {
+	s.contextRefSvc = svc
+	return s
+}
+
 func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, error) {
 	if task.TenantID == "" {
 		return nil, fmt.Errorf("tenant id is required")
@@ -65,6 +87,23 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 	if task.TargetType == "" {
 		return nil, fmt.Errorf("target type is required")
+	}
+
+	if task.TargetType == core.TargetType("intent") && s.intentResolver != nil {
+		hints := []string{}
+		if task.Envelope.Policy != nil {
+			hints = task.Envelope.Policy.AllowedTools
+		}
+		result, err := s.intentResolver.Resolve(ctx, task.TenantID, task.TargetValue, task.Envelope.Payload, task.Envelope.ContextRefs, hints)
+		if err != nil {
+			return nil, fmt.Errorf("intent resolution failed: %w", err)
+		}
+		if result.ResolvedCapability == "" {
+			return nil, fmt.Errorf("intent resolution failed: %s", result.Reason)
+		}
+		task.TargetType = core.TargetTypeCapability
+		task.TargetValue = result.ResolvedCapability
+		task.Envelope.Target = core.Target{Type: core.TargetTypeCapability, Value: result.ResolvedCapability}
 	}
 	if task.TargetValue == "" {
 		return nil, fmt.Errorf("target value is required")
@@ -140,6 +179,12 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 			RequestedBy: task.SourceAgent,
 			Reason:     "policy: approval required",
 		})
+	}
+
+	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
+		if err := s.contextRefSvc.NormalizeAndBind(ctx, task.TenantID, task.ID, task.Envelope.ContextRefs); err != nil {
+			return result, fmt.Errorf("context ref bind: %w", err)
+		}
 	}
 
 	return result, nil
