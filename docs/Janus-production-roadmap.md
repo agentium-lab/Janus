@@ -958,7 +958,27 @@ v0.6.18 完成：
 - 成功 intent 解析后复用现有 `capability` 路由：online agent、active mailbox、policy、budget、capacity、data classification、semantic score 和 backlog 排序全部照常执行。
 - 验证已覆盖：service/unit 覆盖匹配、无匹配、歧义；`make smoke-7-agents` 真实依赖场景验证“我想审查这段代码”投递到 Code Review Agent mailbox，检查持久化 task 被改写为 `target_type=capability,target_value=code_review`，并覆盖 ambiguous/unmatched intent 拒绝。
 
-## 12. Enterprise 启动条件
+## 12. v1.1：Intent Resolution（catalog-first）
+
+> **对上文的修订**：第 11 节 GA 标准与“v0.6.18 完成”段中关于 Intent Resolver“已纳入 Core GA P0 / 已完成”的描述**超前于代码实际状态**。`server/internal/service/intent/` 代码确实存在，但 `WithIntentResolver` 在生产装配（`server/cmd/janus-api/main.go`）中从未调用，其依赖 `AgentLookup.ListOnlineAgents` 也无任何实现；MCP/ACP 网关对省略 target 的请求发出 `target_type=intent`，但这些任务实际落到“target value is required”被拒绝。本节将其重新立为 v1.1 交付项，并采用更低风险的方案。
+
+### 背景与风险
+
+- **为什么不直接接活现有 keyword resolver**：现有打分器（`resolver.go`）以 `payload.Content` 对 capability 描述做匹配，接受阈值低（0.3）。在多租户 + 数据分级策略 + 审计日志的系统里，弱匹配可能**静默误路由到“策略允许但错误”的 agent**——比当前的明确拒绝更糟，且属于安全/审计问题，不是 UX 问题。Router 的 data-class 过滤只能剔除“不能处理”的 agent，抓不住“能处理但答非所问”的 agent。
+- **为什么不把 LLM 放进同步 `Create` 路径**：`Create` 同时承担 policy 检查与 outbox 事务，同步塞 LLM 会引入延迟、失败传导与非确定性，侵蚀该路径确定性、可审计的核心属性。`go.mod` 当前零 LLM 依赖并非偶然。
+
+### v1.1 范围（分阶段）
+
+1. **Catalog 端点（先做，零 Create 路径风险）**：新增只读 `GET /v1/tenants/{tenantID}/catalog`，返回租户内在线 agent 及其 capability（名称、描述、schema）。无新依赖，不改任务创建。使调用方能用自有模型自行完成 NL→capability 解析。
+2. **网关语义清晰化**：将省略 target 时的默认行为从静默 `target_type=intent` 改为明确的 `400 target required; call GET /catalog`。
+3. **Advisory 解析端点（仅在度量出真实需求时）**：若第 1 步后仍存在无法自解析的轻量调用方，新增无状态的 `POST /v1/tenants/{tenantID}/intents/resolve` 咨询接口（调用方传入 payload，拿回建议 capability，再正常发布 capability 任务）。LLM 依赖隔离于此，配 per-tenant 限流与成本预算，返回值须校验在当前在线 catalog 内。
+4. **v1.1 不做**：同步 LLM 进 `Create`（否决）；异步 `resolving` 任务状态 + 后台 worker（否决，对本代码库的生命周期/审计模型而言过度设计）。
+
+**Owner**：TBD。**依赖**：不依赖其他 v1.1 项。
+
+---
+
+## 13. Enterprise 启动条件
 
 Janus-enterprise 不应早于 Core Reliability Alpha。建议在以下条件满足后启动 Enterprise track：
 
