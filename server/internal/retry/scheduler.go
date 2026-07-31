@@ -88,34 +88,60 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	}
 
 	for _, t := range tasks {
-		_, err := s.pool.Exec(ctx,
-			`UPDATE tasks SET status = 'queued', retry_at = NULL, updated_at = now()
-			 WHERE tenant_id = $1 AND id = $2 AND status = 'retry_scheduled'`,
-			t.TenantID, t.ID,
-		)
-		if err != nil {
-			log.Printf("retry scheduler update %s: %v", t.ID, err)
-			continue
-		}
+		func(t retryTask) {
+			tx, err := s.pool.Begin(ctx)
+			if err != nil {
+				log.Printf("retry scheduler tx begin %s: %v", t.ID, err)
+				return
+			}
+			committed := false
+			defer func() {
+				if !committed {
+					tx.Rollback(ctx)
+				}
+			}()
 
-		if t.MailboxID != "" {
-			msg, ok := buildRetryMessage(t.TenantID, t.ID, t.MailboxID, t.Priority, t.Envelope)
-			if !ok {
-				continue
+			tag, err := tx.Exec(ctx,
+				`UPDATE tasks SET status = 'queued', retry_at = NULL, updated_at = now()
+				 WHERE tenant_id = $1 AND id = $2 AND status = 'retry_scheduled'`,
+				t.TenantID, t.ID,
+			)
+			if err != nil {
+				log.Printf("retry scheduler update %s: %v", t.ID, err)
+				return
 			}
-			if s.useOutbox {
-				queuePayload, _ := json.Marshal(msg)
-				dedupeKey := buildRetryDedupeKey(t.TenantID, t.ID, t.AttemptCount)
-				_, _ = s.pool.Exec(ctx,
-					`INSERT INTO outbox_events (id, tenant_id, kind, payload, dedupe_key)
-					 VALUES ($1, $2, 'task_publish', $3, $4)
-					 ON CONFLICT (tenant_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-					generateULID(), t.TenantID, queuePayload, dedupeKey,
-				)
-			} else if s.queue != nil {
-				_ = s.queue.PublishTask(ctx, msg)
+			if tag.RowsAffected() == 0 {
+				committed = true
+				return
 			}
-		}
+
+			if t.MailboxID != "" {
+				msg, ok := buildRetryMessage(t.TenantID, t.ID, t.MailboxID, t.Priority, t.Envelope)
+				if ok {
+					if s.useOutbox {
+						queuePayload, _ := json.Marshal(msg)
+						dedupeKey := buildRetryDedupeKey(t.TenantID, t.ID, t.AttemptCount)
+						if _, err := tx.Exec(ctx,
+							`INSERT INTO outbox_events (id, tenant_id, kind, payload, dedupe_key)
+							 VALUES ($1, $2, 'task_publish', $3, $4)
+							 ON CONFLICT (tenant_id, dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
+							generateULID(), t.TenantID, queuePayload, dedupeKey,
+						); err != nil {
+							log.Printf("retry scheduler outbox %s: %v", t.ID, err)
+							return
+						}
+					} else if s.queue != nil {
+						_ = s.queue.PublishTask(ctx, msg)
+					}
+				}
+			}
+
+			if err := tx.Commit(ctx); err != nil {
+				log.Printf("retry scheduler commit %s: %v", t.ID, err)
+				return
+			}
+			committed = true
+		}(t)
 	}
 
 	if len(tasks) > 0 {

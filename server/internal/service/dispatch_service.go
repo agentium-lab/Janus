@@ -225,20 +225,23 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 					})
 					return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", claimedPayload)
 				})
-				if err != nil {
-					return nil, err
-				}
-				return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
+			if err != nil {
+				s.budgetSvc.Release(ctx, tenantID, agentID)
+				return nil, err
+			}
+			return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
 			}
 		}
 	}
 
 	// Fallback path (no lifecycle or non-PG repos).
 	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
+		s.budgetSvc.Release(ctx, tenantID, agentID)
 		return nil, fmt.Errorf("create attempt: %w", err)
 	}
 
 	if err := s.taskRepo.UpdateStatus(ctx, tenantID, task.ID, core.TaskStatusClaimed, 1); err != nil {
+		s.budgetSvc.Release(ctx, tenantID, agentID)
 		return nil, fmt.Errorf("update task claimed: %w", err)
 	}
 
@@ -373,8 +376,12 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
 		}
-		if _, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusCompleted, 0); uerr != nil {
+		taskOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusCompleted, 0)
+		if uerr != nil {
 			return fmt.Errorf("complete task: %w", uerr)
+		}
+		if !taskOK {
+			return nil
 		}
 		if resultRef != "" {
 			if serr := pgTaskRepo.SetResultRefTx(ctx, tx, tenantID, taskID, resultRef); serr != nil {
@@ -528,10 +535,8 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	mb, _ := s.mailboxRepo.Get(ctx, tenantID, task.MailboxID)
 	canRetry := retriable && mb != nil && !mb.RetryPolicy.ExceedsMaxAttempts(task.AttemptCount)
 
-	// Release concurrency budget before the tx (it's a separate counter).
-	_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
-
 	committed := false
+	attemptFinished := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
 		ok, ferr := pgAttemptRepo.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
 		if err := ferr; err != nil {
@@ -540,11 +545,16 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 		if !ok {
 			return nil // duplicate NACK, no-op
 		}
+		attemptFinished = true
 
 		if canRetry {
 			retryAt := time.Now().Add(mb.RetryPolicy.BackoffDuration(task.AttemptCount))
-			if _, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRetryScheduled, 0); uerr != nil {
+			retryOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRetryScheduled, 0)
+			if uerr != nil {
 				return fmt.Errorf("set retry_scheduled: %w", uerr)
+			}
+			if !retryOK {
+				return nil
 			}
 			if rerr := pgTaskRepo.UpdateRetryAtTx(ctx, tx, tenantID, taskID, retryAt); rerr != nil {
 				return fmt.Errorf("set retry_at: %w", rerr)
@@ -557,8 +567,12 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 				return fmt.Errorf("outbox retry: %w", oerr)
 			}
 		} else {
-			if _, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusDeadLettered, 0); uerr != nil {
+			dlOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusDeadLettered, 0)
+			if uerr != nil {
 				return fmt.Errorf("dead letter: %w", uerr)
+			}
+			if !dlOK {
+				return nil
 			}
 			// dlq_publish + dead_lettered event outbox
 			envelopeJSON, _ := json.Marshal(task.Envelope)
@@ -586,6 +600,9 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	})
 	if err != nil {
 		return err
+	}
+	if attemptFinished {
+		_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
 	}
 	if !committed {
 		return nil

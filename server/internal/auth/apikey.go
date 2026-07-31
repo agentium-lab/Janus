@@ -108,7 +108,7 @@ func TenantGuard(extractTenantFromPath func(string) string) func(http.Handler) h
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authTenant := TenantFromContext(r.Context())
 			if authTenant == "" {
-				next.ServeHTTP(w, r)
+				http.Error(w, `{"error":"missing authenticated tenant"}`, http.StatusForbidden)
 				return
 			}
 			pathTenant := extractTenantFromPath(r.URL.Path)

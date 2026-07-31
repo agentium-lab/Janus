@@ -1,0 +1,71 @@
+{{- if (default true .Values.prometheusRule.enabled) }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "janus-core.fullname" . }}
+  labels:
+    {{- include "janus-core.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+  - name: janus-core.rules
+    rules:
+    - alert: JanusHighDeadLetterRate
+      expr: rate(janus_tasks_dead_lettered_total[5m]) > 0.1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus high dead-letter rate"
+        description: "Dead-letter rate is high ({{ $value | humanize }}/s); inspect failing agents for tenant {{ $labels.tenant_id }}."
+    - alert: JanusNoOnlineAgents
+      expr: janus_agent_online < 1
+      for: 5m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Janus has no online agents"
+        description: "Zero agents online for tenant {{ $labels.tenant_id }} for 5m — tasks cannot be dispatched."
+    - alert: JanusQueueBacklogGrowing
+      expr: janus_queue_backlog > 1000
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus queue backlog growing"
+        description: "Queue backlog above 1000 ({{ $value }}) for 10m; consumers may be saturated or offline."
+    - alert: JanusHighPolicyDenialRate
+      expr: rate(janus_policy_denied_total[5m]) > 1
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus high policy denial rate"
+        description: "Policy denials exceeding 1/s for tenant {{ $labels.tenant_id }} — possible misconfiguration or attack."
+    - alert: JanusHighTaskFailureRate
+      expr: rate(janus_tasks_failed_total[5m]) > 0.5
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus high task failure rate"
+        description: "Task failures exceeding 0.5/s for tenant {{ $labels.tenant_id }}."
+    - alert: JanusHighNackRatio
+      expr: rate(janus_nack_total[10m]) / (rate(janus_ack_total[10m]) + rate(janus_nack_total[10m]) + 0.001) > 0.3
+      for: 10m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus high NACK ratio"
+        description: "NACK ratio above 30% for 10m — possible retry storm or widespread agent failures."
+    - alert: JanusBudgetThrottleSustained
+      expr: rate(janus_budget_throttle_total[5m]) > 0
+      for: 15m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Janus budget throttling sustained"
+        description: "Budget throttle firing for 15m — a tenant may have exhausted its budget or concurrency limits."
+{{- end }}

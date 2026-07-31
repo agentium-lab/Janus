@@ -422,11 +422,15 @@ func (r *TaskRepository) CountByStatus(ctx context.Context, tenantID string, sta
 
 // CountRunningByAgent counts tasks currently claimed/running for a specific
 // agent within a tenant. Used for per-agent concurrency budget checks.
+// CountRunningByAgent counts active attempts (claimed/running) for a specific
+// agent, using task_attempts.agent_id — the agent actually working the task.
+// The pulling agent is rarely the task's source_agent (creator), so counting
+// by source_agent (the prior implementation) never enforced the per-agent cap.
 func (r *TaskRepository) CountRunningByAgent(ctx context.Context, tenantID, agentID string) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM tasks
-		 WHERE tenant_id = $1 AND source_agent = $2 AND status IN ('claimed', 'running')`,
+		`SELECT COUNT(*) FROM task_attempts
+		 WHERE tenant_id = $1 AND agent_id = $2 AND status IN ('claimed', 'running')`,
 		tenantID, agentID,
 	).Scan(&count)
 	return count, err

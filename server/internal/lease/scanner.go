@@ -2,6 +2,8 @@ package lease
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -113,43 +115,104 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 
 	count := 0
 	for _, e := range list {
-		// Mark attempt failed (CAS: only if still claimed/running).
-		tag, err := s.pool.Exec(ctx,
-			`UPDATE task_attempts SET status = 'failed', finished_at = now()
-			 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3 AND status IN ('claimed', 'running')`,
-			e.TenantID, e.TaskID, e.Attempt,
-		)
-		if err != nil {
-			log.Printf("lease scanner: mark attempt failed %s/%s: %v", e.TenantID, e.TaskID, err)
-			continue
-		}
-		if tag.RowsAffected() == 0 {
-			continue // already moved by a concurrent ACK/NACK
-		}
+		expired := func(e expired) bool {
+			tx, err := s.pool.Begin(ctx)
+			if err != nil {
+				log.Printf("lease scanner tx begin %s/%s: %v", e.TenantID, e.TaskID, err)
+				return false
+			}
+			committed := false
+			defer func() {
+				if !committed {
+					tx.Rollback(ctx)
+				}
+			}()
 
-		// Decide retry vs DLQ based on mailbox max_deliver.
-		canRetry := e.MaxDeliver <= 0 || e.AttemptCount < e.MaxDeliver
-		if canRetry {
-			retryAt := time.Now().Add(backoff(e.AttemptCount))
-			if _, err := s.pool.Exec(ctx,
-				`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now()
-				 WHERE tenant_id = $2 AND id = $3 AND status IN ('claimed', 'running')`,
-				retryAt, e.TenantID, e.TaskID,
-			); err != nil {
-				log.Printf("lease scanner: set retry_scheduled %s/%s: %v", e.TenantID, e.TaskID, err)
+			tag, err := tx.Exec(ctx,
+				`UPDATE task_attempts SET status = 'failed', finished_at = now()
+				 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3 AND status IN ('claimed', 'running')`,
+				e.TenantID, e.TaskID, e.Attempt,
+			)
+			if err != nil {
+				log.Printf("lease scanner: mark attempt failed %s/%s: %v", e.TenantID, e.TaskID, err)
+				return false
 			}
-		} else {
-			if _, err := s.pool.Exec(ctx,
-				`UPDATE tasks SET status = 'dead_lettered', updated_at = now()
-				 WHERE tenant_id = $1 AND id = $2 AND status IN ('claimed', 'running')`,
-				e.TenantID, e.TaskID,
-			); err != nil {
-				log.Printf("lease scanner: set dead_lettered %s/%s: %v", e.TenantID, e.TaskID, err)
+			if tag.RowsAffected() == 0 {
+				return false
 			}
+
+			canRetry := e.MaxDeliver <= 0 || e.AttemptCount < e.MaxDeliver
+			if canRetry {
+				retryAt := time.Now().Add(backoff(e.AttemptCount))
+				if _, err := tx.Exec(ctx,
+					`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now()
+					 WHERE tenant_id = $2 AND id = $3 AND status IN ('claimed', 'running')`,
+					retryAt, e.TenantID, e.TaskID,
+				); err != nil {
+					log.Printf("lease scanner: set retry_scheduled %s/%s: %v", e.TenantID, e.TaskID, err)
+					return false
+				}
+			} else {
+				if _, err := tx.Exec(ctx,
+					`UPDATE tasks SET status = 'dead_lettered', updated_at = now()
+					 WHERE tenant_id = $1 AND id = $2 AND status IN ('claimed', 'running')`,
+					e.TenantID, e.TaskID,
+				); err != nil {
+					log.Printf("lease scanner: set dead_lettered %s/%s: %v", e.TenantID, e.TaskID, err)
+					return false
+				}
+				dlqHeaders := map[string]string{"attempt_count": fmt.Sprintf("%d", e.AttemptCount), "reason": "lease_expired"}
+				dlqPayload, _ := json.Marshal(core.TaskMessage{
+					TenantID: e.TenantID, MailboxID: e.MailboxID, TaskID: e.TaskID,
+					Priority: e.Priority, Payload: e.Envelope, Headers: dlqHeaders,
+				})
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO outbox_events (id, tenant_id, kind, payload)
+					 VALUES ($1, $2, 'dlq_publish', $3)`,
+					generateULID(), e.TenantID, dlqPayload,
+				); err != nil {
+					log.Printf("lease scanner: dlq outbox %s/%s: %v", e.TenantID, e.TaskID, err)
+					return false
+				}
+				dlEventPayload, _ := json.Marshal(core.JanusEvent{
+					EventType: core.EventTaskDeadLettered, TenantID: e.TenantID, TaskID: e.TaskID,
+					Payload: []byte(`{"reason":"lease_expired"}`),
+				})
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO outbox_events (id, tenant_id, kind, payload)
+					 VALUES ($1, $2, 'event_publish', $3)`,
+					generateULID(), e.TenantID, dlEventPayload,
+				); err != nil {
+					log.Printf("lease scanner: dead_lettered event %s/%s: %v", e.TenantID, e.TaskID, err)
+					return false
+				}
+			}
+
+			if err := tx.Commit(ctx); err != nil {
+				log.Printf("lease scanner commit %s/%s: %v", e.TenantID, e.TaskID, err)
+				return false
+			}
+			committed = true
+			return true
+		}(e)
+		if expired {
+			count++
 		}
-		count++
 	}
 	return count, nil
+}
+
+func generateULID() string {
+	now := time.Now()
+	t := uint64(now.UnixMilli())
+	b := make([]byte, 10)
+	for i := 9; i >= 0; i-- {
+		b[i] = byte(t & 0xff)
+		t >>= 8
+	}
+	randBytes := make([]byte, 6)
+	_, _ = cryptorand.Read(randBytes)
+	return fmt.Sprintf("%x%x", b, randBytes)
 }
 
 // backoff returns a retry delay for the given attempt number. Exponential with

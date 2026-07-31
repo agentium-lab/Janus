@@ -143,15 +143,17 @@ func TestTenantGuard_BlocksMismatchedTenant(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, rec.Code)
 }
 
-func TestTenantGuard_NoAuthTenant_AllowsAll(t *testing.T) {
+func TestTenantGuard_NoAuthTenant_Blocks(t *testing.T) {
 	called := false
 	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
 
 	guard := TenantGuard(func(p string) string { return "acme" })(next)
 
 	req := httptest.NewRequest("GET", "/v1/tenants/acme/tasks", nil)
-	guard.ServeHTTP(httptest.NewRecorder(), req)
-	assert.True(t, called, "no auth tenant → allow (for public endpoints)")
+	w := httptest.NewRecorder()
+	guard.ServeHTTP(w, req)
+	assert.False(t, called, "missing auth tenant must be rejected (fail-closed)")
+	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 
 func TestTenantGuard_EmptyPathTenant_AllowsAll(t *testing.T) {

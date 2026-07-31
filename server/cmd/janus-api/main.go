@@ -218,15 +218,17 @@ func main() {
 	combined.Handle("/", mux)
 	combined.Handle("/grpc/", http.StripPrefix("/grpc", gwMux))
 
+	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	var handler http.Handler = combined
 	if cfg.Auth.Enabled {
 		handler = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(combined))
 		log.Println("api key authentication enabled")
+	} else if !isLoopbackAddr(addr) {
+		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true for production", addr)
 	} else {
-		log.Println("WARNING: authentication disabled — all API endpoints are unauthenticated. Set JANUS_AUTH_ENABLED=true for production.")
+		log.Println("WARNING: authentication disabled — dev mode (loopback only)")
 	}
 
-	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
 	log.Printf("janus-api listening HTTP=%s gRPC=%s", addr, grpcAddr)
 
 	srv := &http.Server{
@@ -259,7 +261,13 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("shutting down...")
-	srv.Close()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown: %v", err)
+	}
+	log.Println("shutdown complete")
 }
 
 func runMigration(cfg *config.Config) {
@@ -273,6 +281,18 @@ func runMigration(cfg *config.Config) {
 	}
 	m.Close()
 	log.Println("migration completed")
+}
+
+func isLoopbackAddr(addr string) bool {
+	host := addr
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		host = addr[:i]
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "[::1]", "::1":
+		return true
+	}
+	return false
 }
 
 func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
