@@ -31,6 +31,8 @@ import (
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
+	"github.com/agentium-lab/Janus/server/internal/gateway/acp"
+	"github.com/agentium-lab/Janus/server/internal/gateway/mcp"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/heartbeat"
 	"github.com/agentium-lab/Janus/server/internal/lease"
@@ -112,6 +114,9 @@ func main() {
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
+	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc)
+
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
 	dlqH := handler.NewDLQHandler(dlqSvc)
 
@@ -186,7 +191,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, dlqH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH)
 
 	combined := http.NewServeMux()
 	combined.Handle("/metrics", promhttp.Handler())
@@ -287,11 +292,13 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
 	mux.Handle("/a2a/", a2aGw)
+	mux.Handle("/acp/", acpGw)
+	mux.Handle("/mcp/", mcpGw)
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
