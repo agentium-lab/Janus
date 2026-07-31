@@ -921,6 +921,8 @@ v0.6.17 已完成：
 
 ## 11. Milestone 6：Core v1.0 GA
 
+> ⚠️ **GA 已撤回（2026-07-31）**：v1.0.0 GA 后实现层审计发现 2 个 CRITICAL 安全 release-blocker（SC-1/SC-2），v1.0.0 tag 已从本地与远程删除，待 v1.1（§12）修复后重新 GA。详情见 `RELEASE-v1.0.0.md` 顶部标注与本文件 §12–§15。
+
 Core v1.0 GA 的正式发布门禁以 [Janus Core Capability Matrix](./Janus-core-capability-matrix.md) 为准。所有 `P0` Core 能力必须达到 `Covered`；任一 `P0` 仍为 `Partial`、`Missing test` 或 `Not implemented` 时，Janus Core 不能标记为生产级发布。`P1` 若未完全覆盖，必须有明确风险接受、owner 和下一版本目标。
 
 v1.0 Core GA 标准：

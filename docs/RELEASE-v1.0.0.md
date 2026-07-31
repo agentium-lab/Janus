@@ -1,5 +1,7 @@
 # Janus Core v1.0.0 Release Note
 
+> ⚠️ **GA 已撤回（2026-07-31）**：v1.0.0 GA 后的实现层安全审计发现 2 个 CRITICAL 级 release-blocker（SC-1 gRPC 数据面鉴权完全缺失、SC-2 网关 / WebSocket 跨租户访问），任一未修复都使“生产可用”不成立。**v1.0.0 tag 已从本地与远程删除**，将在 **v1.1**（见 `Janus-production-roadmap.md` §12）修复 SC-1/SC-2 后重新进行 GA。本文件保留作历史记录，下方内容不再代表当前生产状态。
+
 ## Summary
 
 Janus Core v1.0.0 is the first production General Availability release.
