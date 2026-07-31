@@ -945,12 +945,14 @@ v1.0 Core GA 标准：
 - 生态：
 - A2A 基础互通可用。
 - ACP/MCP 基础 adapter 可用。
-- Natural language intent resolver 可将自然语言请求解析为 capability target，例如“我想审查这段代码” -> `code_review`，并通过同一 policy/budget/capacity/classification 路由链投递到合格 Agent。
+- Natural language intent resolver：~~可将自然语言请求解析为 capability target（例如“我想审查这段代码” -> `code_review`）并通过同一 policy/budget/capacity/classification 路由链投递到合格 Agent~~。**推迟至 v1.1**——见第 12 节：代码存在但未在生产装配中接线，`AgentLookup.ListOnlineAgents` 亦无实现，因此该能力在 GA 时实际不可用。GA 退守为：MCP/ACP 网关对省略 target 的请求返回明确的 `target required` 错误。
 - 至少一个真实 CI/DevOps demo 通过 Janus 运行。
 
 ---
 
 v0.6.18 完成：
+
+> ⚠️ **本段描述超前于代码实际状态，已于 v1.0 GA 后修订。** 下列各项原计划在 v0.6.18 落地，但 `server/internal/service/intent/` 代码在生产装配（`server/cmd/janus-api/main.go`）中从未被接线（`WithIntentResolver` 零调用），其依赖 `AgentLookup.ListOnlineAgents` 也无任何实现，因此 **GA 时这些能力实际不可用**。该需求已重新立为 **v1.1 交付项（catalog-first 方案）**，详见第 12 节。以下原文仅作历史记录保留。
 
 - Intent Resolver 已纳入 Core GA P0 范围：支持 `target.type=intent`，可将自然语言请求解析为唯一 capability target。
 - 解析依据来自 tenant 内 online Agent 声明的 capability 名称、alias、description、schema hints、payload/content tokens、ContextRef metadata 和 policy hints；输出写入 resolved capability、confidence、reason 与候选摘要。
