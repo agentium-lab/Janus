@@ -177,7 +177,14 @@ func main() {
 	go leaseScanner.Start(context.Background())
 	defer leaseScanner.Stop()
 
-	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, agentSvc, taskSvc, dispatchSvc, eventSvc, mailboxSvc, dlqSvc)
+	pgDB, err := sql.Open("pgx", cfg.Postgres.DSN())
+	if err != nil {
+		log.Fatalf("auth db open: %v", err)
+	}
+	defer pgDB.Close()
+	validator := auth.NewAPIKeyValidator(pgDB)
+
+	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, validator, agentSvc, taskSvc, dispatchSvc, eventSvc, mailboxSvc, dlqSvc)
 	go func() {
 		if err := grpcSrv.Start(); err != nil {
 			log.Fatalf("grpc: %v", err)
@@ -213,12 +220,6 @@ func main() {
 
 	var handler http.Handler = combined
 	if cfg.Auth.Enabled {
-		pgDB, err := sql.Open("pgx", cfg.Postgres.DSN())
-		if err != nil {
-			log.Fatalf("auth db open: %v", err)
-		}
-		defer pgDB.Close()
-		validator := auth.NewAPIKeyValidator(pgDB)
 		handler = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(combined))
 		log.Println("api key authentication enabled")
 	} else {

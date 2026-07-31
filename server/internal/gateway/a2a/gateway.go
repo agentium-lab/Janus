@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type AgentRegistrar interface {
@@ -51,9 +52,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleAgentCard(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	var card AgentCard
@@ -76,9 +77,9 @@ func (g *Gateway) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
@@ -109,9 +110,9 @@ func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
@@ -161,9 +162,9 @@ type jsonRPCErr struct {
 }
 
 func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
@@ -221,6 +222,15 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONRPCError(w, req.ID, -32601, "method not found: "+req.Method)
 	}
+}
+
+func tenantFromContextOrReject(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tid := auth.TenantFromContext(r.Context())
+	if tid == "" {
+		writeA2AError(w, http.StatusForbidden, "TENANT_REQUIRED", "missing tenant in authenticated context")
+		return "", false
+	}
+	return tid, true
 }
 
 func writeA2AError(w http.ResponseWriter, status int, code, msg string) {

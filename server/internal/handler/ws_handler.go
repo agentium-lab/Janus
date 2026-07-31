@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/gorilla/websocket"
 )
 
@@ -58,9 +59,10 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant")
+	tenantID := auth.TenantFromContext(r.Context())
 	if tenantID == "" {
-		tenantID = "default"
+		conn.Close()
+		return
 	}
 
 	events := h.broadcaster.Subscribe(tenantID)

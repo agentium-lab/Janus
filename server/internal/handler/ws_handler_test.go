@@ -3,16 +3,29 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func withWSAuth(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t := r.URL.Query().Get("tenant")
+		if t == "" {
+			t = "default"
+		}
+		r = r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
+		h.ServeHTTP(w, r)
+	})
+}
 
 func TestFanoutBroadcaster_SubscribeUnsubscribe(t *testing.T) {
 	inbound := make(chan core.JanusEvent, 16)
@@ -83,7 +96,7 @@ func TestWebSocketHandler_BasicConnection(t *testing.T) {
 	b := NewFanoutBroadcaster(inbound)
 	h := NewWebSocketHandler(b)
 
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
@@ -115,7 +128,7 @@ func TestWebSocketHandler_NoTenant(t *testing.T) {
 	b := NewFanoutBroadcaster(inbound)
 	h := NewWebSocketHandler(b)
 
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
@@ -146,7 +159,7 @@ func TestWebSocketHandler_ClientDisconnect(t *testing.T) {
 	b := NewFanoutBroadcaster(inbound)
 	h := NewWebSocketHandler(b)
 
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
@@ -169,7 +182,7 @@ func TestWebSocketHandler_UpgradeFailure(t *testing.T) {
 	b := NewFanoutBroadcaster(inbound)
 	h := NewWebSocketHandler(b)
 
-	srv := httptest.NewServer(h)
+	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
 	resp, err := http.Get(srv.URL + "?tenant=test")

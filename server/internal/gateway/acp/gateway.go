@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type AgentRegistrar interface {
@@ -44,9 +45,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	var req struct {
@@ -87,9 +88,9 @@ func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
@@ -155,9 +156,9 @@ func (g *Gateway) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	task, err := g.statusSvc.Get(r.Context(), tenantID, runID)
@@ -171,6 +172,15 @@ func (g *Gateway) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		"status":       string(task.Status),
 		"result_ref":   task.ResultRef,
 	})
+}
+
+func tenantFromContextOrReject(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tid := auth.TenantFromContext(r.Context())
+	if tid == "" {
+		writeACPError(w, http.StatusForbidden, "TENANT_REQUIRED", "missing tenant in authenticated context")
+		return "", false
+	}
+	return tid, true
 }
 
 func writeACPError(w http.ResponseWriter, status int, code, msg string) {

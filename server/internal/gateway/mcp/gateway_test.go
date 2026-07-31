@@ -10,9 +10,18 @@ import (
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func withAuthCtx(r *http.Request) *http.Request {
+	t := r.URL.Query().Get("tenant_id")
+	if t == "" {
+		t = "acme"
+	}
+	return r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
+}
 
 type mockTaskCreator struct{ created *core.Task; err error }
 func (m *mockTaskCreator) Create(_ context.Context, task core.Task) (*core.Task, error) {
@@ -35,6 +44,7 @@ func TestMCP_ToolCall(t *testing.T) {
 
 	body := `{"call_id":"call-1","tool_name":"search","arguments":"query","target":"web_search"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -53,6 +63,7 @@ func TestMCP_ToolCallNoTarget(t *testing.T) {
 
 	body := `{"call_id":"call-2","tool_name":"summarize","arguments":"text"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -67,6 +78,7 @@ func TestMCP_Resource(t *testing.T) {
 
 	body := `{"uri":"file:///data","hash":"abc123","classification":"internal"}`
 	req := httptest.NewRequest("POST", "/mcp/resources?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -79,6 +91,7 @@ func TestMCP_Resource(t *testing.T) {
 func TestMCP_NotFound(t *testing.T) {
 	gw := NewGateway(nil, nil, nil)
 	req := httptest.NewRequest("GET", "/mcp/unknown", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -87,6 +100,7 @@ func TestMCP_NotFound(t *testing.T) {
 func TestMCP_InvalidJSON(t *testing.T) {
 	gw := NewGateway(&mockTaskCreator{}, nil, nil)
 	req := httptest.NewRequest("POST", "/mcp/tools/call", strings.NewReader("not json"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -97,6 +111,7 @@ func TestMCP_ToolCallStatus(t *testing.T) {
 	gw := NewGateway(nil, statusSvc, nil)
 
 	req := httptest.NewRequest("GET", "/mcp/tools/calls/call-1/status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -106,6 +121,7 @@ func TestMCP_ToolCallStatus(t *testing.T) {
 func TestMCP_ToolCallStatus_MissingID(t *testing.T) {
 	gw := NewGateway(nil, &mockStatusGetter{}, nil)
 	req := httptest.NewRequest("GET", "/mcp/tools/calls//status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.NotEqual(t, http.StatusOK, w.Code)
@@ -116,6 +132,7 @@ func TestMCP_ToolCallStatus_NotFound(t *testing.T) {
 	gw := NewGateway(nil, statusSvc, nil)
 
 	req := httptest.NewRequest("GET", "/mcp/tools/calls/missing/status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -125,6 +142,7 @@ func TestMCP_ResourceNoService(t *testing.T) {
 	gw := NewGateway(nil, nil, nil)
 	body := `{"uri":"file:///data"}`
 	req := httptest.NewRequest("POST", "/mcp/resources?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
@@ -133,6 +151,7 @@ func TestMCP_ResourceNoService(t *testing.T) {
 func TestMCP_ResourceInvalidJSON(t *testing.T) {
 	gw := NewGateway(nil, nil, &mockResourceRegistrar{})
 	req := httptest.NewRequest("POST", "/mcp/resources", strings.NewReader("bad"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -143,6 +162,7 @@ func TestMCP_ResourceError(t *testing.T) {
 	gw := NewGateway(nil, nil, resourceSvc)
 	body := `{"uri":"file:///data"}`
 	req := httptest.NewRequest("POST", "/mcp/resources?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -153,6 +173,7 @@ func TestMCP_ToolCallCreateError(t *testing.T) {
 	gw := NewGateway(taskSvc, nil, nil)
 	body := `{"call_id":"c1","tool_name":"x"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -163,6 +184,7 @@ func TestMCP_ToolCallAutoID(t *testing.T) {
 	gw := NewGateway(taskSvc, nil, nil)
 	body := `{"tool_name":"search"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusCreated, w.Code)

@@ -36,8 +36,8 @@ type Server struct {
 	listen     listenFunc
 }
 
-func NewServer(port int, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService, mailboxSvc *svc.MailboxService, dlqSvc *handler.DLQServiceAdapter) *Server {
-	s := grpc.NewServer(grpc.UnaryInterceptor(errorMappingInterceptor))
+func NewServer(port int, validator APIKeyValidator, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService, mailboxSvc *svc.MailboxService, dlqSvc *handler.DLQServiceAdapter) *Server {
+	s := grpc.NewServer(grpc.ChainUnaryInterceptor(AuthInterceptor(validator), errorMappingInterceptor))
 	pb.RegisterAgentServiceServer(s, NewAgentServiceServer(agentSvc))
 	pb.RegisterTaskServiceServer(s, NewTaskServiceServer(taskSvc))
 	pb.RegisterDispatchServiceServer(s, NewDispatchServiceServer(dispatchSvc))

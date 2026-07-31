@@ -10,9 +10,18 @@ import (
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func withAuthCtx(r *http.Request) *http.Request {
+	t := r.URL.Query().Get("tenant_id")
+	if t == "" {
+		t = "acme"
+	}
+	return r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
+}
 
 type mockAgentRegistrar struct {
 	err error
@@ -38,6 +47,7 @@ func TestGateway_ServeHTTP_AgentCard(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	body := `{"name":"reviewer","url":"http://localhost:8080","capabilities":[{"name":"review"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/agent/card?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -47,6 +57,7 @@ func TestGateway_ServeHTTP_TaskSend(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	body := `{"id":"msg-1","params":{"message":{"role":"user","parts":[{"type":"text","text":"hello"}]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/task/send?tenant_id=acme&source_agent=agent-1&mailbox_id=mb-1", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -55,6 +66,7 @@ func TestGateway_ServeHTTP_TaskSend(t *testing.T) {
 func TestGateway_ServeHTTP_NotFound(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	req := httptest.NewRequest(http.MethodGet, "/a2a/unknown", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -63,6 +75,7 @@ func TestGateway_ServeHTTP_NotFound(t *testing.T) {
 func TestGateway_ServeHTTP_WrongMethod(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	req := httptest.NewRequest(http.MethodGet, "/a2a/agent/card", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -72,6 +85,7 @@ func TestGateway_HandleAgentCard_DefaultTenant(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	body := `{"name":"agent-a","url":"http://localhost"}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/agent/card", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -80,6 +94,7 @@ func TestGateway_HandleAgentCard_DefaultTenant(t *testing.T) {
 func TestGateway_HandleAgentCard_BadJSON(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	req := httptest.NewRequest(http.MethodPost, "/a2a/agent/card?tenant_id=acme", strings.NewReader("invalid"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -89,6 +104,7 @@ func TestGateway_HandleAgentCard_RegisterError(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{err: fmt.Errorf("db down")}, &mockTaskCreator{})
 	body := `{"name":"agent-a","url":"http://localhost"}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/agent/card?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -98,6 +114,7 @@ func TestGateway_HandleTaskSend_DefaultParams(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	body := `{"id":"msg-1","params":{"message":{"role":"user","parts":[{"type":"text","text":"hi"}]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/task/send", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
@@ -106,6 +123,7 @@ func TestGateway_HandleTaskSend_DefaultParams(t *testing.T) {
 func TestGateway_HandleTaskSend_BadJSON(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 	req := httptest.NewRequest(http.MethodPost, "/a2a/task/send?tenant_id=acme", strings.NewReader("bad"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
@@ -115,6 +133,7 @@ func TestGateway_HandleTaskSend_CreateError(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{err: fmt.Errorf("task create failed")})
 	body := `{"id":"msg-1","params":{"message":{"role":"user","parts":[{"type":"text","text":"hi"}]}}}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/task/send?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
@@ -218,6 +237,7 @@ func TestGateway_TaskStatus(t *testing.T) {
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, statusSvc)
 
 	req := httptest.NewRequest(http.MethodGet, "/a2a/task/task-1/status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -229,6 +249,7 @@ func TestGateway_TaskStatus_NotFound(t *testing.T) {
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, statusSvc)
 
 	req := httptest.NewRequest(http.MethodGet, "/a2a/task/missing/status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -239,6 +260,7 @@ func TestGateway_TaskStatus_NoStatusSvc(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, &mockTaskCreator{})
 
 	req := httptest.NewRequest(http.MethodGet, "/a2a/task/task-1/status?tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -250,6 +272,7 @@ func TestGateway_JSONRPC_TaskSend(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","method":"task/send","params":{"id":"msg-1","params":{"message":{"role":"user","parts":[{"type":"text","text":"rpc hello"}]}}},"id":1}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme&source_agent=agent-1&mailbox_id=mb-1", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -262,6 +285,7 @@ func TestGateway_JSONRPC_TaskGet(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","method":"task/get","params":{"task_id":"task-1"},"id":2}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -273,6 +297,7 @@ func TestGateway_JSONRPC_MethodNotFound(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","method":"unknown/method","params":{},"id":3}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -286,6 +311,7 @@ func TestGateway_JSONRPC_InvalidJSON(t *testing.T) {
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader("bad json"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -297,6 +323,7 @@ func TestGateway_JSONRPC_InvalidParams(t *testing.T) {
 
 	body := `{"jsonrpc":"2.0","method":"task/send","params":"not an object","id":4}`
 	req := httptest.NewRequest(http.MethodPost, "/a2a/jsonrpc?tenant_id=acme", strings.NewReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 

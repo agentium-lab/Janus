@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type TaskCreator interface {
@@ -45,9 +46,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
@@ -123,9 +124,9 @@ func (g *Gateway) handleToolCallStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	task, err := g.statusSvc.Get(r.Context(), tenantID, callID)
@@ -142,9 +143,9 @@ func (g *Gateway) handleToolCallStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
-	tenantID := r.URL.Query().Get("tenant_id")
-	if tenantID == "" {
-		tenantID = "default"
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
 	}
 
 	var req struct {
@@ -174,6 +175,15 @@ func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
 		"uri":            ref.URI,
 		"hash":           ref.Hash,
 	})
+}
+
+func tenantFromContextOrReject(w http.ResponseWriter, r *http.Request) (string, bool) {
+	tid := auth.TenantFromContext(r.Context())
+	if tid == "" {
+		writeMCPError(w, http.StatusForbidden, "TENANT_REQUIRED", "missing tenant in authenticated context")
+		return "", false
+	}
+	return tid, true
 }
 
 func writeMCPError(w http.ResponseWriter, status int, code, msg string) {

@@ -42,7 +42,7 @@ func TestServer_Start_ListenError(t *testing.T) {
 }
 
 func TestNewServer(t *testing.T) {
-	svr := NewServer(50051, nil, nil, nil, nil, nil, nil)
+	svr := NewServer(50051, nil, nil, nil, nil, nil, nil, nil)
 	assert.NotNil(t, svr)
 	assert.Equal(t, ":50051", svr.addr)
 	assert.NotNil(t, svr.grpcServer)

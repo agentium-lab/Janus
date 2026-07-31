@@ -8,9 +8,18 @@ import (
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func withAuthCtx(r *http.Request) *http.Request {
+	t := r.URL.Query().Get("tenant_id")
+	if t == "" {
+		t = "acme"
+	}
+	return r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
+}
 
 type mockAgentRegistrar struct{ err error }
 func (m *mockAgentRegistrar) Register(_ context.Context, _ core.Agent) error { return m.err }
@@ -40,6 +49,7 @@ func TestACP_Manifest(t *testing.T) {
 
 	body := `{"agent_id":"agent-1","name":"Bot","skills":[{"name":"code_review","description":"Reviews code"}],"endpoint":"http://localhost"}`
 	req := httptest.NewRequest("POST", "/acp/agent/manifest?tenant_id=acme", strReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -55,6 +65,7 @@ func TestACP_Run(t *testing.T) {
 
 	body := `{"run_id":"run-1","target_type":"agent","target":"agent-1","input":"hello"}`
 	req := httptest.NewRequest("POST", "/acp/runs?tenant_id=acme&source_agent=bot", strReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -71,6 +82,7 @@ func TestACP_RunStatus(t *testing.T) {
 	gw := NewGateway(nil, nil, statusSvc)
 
 	req := httptest.NewRequest("GET", "/acp/runs?run_id=run-1&tenant_id=acme", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -87,6 +99,7 @@ func TestACP_RunDefaultIntent(t *testing.T) {
 
 	body := `{"run_id":"run-2","input":"do something"}`
 	req := httptest.NewRequest("POST", "/acp/runs?tenant_id=acme", strReader(body))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
@@ -97,6 +110,7 @@ func TestACP_RunDefaultIntent(t *testing.T) {
 func TestACP_NotFound(t *testing.T) {
 	gw := NewGateway(nil, nil, nil)
 	req := httptest.NewRequest("GET", "/acp/unknown", nil)
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -105,6 +119,7 @@ func TestACP_NotFound(t *testing.T) {
 func TestACP_InvalidJSON(t *testing.T) {
 	gw := NewGateway(&mockAgentRegistrar{}, nil, nil)
 	req := httptest.NewRequest("POST", "/acp/agent/manifest", strReader("not json"))
+	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusBadRequest, w.Code)
