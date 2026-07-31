@@ -960,27 +960,95 @@ v0.6.18 完成：
 - 成功 intent 解析后复用现有 `capability` 路由：online agent、active mailbox、policy、budget、capacity、data classification、semantic score 和 backlog 排序全部照常执行。
 - 验证已覆盖：service/unit 覆盖匹配、无匹配、歧义；`make smoke-7-agents` 真实依赖场景验证“我想审查这段代码”投递到 Code Review Agent mailbox，检查持久化 task 被改写为 `target_type=capability,target_value=code_review`，并覆盖 ambiguous/unmatched intent 拒绝。
 
-## 12. v1.1：Intent Resolution（catalog-first）
+## 12. v1.1：Security Critical Fixes
 
-> **对上文的修订**：第 11 节 GA 标准与“v0.6.18 完成”段中关于 Intent Resolver“已纳入 Core GA P0 / 已完成”的描述**超前于代码实际状态**。`server/internal/service/intent/` 代码确实存在，但 `WithIntentResolver` 在生产装配（`server/cmd/janus-api/main.go`）中从未调用，其依赖 `AgentLookup.ListOnlineAgents` 也无任何实现；MCP/ACP 网关对省略 target 的请求发出 `target_type=intent`，但这些任务实际落到“target value is required”被拒绝。本节将其重新立为 v1.1 交付项，并采用更低风险的方案。
+> v1.0 GA 后的实现层安全审计发现 2 个 CRITICAL 级缺陷，均为 release-blocker：任一未修复都使"生产可用"不成立。v1.1 只做这两项，不带其他内容。
+
+### SC-1. gRPC 数据面鉴权完全缺失（release-blocker）
+
+- **位置**：`server/internal/grpc/server.go:40`
+- **问题**：gRPC 服务器唯一的 interceptor（`errorMappingInterceptor`）仅做错误映射，**无鉴权、无 tenant 校验**；明文监听 `:9090`；所有 gRPC handler 直接用 `req.TenantId`（来自请求体），全包内零处使用 `TenantFromContext`/`auth.*`。
+- **影响**：任何能访问 9090 端口的客户端**绕过全部 API key 鉴权 + tenant 隔离**，可跨租户创建/读取/取消/重放任意租户的 task、agent、mailbox、DLQ、audit。`/grpc/` HTTP gateway 有鉴权，但原始 gRPC 端口是后门。
+- **修复方向**：为 gRPC 增加 auth+tenant interceptor（校验 metadata 中的 API key、把 tenant 注入 context、拒绝 `req.TenantId` 与认证 tenant 不匹配的请求）；或 interim 将 :9090 绑定 localhost-only / 防火墙隔离外部访问。
+- **验证**：无 API key 调用 gRPC → 拒绝；tenant A 的 key 带 `req.TenantId=tenantB` → 拒绝。
+
+### SC-2. 网关 / WebSocket 跨租户访问（release-blocker）
+
+- **位置**：`server/internal/handler/ws_handler.go:61`、`server/internal/gateway/{a2a,mcp,acp}/gateway.go`
+- **问题**：`/ws`、`/a2a/`、`/acp/`、`/mcp/` 路径不含 `/tenants/{id}` 段，`extractTenantFromPath` 返回空，`TenantGuard`（`auth/apikey.go:115-118`）**放行**；handler 随后从 query string 取 `tenant_id`（如 `r.URL.Query().Get("tenant_id")`）。WS fanout 层（`broadcaster.go:38-44`）也按该 query-string tenant 订阅，无鉴权上下文检查。
+- **影响**：租户 A 的有效 key 传 `?tenant_id=tenantB` 即可读写/订阅租户 B 的任务与实时事件。
+- **修复方向**：所有网关/WS handler 改用 `auth.TenantFromContext(r.Context())` 取 tenant，删除 query-string 取值与 `"default"` fallback；扩展 `extractTenantFromPath`/TenantGuard 覆盖这些路由，或令网关要求非空的认证 tenant。
+- **验证**：tenant A 的 key 访问 tenant B 资源 → 403。
+
+**Owner**：TBD。**依赖**：SC-1 与 SC-2 互相独立，可并行。**v1.1 不做**：HIGH/MEDIUM 级问题（→ v1.1.1）、smoke 覆盖（→ v1.1.2）、意图识别（→ v1.2）。
+
+---
+
+## 13. v1.1.1：Reliability & Security High Fixes
+
+> v1.0 GA 后实现层审计发现的 10 个 HIGH 级问题，均为真实 correctness/security bug（非测试缺口），会导致预算泄漏、并发失准、数据丢失或静默故障。v1.1.1 集中修复。
+
+### 安全（2 项）
+
+- **SH-1. TenantGuard fail-open** — `server/internal/auth/apikey.go:110-118`：`authTenant==""` 或 `pathTenant==""` 都放行；任何路径无 tenant 段的端点静默无防护。改为 fail-closed（`authTenant` 为空时拒绝）。
+- **SH-2. `JANUS_AUTH_ENABLED=false` 运行时关闭全部 HTTP 鉴权** — `server/internal/config/config.go:69` + `server/cmd/janus-api/main.go:215-226`：仅 log 警告。改为显式 dev-mode flag，生产环境（如检测到非 loopback 监听）拒绝启动。
+
+### 可靠性（6 项，均为 correctness bug）
+
+- **RH-1. PullTask 预算 Reserve 后事务失败不 Release** — `server/internal/service/dispatch_service.go:181`（Reserve）+ `212-234`（tx 失败返回）。事务失败路径不 Release → 预算泄漏 → 并发配额逐步耗尽。补 Release。
+- **RH-2. NackTask 预算 Release 在事务前 → 双重释放** — `server/internal/service/dispatch_service.go:532`：Release 无条件在 tx 前执行；重复 NACK（`committed=false`）仍释放 → 过度准入。把 Release 移到事务内、按 `committed` 标志决定。
+- **RH-3. AckTask / NackTask 丢弃 CAS 的 `ok` 返回值** — `dispatch_service.go:376,546,560`：`if _, uerr := ...` 丢弃 ok，CAS 失败（0 行）仍提交 completed/retry/dlq 事件与预算结算 → 并发 ACK+取消都"成功"，事件/预算不反映真实状态。改为检查 ok，false 时返回 conflict 不提交。
+- **RH-4. `CountRunningByAgent` 用错列** — `server/internal/driver/postgres/task_repository.go:429`：按 `source_agent` 统计，但 pulling agent 通常不是 source agent → per-agent 并发预算实际从未强制。改用 `task_attempts.agent_id` 统计在途 agent。
+- **RH-5. retry scheduler 状态翻转 + 发布非原子** — `server/internal/retry/scheduler.go:91-117`：先 UPDATE `queued`（91-95）再单独 outbox 发布（106-117），发布错误被忽略 → 任务卡 `queued` 永久无投递。把翻转与 outbox 插入放进同一事务，发布失败回滚。
+- **RH-6. lease scanner dead_letter 不发 DLQ publish** — `server/internal/lease/scanner.go:141-149`：仅 UPDATE `dead_lettered`，无 `dlq_publish` outbox、无 NATS DLQ 投递 → 租约过期死信任务对 DLQ 消费者完全不可见（数据丢失）。补 `dlq_publish` outbox 插入（对齐 `dispatch_service.go:559-583` 的 NACK 路径）。
+
+### 可观测（2 项）
+
+- **OH-1. Graceful shutdown 用 `srv.Close()`（粗暴）非 `srv.Shutdown()`** — `server/cmd/janus-api/main.go:261`：立即断开所有连接，不 drain NATS、不关 DB pool/Redis → 每次部署丢 in-flight 请求。改为 `srv.Shutdown(ctx)` + 有序 drain（HTTP in-flight → outbox flush → NATS consumer stop → DB/Redis close），带 shutdown 超时。
+- **OH-2. 零告警规则** — Helm chart 无任何 `PrometheusRule`/alertmanager 配置：14 个 metric 全暴露但生产故障（DLQ 堆积、policy 全 deny、agent 批量掉线、outbox 积压、budget 耗尽）不告警。新增告警规则 + AlertmanagerConfig。
+
+**Owner**：TBD。**依赖**：10 项互相独立，可多路并行。**顺序**：建议 RH-1/2/3/5 一起做（同处 dispatch/retry，事务一致性主题）；OH-1 单独做（涉及 shutdown 全流程）。
+
+---
+
+## 14. v1.1.2：P1 Smoke Test Coverage
+
+> capability matrix 中 6 个 P1 Partial 项：功能代码已存在且通过单元测试，但缺**真实依赖（PG/NATS/Redis）的 smoke 测试**。v1.1.2 补齐，确保集成层行为可靠。来源：`docs/Janus-core-capability-matrix.md`。
+
+| ID | 能力 | v1.1.2 动作 |
+| --- | --- | --- |
+| REL-15 | Task TTL / expiry scanner（`server/internal/lease/scanner.go`） | 新增 PG/NATS-backed TTL expiry smoke：验证 `task.expired` event、audit projection、stale delivery cleanup |
+| REL-16 | cancel/replay/block/unblock outbox 化（`task_service.go`） | 真实依赖编排回归 smoke：覆盖 outbox、audit、SDK/CLI 可见状态 |
+| GOV-08 | group/human 路由映射（`routing/router.go`） | `make verify-governance` 增加 group/human mapped mailbox smoke |
+| GOV-14 | MCP 不绕过 policy/budget/audit | MCP policy deny、budget throttle、ContextRef classification、audit query 真实依赖 smoke |
+| SDK-06 | CLI dashboard + WebSocket proxy（`cli/dashboard.go`） | auth-enabled `/ws` dashboard smoke + WebSocket proxy 回归 |
+| OPS-05 | Grafana dashboard | panel query smoke + 每个 RC 归档 Grafana 截图与 Prometheus 查询结果 |
+
+**Owner**：TBD。**依赖**：6 项互相独立。**注**：RH-1~RH-6 修复后（v1.1.1），REL-15/REL-16 的 smoke 应覆盖修复后的行为（回归保护）。
+
+---
+
+## 15. v1.2：Intent Resolution（catalog-first）
+
+> **对上文的修订**：第 11 节 GA 标准与“v0.6.18 完成”段中关于 Intent Resolver“已纳入 Core GA P0 / 已完成”的描述**超前于代码实际状态**。`server/internal/service/intent/` 代码确实存在，但 `WithIntentResolver` 在生产装配（`server/cmd/janus-api/main.go`）中从未调用，其依赖 `AgentLookup.ListOnlineAgents` 也无任何实现；MCP/ACP 网关对省略 target 的请求发出 `target_type=intent`，但这些任务实际落到“target value is required”被拒绝。本节将其重新立为 v1.2 交付项（新功能，故用次版本号而非补丁号），并采用更低风险的方案。
 
 ### 背景与风险
 
 - **为什么不直接接活现有 keyword resolver**：现有打分器（`resolver.go`）以 `payload.Content` 对 capability 描述做匹配，接受阈值低（0.3）。在多租户 + 数据分级策略 + 审计日志的系统里，弱匹配可能**静默误路由到“策略允许但错误”的 agent**——比当前的明确拒绝更糟，且属于安全/审计问题，不是 UX 问题。Router 的 data-class 过滤只能剔除“不能处理”的 agent，抓不住“能处理但答非所问”的 agent。
 - **为什么不把 LLM 放进同步 `Create` 路径**：`Create` 同时承担 policy 检查与 outbox 事务，同步塞 LLM 会引入延迟、失败传导与非确定性，侵蚀该路径确定性、可审计的核心属性。`go.mod` 当前零 LLM 依赖并非偶然。
 
-### v1.1 范围（分阶段）
+### v1.2 范围（分阶段）
 
 1. **Catalog 端点（先做，零 Create 路径风险）**：新增只读 `GET /v1/tenants/{tenantID}/catalog`，返回租户内在线 agent 及其 capability（名称、描述、schema）。无新依赖，不改任务创建。使调用方能用自有模型自行完成 NL→capability 解析。
 2. **网关语义清晰化**：将省略 target 时的默认行为从静默 `target_type=intent` 改为明确的 `400 target required; call GET /catalog`。
 3. **Advisory 解析端点（仅在度量出真实需求时）**：若第 1 步后仍存在无法自解析的轻量调用方，新增无状态的 `POST /v1/tenants/{tenantID}/intents/resolve` 咨询接口（调用方传入 payload，拿回建议 capability，再正常发布 capability 任务）。LLM 依赖隔离于此，配 per-tenant 限流与成本预算，返回值须校验在当前在线 catalog 内。
-4. **v1.1 不做**：同步 LLM 进 `Create`（否决）；异步 `resolving` 任务状态 + 后台 worker（否决，对本代码库的生命周期/审计模型而言过度设计）。
+4. **v1.2 不做**：同步 LLM 进 `Create`（否决）；异步 `resolving` 任务状态 + 后台 worker（否决，对本代码库的生命周期/审计模型而言过度设计）。
 
-**Owner**：TBD。**依赖**：不依赖其他 v1.1 项。
+**Owner**：TBD。**依赖**：不依赖 v1.1.x 项；但建议在 v1.1.1（可靠性修复）之后启动，避免在带病代码上加新功能。
 
 ---
 
-## 13. Enterprise 启动条件
+## 16. Enterprise 启动条件
 
 Janus-enterprise 不应早于 Core Reliability Alpha。建议在以下条件满足后启动 Enterprise track：
 
