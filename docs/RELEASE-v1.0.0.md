@@ -14,17 +14,19 @@ All 68 P0 capabilities in `docs/Janus-core-capability-matrix.md` are Covered.
 
 ## P1 Risk Acceptance
 
-The following P1 items are Partial at GA. They have identified owners and
-v1.1 targets.
+The following P1 items are Partial at GA (status and capability descriptions
+are aligned with the authoritative `docs/Janus-core-capability-matrix.md`).
+They have identified owners and v1.1.2 targets — see
+`docs/Janus-production-roadmap.md` §14 (v1.1.2: P1 Smoke Test Coverage).
 
-| ID | Capability | Status | Risk | Owner | v1.1 Target |
+| ID | Capability | Status | Risk | Owner | v1.1.2 Target |
 | --- | --- | --- | --- | --- | --- |
-| REL-15 | Dead-letter retention policy and compaction | Partial | DLQ grows unbounded without retention | TBD | Configurable retention + compaction job |
-| REL-16 | Outbox poison message quarantine | Partial | Repeatedly failing outbox entries retry indefinitely | TBD | Max-attempts quarantine table |
-| GOV-08 | Policy rule priority ordering (numeric) | Partial | Rule evaluation order not guaranteed when priorities collide | TBD | Stable sort by priority + insertion order |
-| GOV-14 | Budget monthly reset semantics | Partial | Monthly cost counter does not auto-reset | TBD | Cron-based monthly reset |
-| SDK-06 | TypeScript SDK browser/edge compatibility | Partial | Uses fetch API not available on all edge runtimes | TBD | Conditional fetch adapter |
-| OPS-05 | Horizontal autoscaling tested at scale | Partial | HPA template exists but not load-tested at 1000+ agents | TBD | Load test with k6 |
+| REL-15 | Task TTL / expiry scanner | Partial | TTL expiry covered by unit tests; real-dependency (PG/NATS) smoke and event/audit verification deferred | TBD | v1.1.2 — roadmap §14 |
+| REL-16 | Task cancel/replay/block/unblock via outbox | Partial | service/handler/contract covered; real-dependency orchestration regression deferred | TBD | v1.1.2 — roadmap §14 |
+| GOV-08 | Routing target group/human tenant-scoped mailbox mapping | Partial | routing tests exist; real-dependency mapped-target smoke deferred | TBD | v1.1.2 — roadmap §14 |
+| GOV-14 | MCP resource/tool calls honor Janus policy/budget/audit | Partial | adapter/gateway unit + protocol smoke exist; full governance smoke deferred | TBD | v1.1.2 — roadmap §14 |
+| SDK-06 | CLI dashboard + WebSocket proxy | Partial | CLI dashboard tests + static UI exist; auth-enabled `/ws` dashboard smoke deferred | TBD | v1.1.2 — roadmap §14 |
+| OPS-05 | Grafana dashboard panels | Partial | dashboard JSON + provisioning validated; panel query data-integrity verification deferred | TBD | v1.1.2 — roadmap §14 |
 
 ## Verification
 

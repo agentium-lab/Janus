@@ -1028,7 +1028,60 @@ v0.6.18 完成：
 
 ---
 
-## 15. v1.2：Intent Resolution（catalog-first）
+## 15. v1.1.3：MEDIUM / LOW Fixes（implementation-layer audit tail）
+
+> v1.0 GA 后实现层审计的 MEDIUM（20）与 LOW（9）级发现。非 release-blocker，但含真实 DoS 面、资源泄漏、信息泄露与契约不一致。v1.1.3 集中清理；可在 v1.1.1/v1.1.2 之后任意时间启动，内部项多可并行。
+
+### 安全
+
+**MEDIUM**
+- **SM-1.** WebSocket `CheckOrigin` 弱匹配（`strings.Contains`）→ CSWSH 风险 — `server/internal/handler/ws_handler.go:14-25`。改精确 host / allowlist 匹配，拒绝空 Origin。
+- **SM-2.** DB 连接 `sslmode=disable` 硬编码 → 凭据/数据明文传输 — `server/internal/config/config.go:39,44`。改为可配置，默认 `require`。
+- **SM-3.** 错误响应泄露内部：`sanitizeError` 仅处理 ≥500，4xx 未消毒；网关直接返回 raw `err.Error()` — `server/internal/gateway/{a2a,mcp,acp}/gateway.go`、`server/internal/handler/context_ref_handler.go:41,53,65,79`。统一走 `writeError` + 消毒。
+- **SM-4.** 请求体无大小限制 → 内存耗尽 DoS — 网关、`approval_handler.go`、`context_ref_handler.go` 绕过 `readJSON` 的 10MB 限制（直接 `json.NewDecoder(r.Body)`）。统一用 `readJSON` 或显式 `http.MaxBytesReader`。
+
+**LOW**
+- **SL-1.** `/readyz` 返回 `pool.Ping` 的 `err.Error()` → 可能泄露 DB 主机/DSN — `server/cmd/janus-api/main.go:205`、`server/internal/observability/readyz.go:39`。
+- **SL-2.** TLS 无 cipher suite 限制、无 HSTS — `main.go:499-516`。
+- **SL-3.** 无 CORS 策略（HTTP 用 header 鉴权非 cookie，CSRF 风险低，但无显式加固）。
+
+### 可靠性
+
+**MEDIUM**
+- **RM-1.** lease scanner 重试限用 `max_deliver` 而非 `RetryPolicy.MaxAttempts`，与 NACK 路径不一致 — `server/internal/lease/scanner.go:131` vs `dispatch_service.go:529`。
+- **RM-2.** Redis `Expire` 失败致永久限速锁死（fire-and-forget，无错误检查） — `server/internal/driver/redis/driver.go:110,129`。
+- **RM-3.** NATS `pending` map 无界增长（未 ACK 的 delivery 无驱逐/TTL）→ 内存泄漏 — `server/internal/driver/nats/driver.go:387-401`。
+- **RM-4.** NATS `ReplayEvents` durable consumer 泄漏（不 `Close` 永久残留） — `driver/nats/driver.go:216-233,467-472`。
+- **RM-5.** WebSocket 无 write deadline / ping-pong → 死客户端连接累积 — `handler/ws_handler.go:82-102`。
+- **RM-6.** approval `Approve` 非原子（transition + outbox publish 分离）→ 队列任务可能无投递 — `service/approval_service.go:69-87`。
+- **RM-7.** approval `Expire` 的 Get 错误被忽略 → 过期审批未取消任务 — `approval_service.go:109-118`。
+- **RM-8.** task_service 幂等键查询错误被吞 → DB 故障时退化 — `service/task_service.go:139-144`。
+- **RM-9.** task_service `Replay` 的 `UpdateStatus` 错误被忽略 — `task_service.go:411`。
+- **RM-10.** DLQ `ReplayDLQ` 非原子 + 绕过 outbox — `handler/dlq_handler.go:106-141`。
+- **RM-11.** outbox publisher 无批次超时 → NATS 慢时 worker 卡死 — `outbox/publisher.go:56-79`。
+- **RM-12.** dispatch `AfterFunc` 用裸 `context.Background()` 无超时 — `service/dispatch_service.go:171-174,190-193`。
+
+**LOW**
+- **RL-1.** NATS 订阅被丢弃 + 关闭时 goroutine 泄漏（进程退出故影响有限） — `main.go:124,131-160`。
+- **RL-2.** `outbox_repo` 无 `defer tx.Rollback` → panic 时事务泄漏 — `outbox/postgres/outbox_repo.go:96-155`。
+- **RL-3.** outbox publisher 未知 kind 静默成功 → 数据丢失 — `outbox/publisher.go:103-104`。
+- **RL-4.** CLI dashboard 无超时 → slowloris 暴露 — `cli/dashboard.go:30-39`。
+- **RL-5.** `helpers.go` `MaxBytesReader` 传 nil ResponseWriter — `handler/helpers.go:115`。
+- **RL-6.** task_service `RequestApproval` 错误忽略 → approval_pending 任务无审批行卡住 — `task_service.go:175-188`。
+
+### 契约 / 可观测
+
+**MEDIUM**
+- **OM-1.** outbox/routing/lease/retry 维度无 metric（现有 14 个 metric 主要覆盖 task/agent/budget/policy）。
+- **OM-2.** trace 仅 HTTP 入口（`observability/middleware.go`），业务层（service/outbox/dispatch）无 span，全链路不可追踪。
+- **OM-3.** 错误响应格式不一致：`context_ref_handler.go` 用 `http.Error`（text），其余 7 个 handler 用自定义 JSON。
+- **OM-4.** handler 单元测试缺口（8/10 无 `_test.go`；有 e2e/simulation 间接覆盖）。
+
+**Owner**：TBD。**依赖**：内部项多互相独立；SM-3/OM-3 同属错误响应主题可一起做；RM-6/RM-7/RM-9 同属错误处理可一起做。**注**：reliability 审计完整输出因长度截断存于文件，v1.1.3 的 RL 级条目可能随补全再增补。
+
+---
+
+## 16. v1.2：Intent Resolution（catalog-first）
 
 > **对上文的修订**：第 11 节 GA 标准与“v0.6.18 完成”段中关于 Intent Resolver“已纳入 Core GA P0 / 已完成”的描述**超前于代码实际状态**。`server/internal/service/intent/` 代码确实存在，但 `WithIntentResolver` 在生产装配（`server/cmd/janus-api/main.go`）中从未调用，其依赖 `AgentLookup.ListOnlineAgents` 也无任何实现；MCP/ACP 网关对省略 target 的请求发出 `target_type=intent`，但这些任务实际落到“target value is required”被拒绝。本节将其重新立为 v1.2 交付项（新功能，故用次版本号而非补丁号），并采用更低风险的方案。
 
@@ -1048,7 +1101,7 @@ v0.6.18 完成：
 
 ---
 
-## 16. Enterprise 启动条件
+## 17. Enterprise 启动条件
 
 Janus-enterprise 不应早于 Core Reliability Alpha。建议在以下条件满足后启动 Enterprise track：
 
