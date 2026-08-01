@@ -255,52 +255,6 @@ go test ./server/tests/reliability/  # 7 fault scenarios
 make verify-production         # runs all 11 gates + ga-readiness
 ```
 
-## Project Structure
-
-```
-Janus/
-+-- core/                    # Domain models (zero deps)
-+-- proto/                   # Protobuf definitions + generated code
-+-- server/
-|   +-- cmd/janus-api/       # API entry point
-|   +-- cmd/janus-*-probe/   # Operational probe tools
-|   +-- internal/
-|       +-- handler/         # HTTP handlers
-|       +-- service/         # Business logic
-|       |   +-- routing/     # Capability routing engine
-|       |   +-- intent/      # Intent resolver
-|       +-- grpc/            # gRPC handlers
-|       +-- gateway/         # A2A/ACP/MCP gateways
-|       +-- driver/          # NATS/PostgreSQL/Redis drivers
-|       +-- artifact/        # Artifact store
-|       +-- observability/   # Metrics + readiness
-|       +-- tracing/         # OpenTelemetry
-|       +-- logutil/         # Structured logging
-+-- sdk/
-|   +-- go/                  # Go SDK (39 methods + Worker)
-|   +-- python/              # Python SDK (34 methods + JanusWorker)
-|   +-- typescript/          # TypeScript SDK (30 methods + Worker)
-+-- cli/                     # CLI (cobra + viper)
-+-- migrations/              # PostgreSQL migrations (12 files)
-+-- deployments/
-|   +-- helm/                # Helm chart
-|   +-- grafana/             # Grafana dashboard
-|   +-- smoke-deps.compose.yaml
-+-- examples/interop/        # LangGraph/AutoGen/CrewAI/GitHub Actions
-+-- docs/                    # Design docs, runbook, migration guide
-+-- scripts/                 # Smoke/chaos/load/GA scripts
-```
-
-## Documentation
-
-- [Product Design](Janus.md)
-- [Detailed Design](Janus-detail-design.md)
-- [API Contract](docs/Janus-api-contract.md)
-- [Capability Matrix](docs/Janus-core-capability-matrix.md)
-- [v0.3 Migration Guide](docs/Janus-v0.3-migration.md)
-- [Ops Runbook](docs/Janus-ops-runbook.md)
-- [Release v1.0.0](docs/RELEASE-v1.0.0.md)
-
 ---
 
 **Janus** — Let agent collaboration remain reliable, governed, auditable, and recoverable in production.
