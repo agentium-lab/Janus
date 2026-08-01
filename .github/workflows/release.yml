@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+
+      - name: Build binaries
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dist/janus-api ./server/cmd/janus-api
+          CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o dist/janus ./cli
+          cd dist && sha256sum janus-api janus > checksums.txt
+
+      - name: Create release and attach assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/janus-api \
+            dist/janus \
+            dist/checksums.txt \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes
