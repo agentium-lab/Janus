@@ -34,3 +34,7 @@ __pycache__/
 .pytest_cache/
 dist/
 *.whl
+
+# Local-only directories (not tracked)
+docs/
+demo/
