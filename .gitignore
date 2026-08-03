@@ -2,9 +2,6 @@
 /bin/
 *.exe
 
-# Proto generated
-proto/gen/
-
 # IDE
 .idea/
 .vscode/
