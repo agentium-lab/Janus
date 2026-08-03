@@ -3,7 +3,6 @@ go 1.25.8
 use (
 	./cli
 	./core
-	./demo
 	./proto
 	./sdk/go
 	./server
