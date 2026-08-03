@@ -107,7 +107,7 @@ if result:
 ### Governance
 
 - **Policy engine** — allow/deny/approval_required per agent/capability/tool/classification
-- **Budget control** — RPM/TPM/concurrency per tenant/team/agent (cost tracking is estimated, based on agent-reported usage)
+- **Budget control** — RPM/TPM/concurrency per tenant/team/agent (cost limits planned — awaiting trusted token metering)
 - **Approval workflow** — human-in-the-loop for high-risk tasks
 - **Capability routing** — hard constraints (online/classification/policy/capacity/budget) + semantic scoring
 - **Intent resolver** — natural language to capability target
