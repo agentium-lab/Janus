@@ -19,7 +19,7 @@
 # Test
 coverage.out
 *.test
-janus-api
+/janus-api
 .cover/
 dump.rdb
 **/node_modules/
