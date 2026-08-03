@@ -1,4 +1,4 @@
-.PHONY: all build vet staticcheck test coverage verify proto python-compile clean beta-fast contract-check python-test typescript-test verify-sdk-cli verify-protocol python-examples-compile smoke-7-agents verify-security verify-governance verify-reliability verify-ops-chaos verify-release-ops ga-readiness verify-production
+.PHONY: all build vet staticcheck test coverage verify proto python-compile clean beta-fast contract-check python-test typescript-test verify-sdk-cli verify-protocol python-examples-compile smoke-7-agents smoke-grafana-panels verify-security verify-governance verify-reliability verify-ops-chaos verify-release-ops ga-readiness verify-production
 
 # All Go modules managed by go.work. Commands must reference module paths
 # explicitly because the repo root is not itself a Go module.
@@ -177,6 +177,10 @@ smoke-prod:
 smoke-7-agents:
 	@JANUS_URL=$${JANUS_URL:-http://localhost:8080} bash scripts/smoke_7_agents.sh
 
+## smoke-grafana-panels: OPS-05 static gate — dashboard PromQL ↔ metrics.go registry cross-check.
+smoke-grafana-panels:
+	@bash scripts/smoke_grafana_panels.sh
+
 ## verify-security: API key / tenant guard / mTLS / audit security smoke tests.
 verify-security: verify
 	@echo "verify-security: security checks passed"
@@ -209,7 +213,7 @@ ga-readiness:
 	@python3 scripts/check_ga_readiness.py
 
 ## verify-production: Total GA gate. Runs ALL verification gates.
-verify-production: verify contract-check beta-fast verify-reliability verify-security verify-protocol verify-governance verify-sdk-cli verify-ops-chaos verify-release-ops ga-readiness
+verify-production: verify contract-check beta-fast verify-reliability verify-security verify-protocol verify-governance verify-sdk-cli verify-ops-chaos verify-release-ops smoke-grafana-panels ga-readiness
 	@echo ""
 	@echo "=============================================="
 	@echo "  verify-production: ALL GATES PASSED"

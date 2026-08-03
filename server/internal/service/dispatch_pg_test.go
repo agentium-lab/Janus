@@ -29,6 +29,7 @@ type serviceTestEnv struct {
 	attemptRepo  *postgres.TaskAttemptRepository
 	mailboxRepo  *postgres.MailboxRepository
 	outboxRepo   *postgres.OutboxRepo
+	eventRepo    *postgres.EventRepo
 	budgetUsage  *postgres.BudgetUsageRepo
 	tenantRepo   *postgres.TenantRepository
 	agentRepo    *postgres.AgentRepository
@@ -132,6 +133,7 @@ func setupServiceTestEnv(t *testing.T) *serviceTestEnv {
 	attemptRepo := postgres.NewTaskAttemptRepository(pool)
 	mailboxRepo := postgres.NewMailboxRepository(pool)
 	outboxRepo := postgres.NewOutboxRepo(pool)
+	eventRepo := postgres.NewEventRepo(pool)
 	budgetUsage := postgres.NewBudgetUsageRepo(pool)
 	tenantRepo := postgres.NewTenantRepository(pool)
 	agentRepo := postgres.NewAgentRepository(pool)
@@ -163,7 +165,7 @@ func setupServiceTestEnv(t *testing.T) *serviceTestEnv {
 
 	return &serviceTestEnv{
 		pool: pool, taskRepo: taskRepo, attemptRepo: attemptRepo,
-		mailboxRepo: mailboxRepo, outboxRepo: outboxRepo, budgetUsage: budgetUsage,
+		mailboxRepo: mailboxRepo, outboxRepo: outboxRepo, eventRepo: eventRepo, budgetUsage: budgetUsage,
 		tenantRepo: tenantRepo, agentRepo: agentRepo,
 		dispatch: dispatch, taskSvc: taskSvc, lifecycle: lifecycle, driver: drv,
 	}
@@ -438,6 +440,18 @@ func TestTaskService_Unblock_LifecycleOutbox(t *testing.T) {
 
 	got, _ := env.taskRepo.Get(ctx, "acme", task.ID)
 	assert.Equal(t, core.TaskStatusRunning, got.Status)
+
+	outbox, _ := env.outboxRepo.FetchPending(ctx, 100)
+	hasStarted := false
+	for _, e := range outbox {
+		if e.Kind == "event_publish" {
+			var event core.JanusEvent
+			if json.Unmarshal(e.Payload, &event) == nil && event.EventType == core.EventTaskStarted {
+				hasStarted = true
+			}
+		}
+	}
+	assert.True(t, hasStarted, "outbox should contain task.started event after unblock")
 }
 
 func TestTaskService_Replay_OutboxPublish(t *testing.T) {
@@ -467,6 +481,36 @@ func TestTaskService_Replay_OutboxPublish(t *testing.T) {
 		}
 	}
 	assert.True(t, hasTaskPublish, "outbox should contain task_publish entry for replay")
+}
+
+func TestTaskService_AuditProjection_LifecycleOutbox(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	task := createTestTask(t, env, "task-audit-1")
+
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", task.ID))
+
+	pending, _ := env.outboxRepo.FetchPending(ctx, 100)
+	for _, e := range pending {
+		if e.Kind != "event_publish" {
+			continue
+		}
+		var event core.JanusEvent
+		if json.Unmarshal(e.Payload, &event) == nil {
+			require.NoError(t, env.eventRepo.Insert(ctx, event))
+		}
+	}
+
+	events, err := env.eventRepo.ListByTask(ctx, "acme", task.ID, 10)
+	require.NoError(t, err)
+	require.NotEmpty(t, events, "audit projection should have events for the task")
+	found := false
+	for _, evt := range events {
+		if evt.EventType == core.EventTaskCancelled {
+			found = true
+		}
+	}
+	assert.True(t, found, "audit projection should contain task.cancelled")
 }
 
 func TestTaskService_Create_WithPolicy(t *testing.T) {

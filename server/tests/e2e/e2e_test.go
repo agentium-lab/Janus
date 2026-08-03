@@ -22,20 +22,24 @@ import (
 
 	"github.com/agentium-lab/Janus/core"
 
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
+	"github.com/agentium-lab/Janus/server/internal/gateway/mcp"
 	"github.com/agentium-lab/Janus/server/internal/handler"
+	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
 const testTenant = "e2e-tenant"
 
 var (
-	pool     *pgxpool.Pool
-	server   *httptest.Server
-	natsDrv  *natsdriver.Driver
-	redisDrv *redisdriver.Driver
+	pool           *pgxpool.Pool
+	server         *httptest.Server
+	natsDrv        *natsdriver.Driver
+	redisDrv       *redisdriver.Driver
+	eventProjector *outbox.EventProjector
 )
 
 func TestMain(m *testing.M) {
@@ -97,12 +101,51 @@ func TestMain(m *testing.M) {
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, nil, nil)
-	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetService(budgetRepo)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, nil, nil).WithPolicy(policySvc)
+	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	eventSvc := service.NewEventService(eventRepo)
+	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
+
+	// Wire the real event pipeline: NATS → fan-out → (broadcaster for WS,
+	// projector for audit_event_projection). This mirrors main.go lines
+	// 123-161 so MCP tool calls and task lifecycles produce both live WS
+	// events and persistent audit entries.
+	rawEventCh := make(chan core.JanusEvent, 256)
+	_, err = natsDrv.SubscribeEvents(context.Background(), rawEventCh)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "e2e: subscribe events: %v\n", err)
+		os.Exit(1)
+	}
+	broadcastCh := make(chan core.JanusEvent, 256)
+	projectorCh := make(chan core.JanusEvent, 256)
+	go func() {
+		for evt := range rawEventCh {
+			select {
+			case broadcastCh <- evt:
+			default:
+			}
+			select {
+			case projectorCh <- evt:
+			default:
+			}
+		}
+		close(broadcastCh)
+		close(projectorCh)
+	}()
+	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
+	wsH := handler.NewWebSocketHandler(broadcaster)
+	eventProjector = outbox.NewEventProjector(eventSvc)
+	go func() {
+		for evt := range projectorCh {
+			eventProjector.Record(context.Background(), evt)
+		}
+	}()
+	go eventProjector.Start(context.Background())
+
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc)
 
 	dispatchH := handler.NewDispatchHandler(&e2eDispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&e2eAuditAdapter{svc: eventSvc})
@@ -114,6 +157,8 @@ func TestMain(m *testing.M) {
 		handler.NewMailboxHandler(mailboxSvc),
 		dispatchH,
 		auditH,
+		mcpGw,
+		wsH,
 	)
 
 	server = httptest.NewServer(mux)
@@ -121,6 +166,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
+	eventProjector.Stop()
 	server.Close()
 	natsDrv.Close()
 	redisDrv.Close()
@@ -447,8 +493,11 @@ func mustRequest(t *testing.T, method, path string, body interface{}) *http.Resp
 	return resp
 }
 
-func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler) http.Handler {
+func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, mcpGw http.Handler, wsH http.Handler) http.Handler {
 	mux := http.NewServeMux()
+
+	mux.Handle("/ws", withTenantCtx(wsH))
+	mux.Handle("/mcp/", withTenantCtx(mcpGw))
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
@@ -551,6 +600,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func withTenantCtx(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tid := r.URL.Query().Get("tenant_id")
+		if tid == "" {
+			tid = testTenant
+		}
+		ctx := context.WithValue(r.Context(), auth.TenantCtxKey, tid)
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func cleanDB(pool *pgxpool.Pool) {

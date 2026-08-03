@@ -68,10 +68,11 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 		}
 		// NATS publish succeeded. If MarkPublished fails here, the row stays
 		// 'publishing' until its lease expires, after which another worker
-		// reclaims and re-publishes. NATS Nats-Msg-Id dedupe (when enabled)
-		// prevents the redelivery from causing a duplicate task. Log the mark
-		// failure so it is observable; do NOT call MarkFailed (that would retry
-		// immediately, increasing duplicate risk).
+		// reclaims and re-publishes. The outbox entry ID is set as the NATS
+		// Nats-Msg-Id (via TaskMessage.DedupeKey), so JetStream's dedup window
+		// drops the redelivery as a duplicate. Log the mark failure so it is
+		// observable; do NOT call MarkFailed (that would retry immediately,
+		// increasing duplicate risk).
 		if err := p.repo.MarkPublished(ctx, e.ID); err != nil {
 			log.Printf("outbox mark-published %s failed (will be reclaimed via lease): %v", e.ID, err)
 		}
@@ -85,6 +86,7 @@ func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) erro
 		if err := json.Unmarshal(e.Payload, &msg); err != nil {
 			return err
 		}
+		msg.DedupeKey = e.ID
 		return p.driver.PublishTask(ctx, msg)
 	case "event_publish":
 		var event core.JanusEvent
@@ -97,8 +99,8 @@ func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) erro
 		if err := json.Unmarshal(e.Payload, &msg); err != nil {
 			return err
 		}
-		// The DLQ error payload is carried in msg.Headers["error"].
 		errPayload := []byte(msg.Headers["error"])
+		msg.DedupeKey = e.ID
 		return p.driver.PublishDLQ(ctx, msg, errPayload)
 	default:
 		return nil

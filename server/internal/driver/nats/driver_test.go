@@ -169,6 +169,37 @@ func TestDriver_PublishAndFetch(t *testing.T) {
 	assert.Equal(t, 0, deliveries[0].RedeliveryCount)
 }
 
+func TestDriver_PublishDedupeByMsgId(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	tn := testTenant(t)
+	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
+
+	taskStream, _ := d.js.Stream(ctx, streamName(tn, "TASKS"))
+	if taskStream != nil {
+		taskStream.Purge(ctx)
+	}
+
+	msg := core.TaskMessage{
+		TenantID:  tn,
+		MailboxID: "reviewer_default",
+		TaskID:    "task_dup",
+		Priority:  core.PriorityNormal,
+		Payload:   []byte("data"),
+		DedupeKey: "outbox-entry-1",
+	}
+	require.NoError(t, d.PublishTask(ctx, msg))
+	require.NoError(t, d.PublishTask(ctx, msg))
+
+	time.Sleep(200 * time.Millisecond)
+
+	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+		MaxMessages: 10, WaitTime: 2 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1, "Nats-Msg-Id dedup should collapse two publishes with the same DedupeKey into one delivery")
+}
+
 func TestDriver_AckTask(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()

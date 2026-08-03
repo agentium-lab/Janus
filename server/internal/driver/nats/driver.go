@@ -84,6 +84,9 @@ func (d *Driver) PublishTask(ctx context.Context, msg core.TaskMessage) error {
 	for k, v := range msg.Headers {
 		nmsg.Header.Set(k, v)
 	}
+	if msg.DedupeKey != "" {
+		nmsg.Header.Set("Nats-Msg-Id", msg.DedupeKey)
+	}
 
 	_, err := d.js.PublishMsg(ctx, nmsg)
 	if err != nil {
@@ -101,6 +104,9 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 	nmsg.Header.Set("JANUS-Tenant-ID", msg.TenantID)
 	nmsg.Header.Set("JANUS-Mailbox-ID", msg.MailboxID)
 	nmsg.Header.Set("JANUS-DLQ-Error", string(errPayload))
+	if msg.DedupeKey != "" {
+		nmsg.Header.Set("Nats-Msg-Id", msg.DedupeKey)
+	}
 
 	_, err := d.js.PublishMsg(ctx, nmsg)
 	if err != nil {
