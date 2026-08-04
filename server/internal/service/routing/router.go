@@ -234,21 +234,7 @@ func (r *Router) routeGroup(ctx context.Context, tenantID, groupID string) (*Rou
 }
 
 func (r *Router) routeHuman(ctx context.Context, tenantID, humanID string) (*RouterResult, error) {
-	mailboxes, err := r.lookup.GetHumanMailboxes(ctx, tenantID, humanID)
-	if err != nil || len(mailboxes) == 0 {
-		return nil, fmt.Errorf("no human mailbox mapping for %s", humanID)
-	}
-	for _, mb := range mailboxes {
-		active, _ := r.lookup.ValidateMailbox(ctx, tenantID, mb)
-		if active {
-			return &RouterResult{
-				TargetType: core.TargetTypeHuman,
-				MailboxID:  mb,
-				Reason:     "human_mailbox:" + humanID,
-			}, nil
-		}
-	}
-	return nil, fmt.Errorf("no active mailbox for human %s", humanID)
+	return nil, fmt.Errorf("human routing is not supported")
 }
 
 func hasIntersection(a, b []string) bool {

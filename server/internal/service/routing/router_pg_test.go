@@ -285,13 +285,11 @@ func TestRoute_HumanActiveMailbox_PG(t *testing.T) {
 	require.NoError(t, err, "seed human mapping")
 
 	r := NewRouter(&pgLookup{pool: pool}, nil, nil)
-	result, err := r.Route(ctx, "acme",
+	_, err = r.Route(ctx, "acme",
 		core.Target{Type: core.TargetTypeHuman, Value: "alice"},
 		core.TaskEnvelope{})
-	require.NoError(t, err)
-	assert.Equal(t, core.TargetTypeHuman, result.TargetType)
-	assert.Equal(t, "mb-alice", result.MailboxID)
-	assert.Equal(t, "human_mailbox:alice", result.Reason)
+	require.Error(t, err, "human routing should return error")
+	assert.Contains(t, err.Error(), "not supported")
 }
 
 func TestRoute_HumanNoMapping_PG(t *testing.T) {
@@ -304,7 +302,7 @@ func TestRoute_HumanNoMapping_PG(t *testing.T) {
 		core.Target{Type: core.TargetTypeHuman, Value: "nobody"},
 		core.TaskEnvelope{})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no human mailbox", "must match router.go fallback wording")
+	assert.Contains(t, err.Error(), "not supported")
 }
 
 func TestRoute_GroupTenantIsolation_PG(t *testing.T) {

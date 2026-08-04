@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	crand "crypto/rand"
@@ -14,6 +15,7 @@ import (
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
+	"github.com/agentium-lab/Janus/server/internal/service/routing"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -39,6 +41,7 @@ type TaskService struct {
 	lifecycle      *LifecycleService
 	intentResolver IntentResolver
 	contextRefSvc  *ContextRefService
+	router         *routing.Router
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -75,6 +78,11 @@ func (s *TaskService) WithIntentResolver(r IntentResolver) *TaskService {
 
 func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService {
 	s.contextRefSvc = svc
+	return s
+}
+
+func (s *TaskService) WithRouter(r *routing.Router) *TaskService {
+	s.router = r
 	return s
 }
 
@@ -118,6 +126,13 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 	if task.TargetValue == "" {
 		return nil, fmt.Errorf("target value is required")
+	}
+	if s.router != nil {
+		result, err := s.router.Route(ctx, task.TenantID, core.Target{Type: task.TargetType, Value: task.TargetValue}, task.Envelope)
+		if err != nil {
+			return nil, fmt.Errorf("routing: %w", err)
+		}
+		task.MailboxID = result.MailboxID
 	}
 	if task.Status == "" {
 		task.Status = core.TaskStatusCreated
@@ -187,12 +202,14 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 
 	if task.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
-		_, _ = s.approvalSvc.RequestApproval(ctx, core.Approval{
+		if _, err := s.approvalSvc.RequestApproval(ctx, core.Approval{
 			TenantID:   task.TenantID,
 			TaskID:     task.ID,
 			RequestedBy: task.SourceAgent,
 			Reason:     "policy: approval required",
-		})
+		}); err != nil {
+			log.Printf("task %s: request approval: %v", task.ID, err)
+		}
 	}
 
 	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {

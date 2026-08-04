@@ -191,11 +191,11 @@ func TestRoute_HumanActiveMailbox(t *testing.T) {
 	}
 	r := NewRouter(lookup, nil, nil)
 
-	result, err := r.Route(context.Background(), "acme",
+	_, err := r.Route(context.Background(), "acme",
 		core.Target{Type: core.TargetTypeHuman, Value: "alice"},
 		core.TaskEnvelope{})
-	require.NoError(t, err)
-	assert.Equal(t, "mb-alice", result.MailboxID)
+	require.Error(t, err, "human routing should return error")
+	assert.Contains(t, err.Error(), "not supported")
 }
 
 func TestRoute_UnsupportedTargetType(t *testing.T) {

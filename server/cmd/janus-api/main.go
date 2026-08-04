@@ -44,6 +44,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/expiry"
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
+	"github.com/agentium-lab/Janus/server/internal/service/routing"
 )
 
 func main() {
@@ -87,6 +88,7 @@ func main() {
 	policyRuleRepo := pgdriver.NewPolicyRuleRepository(pool)
 	eventRepo := pgdriver.NewEventRepo(pool)
 	outboxRepo := pgdriver.NewOutboxRepo(pool)
+	lookupRepo := pgdriver.NewAgentLookupRepo(pool)
 
 	approvalRepo := pgdriver.NewApprovalRepo(pool)
 
@@ -94,7 +96,8 @@ func main() {
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(redisDrv)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc)
+	router := routing.NewRouter(lookupRepo, nil, nil)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)
@@ -102,6 +105,7 @@ func main() {
 	dispatchSvc = dispatchSvc.WithLifecycle(lifecycleSvc, outboxRepo, budgetUsageRepo)
 	eventSvc := service.NewEventService(eventRepo)
 	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, natsDrv)
+	approvalSvc.WithOutboxRepo(outboxRepo, pool)
 	taskSvc.WithApproval(approvalSvc)
 	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
 
@@ -118,15 +122,24 @@ func main() {
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
 
-	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
+	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv).WithOutbox(outboxRepo, pool)
 	dlqH := handler.NewDLQHandler(dlqSvc)
 	catalogH := handler.NewCatalogHandler(agentRepo)
 
 	rawEventCh := make(chan core.JanusEvent, 256)
-	_, err = natsDrv.SubscribeEvents(context.Background(), rawEventCh)
+	eventSub, err := natsDrv.SubscribeEvents(context.Background(), rawEventCh)
 	if err != nil {
 		log.Fatalf("subscribe events: %v", err)
 	}
+	defer func() {
+		// Drain the NATS subscription then close rawEventCh so the fan-out
+		// goroutine below exits and closes its downstream channels. Without
+		// this, the subscription + goroutine outlive HTTP shutdown.
+		if eventSub != nil {
+			_ = eventSub.Unsubscribe()
+		}
+		close(rawEventCh)
+	}()
 
 	broadcastCh := make(chan core.JanusEvent, 256)
 	projectorCh := make(chan core.JanusEvent, 256)
