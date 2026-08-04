@@ -116,7 +116,7 @@ func main() {
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
-	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc)
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
 
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
 	dlqH := handler.NewDLQHandler(dlqSvc)

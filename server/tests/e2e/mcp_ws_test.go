@@ -159,7 +159,7 @@ func TestE2E_WS_DashboardEventDelivery(t *testing.T) {
 	const wsTaskID = "ws-dashboard-task-1"
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?tenant_id=" + testTenant
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": []string{server.URL}})
 	require.NoError(t, err)
 	defer ws.Close()
 
@@ -221,7 +221,7 @@ func TestE2E_WS_TenantIsolation(t *testing.T) {
 	require.NoError(t, err)
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws?tenant_id=" + testTenant
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": []string{server.URL}})
 	require.NoError(t, err)
 	defer ws.Close()
 	time.Sleep(200 * time.Millisecond)

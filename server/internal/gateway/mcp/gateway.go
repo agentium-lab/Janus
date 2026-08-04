@@ -57,14 +57,24 @@ type ResourceRegistrar interface {
 	Attach(ctx context.Context, tenantID, refType, uri, hash, classification string, accessScope []string) (*core.ContextRef, error)
 }
 
+type EventPublisher interface {
+	PublishEvent(ctx context.Context, event core.JanusEvent) error
+}
+
 type Gateway struct {
-	taskSvc    TaskCreator
-	statusSvc  TaskStatusGetter
+	taskSvc     TaskCreator
+	statusSvc   TaskStatusGetter
 	resourceSvc ResourceRegistrar
+	eventPub    EventPublisher
 }
 
 func NewGateway(taskSvc TaskCreator, statusSvc TaskStatusGetter, resourceSvc ResourceRegistrar) *Gateway {
 	return &Gateway{taskSvc: taskSvc, statusSvc: statusSvc, resourceSvc: resourceSvc}
+}
+
+func (g *Gateway) WithEventPublisher(p EventPublisher) *Gateway {
+	g.eventPub = p
+	return g
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -136,11 +146,16 @@ func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
+	g.emitToolEvent(r.Context(), core.EventToolInvocationRequested, tenantID, callID, sourceAgent, req.ToolName)
+
 	result, err := g.taskSvc.Create(r.Context(), task)
 	if err != nil {
+		g.emitToolEvent(r.Context(), core.EventToolInvocationFailed, tenantID, callID, sourceAgent, req.ToolName)
 		writeMCPError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
+
+	g.emitToolEvent(r.Context(), core.EventToolInvocationStarted, tenantID, result.ID, sourceAgent, req.ToolName)
 
 	writeJSON(w, http.StatusCreated, map[string]string{
 		"call_id": result.ID,
@@ -209,6 +224,20 @@ func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
 		"context_ref_id": ref.ID,
 		"uri":            ref.URI,
 		"hash":           ref.Hash,
+	})
+}
+
+func (g *Gateway) emitToolEvent(ctx context.Context, typ core.EventType, tenantID, taskID, agent, toolName string) {
+	if g.eventPub == nil {
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"tool_name": toolName})
+	_ = g.eventPub.PublishEvent(ctx, core.JanusEvent{
+		EventType:   typ,
+		TenantID:    tenantID,
+		TaskID:      taskID,
+		SourceAgent: agent,
+		Payload:     payload,
 	})
 }
 

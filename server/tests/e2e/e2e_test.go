@@ -145,7 +145,7 @@ func TestMain(m *testing.M) {
 	}()
 	go eventProjector.Start(context.Background())
 
-	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc)
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
 
 	dispatchH := handler.NewDispatchHandler(&e2eDispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&e2eAuditAdapter{svc: eventSvc})
