@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 // Scanner periodically finds claimed/running task attempts whose lease has
@@ -197,6 +198,7 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 		}(e)
 		if expired {
 			count++
+			metrics.TasksExpired.WithLabelValues(e.TenantID).Inc()
 		}
 	}
 	return count, nil

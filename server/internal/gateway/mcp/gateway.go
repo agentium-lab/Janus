@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +12,40 @@ import (
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 )
+
+const maxBodyBytes = 10 << 20
+
+var internalLeakPatterns = []string{
+	"sql:", "pq:", "pgx:", "connection refused", "dial tcp",
+	"no rows in result set", "context deadline exceeded",
+	"panic:", "goroutine", "runtime error",
+	"driver:", "sslmode", "postgres://", "host=",
+	"port=", "dbname=", "redis:", "nats:",
+	"failed to connect", "lookup", "i/o timeout",
+	"server closed", "duplicate key",
+}
+
+func sanitizeMsg(msg string) string {
+	lower := strings.ToLower(msg)
+	for _, p := range internalLeakPatterns {
+		if strings.Contains(lower, p) {
+			return "internal error"
+		}
+	}
+	if len(msg) > 200 {
+		return "internal error"
+	}
+	return msg
+}
+
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}) error {
+	if r.Body == nil {
+		return io.EOF
+	}
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return json.NewDecoder(r.Body).Decode(v)
+}
 
 type TaskCreator interface {
 	Create(ctx context.Context, task core.Task) (*core.Task, error)
@@ -62,7 +97,7 @@ func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		Namespace string `json:"namespace"`
 		Target    string `json:"target"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONLimit(w, r, &req); err != nil {
 		writeMCPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
@@ -103,7 +138,7 @@ func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 	result, err := g.taskSvc.Create(r.Context(), task)
 	if err != nil {
-		writeMCPError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		writeMCPError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -131,7 +166,7 @@ func (g *Gateway) handleToolCallStatus(w http.ResponseWriter, r *http.Request) {
 
 	task, err := g.statusSvc.Get(r.Context(), tenantID, callID)
 	if err != nil {
-		writeMCPError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		writeMCPError(w, http.StatusNotFound, "NOT_FOUND", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -154,7 +189,7 @@ func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
 		Classification string  `json:"classification"`
 		AccessScope   []string `json:"access_scope"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONLimit(w, r, &req); err != nil {
 		writeMCPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
@@ -166,7 +201,7 @@ func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
 
 	ref, err := g.resourceSvc.Attach(r.Context(), tenantID, "mcp_resource", req.URI, req.Hash, req.Classification, req.AccessScope)
 	if err != nil {
-		writeMCPError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		writeMCPError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 

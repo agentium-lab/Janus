@@ -3,12 +3,47 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 )
+
+const maxBodyBytes = 10 << 20
+
+var internalLeakPatterns = []string{
+	"sql:", "pq:", "pgx:", "connection refused", "dial tcp",
+	"no rows in result set", "context deadline exceeded",
+	"panic:", "goroutine", "runtime error",
+	"driver:", "sslmode", "postgres://", "host=",
+	"port=", "dbname=", "redis:", "nats:",
+	"failed to connect", "lookup", "i/o timeout",
+	"server closed", "duplicate key",
+}
+
+func sanitizeMsg(msg string) string {
+	lower := strings.ToLower(msg)
+	for _, p := range internalLeakPatterns {
+		if strings.Contains(lower, p) {
+			return "internal error"
+		}
+	}
+	if len(msg) > 200 {
+		return "internal error"
+	}
+	return msg
+}
+
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}) error {
+	if r.Body == nil {
+		return io.EOF
+	}
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return json.NewDecoder(r.Body).Decode(v)
+}
 
 type AgentRegistrar interface {
 	Register(ctx context.Context, agent core.Agent) error
@@ -58,14 +93,14 @@ func (g *Gateway) handleAgentCard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var card AgentCard
-	if err := json.NewDecoder(r.Body).Decode(&card); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+	if err := readJSONLimit(w, r, &card); err != nil {
+		writeA2AError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
 
 	agent := CardToAgent(tenantID, card)
 	if err := g.agentSvc.Register(r.Context(), agent); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeA2AError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -91,14 +126,14 @@ func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req SendMessageRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
+	if err := readJSONLimit(w, r, &req); err != nil {
+		writeA2AError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
 
 	task := MessageToTask(req, tenantID, sourceAgent, mailboxID)
 	if _, err := g.taskSvc.Create(r.Context(), task); err != nil {
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		writeA2AError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -129,7 +164,7 @@ func (g *Gateway) handleTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 	task, err := g.statusSvc.Get(r.Context(), tenantID, taskID)
 	if err != nil {
-		writeA2AError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		writeA2AError(w, http.StatusNotFound, "NOT_FOUND", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -172,7 +207,7 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req jsonRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONLimit(w, r, &req); err != nil {
 		writeA2AError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
@@ -191,7 +226,7 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		task := MessageToTask(msg, tenantID, sourceAgent, mailboxID)
 		result, err := g.taskSvc.Create(r.Context(), task)
 		if err != nil {
-			writeJSONRPCError(w, req.ID, -32603, err.Error())
+			writeJSONRPCError(w, req.ID, -32603, sanitizeMsg(err.Error()))
 			return
 		}
 		writeJSONRPCResult(w, req.ID, map[string]string{
@@ -212,7 +247,7 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		}
 		task, err := g.statusSvc.Get(r.Context(), tenantID, params.TaskID)
 		if err != nil {
-			writeJSONRPCError(w, req.ID, -32601, err.Error())
+			writeJSONRPCError(w, req.ID, -32601, sanitizeMsg(err.Error()))
 			return
 		}
 		writeJSONRPCResult(w, req.ID, map[string]interface{}{

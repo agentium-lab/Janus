@@ -52,11 +52,11 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.svc.Register(r.Context(), agent); err != nil {
-		code := http.StatusBadRequest
 		if isDuplicateKeyError(err) {
-			code = http.StatusConflict
+			writeError(w, http.StatusConflict, "agent already exists")
+			return
 		}
-		writeError(w, code, err.Error())
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

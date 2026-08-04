@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	go_redis "github.com/redis/go-redis/v9"
@@ -107,7 +108,9 @@ func (d *Driver) CheckRPM(ctx context.Context, tenantID, scopeType, scopeID stri
 		return fmt.Errorf("rpm check: %w", err)
 	}
 	if count == 1 {
-		d.rdb.Expire(ctx, key, 2*time.Minute)
+		if err := d.rdb.Expire(ctx, key, 2*time.Minute).Err(); err != nil {
+			log.Printf("redis rpm expire %s: %v", key, err)
+		}
 	}
 	if int(count) > limit {
 		return fmt.Errorf("rpm limit exceeded: %d > %d for %s/%s/%s", count, limit, tenantID, scopeType, scopeID)
@@ -126,7 +129,9 @@ func (d *Driver) CheckTPM(ctx context.Context, tenantID, scopeType, scopeID stri
 	}
 	ttl, _ := d.rdb.TTL(ctx, key).Result()
 	if ttl < 0 {
-		d.rdb.Expire(ctx, key, 2*time.Minute)
+		if err := d.rdb.Expire(ctx, key, 2*time.Minute).Err(); err != nil {
+			log.Printf("redis tpm expire %s: %v", key, err)
+		}
 	}
 	if int(added) > limit {
 		return fmt.Errorf("tpm limit exceeded: %d > %d for %s/%s/%s", added, limit, tenantID, scopeType, scopeID)

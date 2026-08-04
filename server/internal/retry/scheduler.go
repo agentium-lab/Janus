@@ -10,6 +10,7 @@ import (
 	cryptorand "crypto/rand"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -136,12 +137,13 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 				}
 			}
 
-			if err := tx.Commit(ctx); err != nil {
-				log.Printf("retry scheduler commit %s: %v", t.ID, err)
-				return
-			}
-			committed = true
-		}(t)
+		if err := tx.Commit(ctx); err != nil {
+			log.Printf("retry scheduler commit %s: %v", t.ID, err)
+			return
+		}
+		committed = true
+		metrics.RetryAttempted.Inc()
+	}(t)
 	}
 
 	if len(tasks) > 0 {

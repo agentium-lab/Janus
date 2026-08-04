@@ -38,6 +38,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/lease"
 	_ "github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
+	"github.com/agentium-lab/Janus/server/internal/observability"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/agentium-lab/Janus/server/internal/expiry"
@@ -208,8 +209,9 @@ func main() {
 	}))
 	combined.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
+			log.Printf("readyz: database unreachable: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "unavailable", "error": err.Error()})
+			json.NewEncoder(w).Encode(map[string]string{"status": "unavailable", "error": "database unreachable"})
 			return
 		}
 		w.WriteHeader(http.StatusOK)
@@ -219,14 +221,18 @@ func main() {
 	combined.Handle("/grpc/", http.StripPrefix("/grpc", gwMux))
 
 	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	var handler http.Handler = combined
+	var core http.Handler = combined
 	if cfg.Auth.Enabled {
-		handler = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(combined))
+		core = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(core))
 		log.Println("api key authentication enabled")
 	} else if !isLoopbackAddr(addr) {
 		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true for production", addr)
 	} else {
 		log.Println("WARNING: authentication disabled — dev mode (loopback only)")
+	}
+	var handler http.Handler = observability.CORSMiddleware(cfg.CORS.AllowedOrigins)(core)
+	if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+		handler = observability.HSTSMiddleware(handler)
 	}
 
 	log.Printf("janus-api listening HTTP=%s gRPC=%s", addr, grpcAddr)
@@ -516,10 +522,19 @@ func extractTenantFromPath(path string) string {
 
 // buildTLSConfig constructs a *tls.Config from the TLSConfig. When ClientCAFile
 // is set, client certificates are required and verified (mTLS). MinVersion is
-// TLS 1.2.
+// TLS 1.2 and only strong AEAD cipher suites are enabled.
 func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 	cfg := &tls.Config{
-		MinVersion: tls.VersionTLS12,
+		MinVersion:               tls.VersionTLS12,
+		PreferServerCipherSuites: true,
+		CipherSuites: []uint16{
+			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+			tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		},
 	}
 	if tlsCfg.ClientCAFile != "" {
 		caCert, err := os.ReadFile(tlsCfg.ClientCAFile)

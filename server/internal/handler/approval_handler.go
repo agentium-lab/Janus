@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 
 	"github.com/agentium-lab/Janus/core"
@@ -32,7 +31,7 @@ type approvalRequestReq struct {
 func (h *ApprovalHandler) Request(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	var req approvalRequestReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -56,7 +55,7 @@ type approvalDecisionReq struct {
 func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
 	var req approvalDecisionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
@@ -70,7 +69,7 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
 	var req approvalDecisionReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}

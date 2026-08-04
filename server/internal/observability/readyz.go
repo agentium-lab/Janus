@@ -3,6 +3,7 @@ package observability
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -36,7 +37,8 @@ func (rc *ReadyChecker) Check(ctx context.Context) (bool, map[string]string) {
 		err := fn(checkCtx)
 		cancel()
 		if err != nil {
-			results[name] = "unavailable: " + err.Error()
+			log.Printf("readyz: check %s failed: %v", name, err)
+			results[name] = "unavailable"
 			allReady = false
 		} else {
 			results[name] = "ok"

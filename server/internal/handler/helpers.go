@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -108,11 +109,21 @@ func errorCodeForStatus(status int) string {
 }
 
 func readJSON(r *http.Request, v interface{}) error {
+	return readJSONWithLimit(r, v, 10<<20)
+}
+
+const maxJSONBodyBytes = 10 << 20
+
+func readJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 	if r.Body == nil {
 		return fmt.Errorf("request body is required")
 	}
 	defer r.Body.Close()
-	r.Body = http.MaxBytesReader(nil, r.Body, 10<<20)
+	// io.LimitReader is used instead of http.MaxBytesReader because the latter
+	// requires a non-nil http.ResponseWriter to write a 413 response when the
+	// limit is exceeded, and readJSON does not have access to one. A truncated
+	// body simply produces a JSON decode error which the caller maps to a 400.
+	r.Body = io.NopCloser(io.LimitReader(r.Body, maxBytes))
 	return json.NewDecoder(r.Body).Decode(v)
 }
 
@@ -137,18 +148,23 @@ var internalPatterns = []string{
 	"sql:", "pq:", "pgx:", "connection refused", "dial tcp",
 	"no rows in result set", "context deadline exceeded",
 	"panic:", "goroutine", "runtime error",
+	"driver:", "sslmode", "postgres://", "host=",
+	"port=", "dbname=", "redis:", "nats:",
+	"failed to connect", "lookup", "i/o timeout",
+	"server closed", "duplicate key",
 }
 
 func sanitizeError(msg string, status int) string {
-	if status < 500 {
-		return msg
-	}
+	lower := strings.ToLower(msg)
 	for _, pattern := range internalPatterns {
-		if strings.Contains(strings.ToLower(msg), pattern) {
-			return "internal server error"
+		if strings.Contains(lower, pattern) {
+			if status >= 500 {
+				return "internal server error"
+			}
+			return "bad request"
 		}
 	}
-	if len(msg) > 200 {
+	if status >= 500 {
 		return "internal server error"
 	}
 	return msg

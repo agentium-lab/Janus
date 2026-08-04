@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -28,21 +27,20 @@ type attachContextRefReq struct {
 func (h *ContextRefHandler) Attach(w http.ResponseWriter, r *http.Request) {
 	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
 	if tenantID == "" {
-		http.Error(w, "tenant_id required", http.StatusBadRequest)
+		writeError(w, http.StatusBadRequest, "tenant_id required")
 		return
 	}
 	var req attachContextRefReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	ref, err := h.svc.Attach(r.Context(), tenantID, req.Type, req.URI, req.Hash, req.Classification, req.AccessScope)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ref)
+	writeJSON(w, http.StatusOK, ref)
 }
 
 func (h *ContextRefHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -50,11 +48,10 @@ func (h *ContextRefHandler) Get(w http.ResponseWriter, r *http.Request) {
 	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
 	ref, err := h.svc.Get(r.Context(), tenantID, refID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(ref)
+	writeJSON(w, http.StatusOK, ref)
 }
 
 func (h *ContextRefHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
@@ -62,21 +59,20 @@ func (h *ContextRefHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 	taskID := pathSegmentBefore(r.URL.Path, "context-refs")
 	refs, err := h.svc.ListByTask(r.Context(), tenantID, taskID)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if refs == nil {
 		refs = []*core.ContextRef{}
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(refs)
+	writeJSON(w, http.StatusOK, refs)
 }
 
 func (h *ContextRefHandler) Detach(w http.ResponseWriter, r *http.Request) {
 	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
 	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
 	if err := h.svc.Detach(r.Context(), tenantID, refID); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

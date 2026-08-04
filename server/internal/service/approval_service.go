@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
@@ -110,9 +111,15 @@ func (s *ApprovalService) Expire(ctx context.Context, tenantID, approvalID strin
 	if err := s.repo.UpdateDecision(ctx, tenantID, approvalID, "expired", "system", "approval timeout"); err != nil {
 		return fmt.Errorf("expire approval: %w", err)
 	}
-	approval, _ := s.repo.Get(ctx, tenantID, approvalID)
+	approval, err := s.repo.Get(ctx, tenantID, approvalID)
+	if err != nil {
+		log.Printf("approval expire: get %s/%s after update: %v", tenantID, approvalID, err)
+		return nil
+	}
 	if approval != nil {
-		_ = s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0)
+		if err := s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0); err != nil {
+			log.Printf("approval expire: cancel task %s: %v", approval.TaskID, err)
+		}
 	}
 	return nil
 }

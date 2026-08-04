@@ -62,4 +62,27 @@ var (
 	TasksExpired = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "janus_tasks_expired_total",
 	}, []string{"tenant_id"})
+
+	OutboxPending = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "janus_outbox_pending",
+		Help: "Number of outbox entries observed pending in the last publisher batch",
+	})
+	OutboxPublishTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_outbox_publish_total",
+		Help: "Total number of outbox entries the publisher attempted to publish",
+	})
+	OutboxPublishFailedTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_outbox_publish_failed_total",
+		Help: "Total number of outbox entries that failed to publish",
+	})
+
+	RoutingDecisions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "janus_routing_decisions_total",
+		Help: "Total routing decisions partitioned by outcome",
+	}, []string{"outcome"})
+
+	RetryAttempted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_retry_attempted_total",
+		Help: "Total number of retry attempts promoted to queued by the retry scheduler",
+	})
 )

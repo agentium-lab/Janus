@@ -3,8 +3,10 @@ package routing
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 type AgentCandidate struct {
@@ -59,7 +61,10 @@ func NewRouter(lookup AgentLookup, policy PolicyChecker, budget BudgetChecker) *
 	return &Router{lookup: lookup, policy: policy, budget: budget}
 }
 
-func (r *Router) Route(ctx context.Context, tenantID string, target core.Target, envelope core.TaskEnvelope) (*RouterResult, error) {
+func (r *Router) Route(ctx context.Context, tenantID string, target core.Target, envelope core.TaskEnvelope) (result *RouterResult, err error) {
+	defer func() {
+		metrics.RoutingDecisions.WithLabelValues(classifyRouteOutcome(result, err)).Inc()
+	}()
 	switch target.Type {
 	case core.TargetTypeAgent:
 		return r.routeAgent(ctx, tenantID, target.Value)
@@ -74,6 +79,26 @@ func (r *Router) Route(ctx context.Context, tenantID string, target core.Target,
 	default:
 		return nil, fmt.Errorf("unsupported target type: %s", target.Type)
 	}
+}
+
+func classifyRouteOutcome(result *RouterResult, err error) string {
+	if err == nil {
+		return "success"
+	}
+	if result != nil && result.Reason == "all_candidates_filtered" {
+		return "all_filtered"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "no online agents"):
+		return "no_candidates"
+	case strings.Contains(msg, "not found"),
+		strings.Contains(msg, "no active mailbox"),
+		strings.Contains(msg, "no group mailbox"),
+		strings.Contains(msg, "no human mailbox"):
+		return "not_found"
+	}
+	return "error"
 }
 
 func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string) (*RouterResult, error) {

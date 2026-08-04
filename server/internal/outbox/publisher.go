@@ -3,11 +3,16 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // OutboxRepo defines the interface needed by Publisher for outbox operations.
@@ -59,9 +64,12 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 		log.Printf("outbox fetch: %v", err)
 		return
 	}
+	metrics.OutboxPending.Set(float64(len(entries)))
 
 	for _, e := range entries {
+		metrics.OutboxPublishTotal.Inc()
 		if err := p.publishOne(ctx, e); err != nil {
+			metrics.OutboxPublishFailedTotal.Inc()
 			log.Printf("outbox publish %s: %v", e.ID, err)
 			_ = p.repo.MarkFailedWithReason(ctx, e.ID, err.Error())
 			continue
@@ -80,6 +88,10 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 }
 
 func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) error {
+	ctx, span := otel.Tracer("janus").Start(ctx, "outbox.publishOne",
+		trace.WithAttributes(attribute.String("outbox.kind", e.Kind)),
+	)
+	defer span.End()
 	switch e.Kind {
 	case "task_publish":
 		var msg core.TaskMessage
@@ -103,6 +115,6 @@ func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) erro
 		msg.DedupeKey = e.ID
 		return p.driver.PublishDLQ(ctx, msg, errPayload)
 	default:
-		return nil
+		return fmt.Errorf("unknown outbox kind: %q", e.Kind)
 	}
 }

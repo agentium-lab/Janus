@@ -22,8 +22,8 @@ type BudgetSpec struct {
 	RPM            int
 	TPM            int
 	MaxConcurrency int
-	DailyCostUSD   float64
-	MonthlyCostUSD float64
+	DailyCostUSD   float64 // Planned: enforcement exists but is unreachable — production ACK path accrues cost as 0 pending trusted token metering
+	MonthlyCostUSD float64 // Planned: not enforced — no enforcement code yet, pending trusted token metering
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 }

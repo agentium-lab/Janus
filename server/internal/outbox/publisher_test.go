@@ -114,12 +114,12 @@ func TestPublishOne_DLQPublish(t *testing.T) {
 	assert.Contains(t, string(drv.publishedDLQ[0].Err), "TIMEOUT")
 }
 
-func TestPublishOne_UnknownKind_NoOp(t *testing.T) {
+func TestPublishOne_UnknownKind_ReturnsError(t *testing.T) {
 	drv := &fakeDriver{}
 	p := &Publisher{driver: drv}
 
 	err := p.publishOne(context.Background(), postgres.OutboxEntry{Kind: "unknown_kind", Payload: json.RawMessage(`{}`)})
-	require.NoError(t, err)
+	require.Error(t, err, "unknown outbox kind must error, not silently succeed")
 	assert.Empty(t, drv.publishedTasks)
 	assert.Empty(t, drv.publishedEvent)
 	assert.Empty(t, drv.publishedDLQ)

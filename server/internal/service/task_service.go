@@ -14,6 +14,9 @@ import (
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type IntentResolver interface {
@@ -76,6 +79,14 @@ func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService
 }
 
 func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, error) {
+	ctx, span := otel.Tracer("janus").Start(ctx, "TaskService.Create",
+		trace.WithAttributes(
+			attribute.String("tenant.id", task.TenantID),
+			attribute.String("task.id", task.ID),
+			attribute.String("task.target_type", string(task.TargetType)),
+		),
+	)
+	defer span.End()
 	if task.TenantID == "" {
 		return nil, fmt.Errorf("tenant id is required")
 	}
@@ -138,7 +149,10 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 
 	if task.IdempotencyKey != "" {
 		existing, err := s.taskRepo.GetByIdempotencyKey(ctx, task.TenantID, task.IdempotencyKey)
-		if err == nil && existing != nil {
+		if err != nil && err != pgx.ErrNoRows {
+			return nil, fmt.Errorf("idempotency key lookup: %w", err)
+		}
+		if existing != nil {
 			return existing, nil
 		}
 	}
@@ -408,7 +422,9 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 				return nil, fmt.Errorf("re-publish to queue: %w", err)
 			}
 		}
-		_ = s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusQueued, 0)
+		if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusQueued, 0); err != nil {
+			return nil, fmt.Errorf("update task queued after replay: %w", err)
+		}
 	}
 
 	metrics.TasksCreated.WithLabelValues(tenantID).Inc()

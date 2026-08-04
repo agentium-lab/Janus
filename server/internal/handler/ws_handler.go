@@ -3,26 +3,65 @@ package handler
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/gorilla/websocket"
 )
 
+// wsAllowedLoopbackHosts lists loopback hosts permitted to originate
+// WebSocket connections for dev convenience. Comparison is exact, never a
+// substring match, to prevent CSWSH bypass (e.g. "evil.example.com" must
+// not match an "example.com" check).
+var wsAllowedLoopbackHosts = map[string]bool{
+	"localhost": true,
+	"127.0.0.1": true,
+	"::1":       true,
+	"[::1]":     true,
+}
+
+// originHostMatchesRequest accepts an Origin only when its host exactly
+// matches the request Host (port included) or is a loopback variant.
+// Empty Origin is rejected: browsers always send the header on WS handshakes,
+// so its absence signals a non-browser or spoofed client.
+func originHostMatchesRequest(origin string, requestHost string) bool {
+	if origin == "" {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if u.Host == requestHost {
+		return true
+	}
+	if wsAllowedLoopbackHosts[u.Hostname()] || wsAllowedLoopbackHosts[u.Host] {
+		return true
+	}
+	if isLoopbackHost(requestHost) && isLoopbackHost(u.Host) {
+		return true
+	}
+	return false
+}
+
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	return wsAllowedLoopbackHosts[host] || net.ParseIP(host).IsLoopback()
+}
+
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			return true
-		}
-		host := r.Host
-		if host == "" {
-			return false
-		}
-		return strings.Contains(origin, host)
+		return originHostMatchesRequest(r.Header.Get("Origin"), r.Host)
 	},
 }
 
@@ -81,9 +120,16 @@ func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	go h.readPump(c)
 }
 
+const (
+	wsWriteTimeout = 10 * time.Second
+	wsPingInterval = 30 * time.Second
+)
+
 func (h *WebSocketHandler) writePump(c *wsConn) {
 	defer h.cleanup(c)
 
+	ticker := time.NewTicker(wsPingInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case event, ok := <-c.events:
@@ -94,7 +140,13 @@ func (h *WebSocketHandler) writePump(c *wsConn) {
 			if err != nil {
 				continue
 			}
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 			if err := c.conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				return
+			}
+		case <-ticker.C:
+			_ = c.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		case <-c.closed:
@@ -105,6 +157,14 @@ func (h *WebSocketHandler) writePump(c *wsConn) {
 
 func (h *WebSocketHandler) readPump(c *wsConn) {
 	defer h.cleanup(c)
+	// Set a read deadline that the peer's pong messages (in response to our
+	// pings) refresh via SetPongHandler. If the peer goes away, ReadMessage
+	// returns a deadline-exceeded error and we clean up.
+	_ = c.conn.SetReadDeadline(time.Now().Add(wsPingInterval * 3))
+	c.conn.SetPongHandler(func(string) error {
+		_ = c.conn.SetReadDeadline(time.Now().Add(wsPingInterval * 3))
+		return nil
+	})
 	for {
 		_, _, err := c.conn.ReadMessage()
 		if err != nil {

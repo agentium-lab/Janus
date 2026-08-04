@@ -100,7 +100,9 @@ func TestWebSocketHandler_BasicConnection(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
-	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	hdr := http.Header{}
+	hdr.Set("Origin", srv.URL)
+	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
 	require.NoError(t, err)
 	defer ws.Close()
 	if resp != nil {
@@ -132,7 +134,9 @@ func TestWebSocketHandler_NoTenant(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	hdr := http.Header{}
+	hdr.Set("Origin", srv.URL)
+	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
 	require.NoError(t, err)
 	defer ws.Close()
 	if resp != nil {
@@ -163,7 +167,9 @@ func TestWebSocketHandler_ClientDisconnect(t *testing.T) {
 	defer srv.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	hdr := http.Header{}
+	hdr.Set("Origin", srv.URL)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
 	require.NoError(t, err)
 
 	ws.Close()
@@ -189,6 +195,32 @@ func TestWebSocketHandler_UpgradeFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.NotEqual(t, http.StatusSwitchingProtocols, resp.StatusCode)
+}
+
+func TestOriginHostMatchesRequest(t *testing.T) {
+	cases := []struct {
+		name        string
+		origin      string
+		requestHost string
+		want        bool
+	}{
+		{"empty origin rejected", "", "example.com", false},
+		{"exact host match", "http://example.com", "example.com", true},
+		{"exact host:port match", "http://example.com:8080", "example.com:8080", true},
+		{"substring not bypassed", "http://evil.example.com", "example.com", false},
+		{"substring not bypassed reverse", "http://example.com", "evil.example.com", false},
+		{"localhost allowed", "http://localhost:3000", "api.example.com", true},
+		{"127.0.0.1 allowed", "http://127.0.0.1:8080", "example.com", true},
+		{"unrelated origin rejected", "http://attacker.com", "example.com", false},
+		{"invalid origin url rejected", "://bad", "example.com", false},
+		{"missing scheme rejected", "example.com", "example.com", false},
+		{"loopback to loopback", "http://localhost:8080", "127.0.0.1:8080", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, originHostMatchesRequest(c.origin, c.requestHost))
+		})
+	}
 }
 
 func TestFanoutBroadcaster_BufferFull(t *testing.T) {

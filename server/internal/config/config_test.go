@@ -48,7 +48,13 @@ func TestLoad_EnvOverride(t *testing.T) {
 
 func TestPostgresConfig_DSN(t *testing.T) {
 	p := PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p", Database: "d"}
+	assert.Equal(t, "postgres://u:p@h:5432/d?sslmode=require", p.DSN())
+}
+
+func TestPostgresConfig_DSN_SSLModeOverride(t *testing.T) {
+	p := PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p", Database: "d", SSLMode: "disable"}
 	assert.Equal(t, "postgres://u:p@h:5432/d?sslmode=disable", p.DSN())
+	assert.Contains(t, p.ConnStr(), "sslmode=disable")
 }
 
 func TestPostgresConfig_ConnStr(t *testing.T) {
@@ -57,6 +63,7 @@ func TestPostgresConfig_ConnStr(t *testing.T) {
 	assert.Contains(t, p.ConnStr(), "port=5432")
 	assert.Contains(t, p.ConnStr(), "user=u")
 	assert.Contains(t, p.ConnStr(), "dbname=d")
+	assert.Contains(t, p.ConnStr(), "sslmode=require")
 }
 
 func TestLoad_ConfigFile(t *testing.T) {

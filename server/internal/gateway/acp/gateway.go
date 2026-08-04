@@ -4,12 +4,48 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 )
+
+const maxBodyBytes = 10 << 20
+
+var internalLeakPatterns = []string{
+	"sql:", "pq:", "pgx:", "connection refused", "dial tcp",
+	"no rows in result set", "context deadline exceeded",
+	"panic:", "goroutine", "runtime error",
+	"driver:", "sslmode", "postgres://", "host=",
+	"port=", "dbname=", "redis:", "nats:",
+	"failed to connect", "lookup", "i/o timeout",
+	"server closed", "duplicate key",
+}
+
+func sanitizeMsg(msg string) string {
+	lower := strings.ToLower(msg)
+	for _, p := range internalLeakPatterns {
+		if strings.Contains(lower, p) {
+			return "internal error"
+		}
+	}
+	if len(msg) > 200 {
+		return "internal error"
+	}
+	return msg
+}
+
+func readJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}) error {
+	if r.Body == nil {
+		return io.EOF
+	}
+	defer r.Body.Close()
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	return json.NewDecoder(r.Body).Decode(v)
+}
 
 type AgentRegistrar interface {
 	Register(ctx context.Context, agent core.Agent) error
@@ -59,7 +95,7 @@ func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
 		} `json:"skills"`
 		Endpoint string `json:"endpoint"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONLimit(w, r, &req); err != nil {
 		writeACPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
@@ -80,7 +116,7 @@ func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := g.agentSvc.Register(r.Context(), agent); err != nil {
-		writeACPError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		writeACPError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -104,7 +140,7 @@ func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
 		Input      string `json:"input"`
 		ContextRef string `json:"context_ref"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readJSONLimit(w, r, &req); err != nil {
 		writeACPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
@@ -139,7 +175,7 @@ func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
 
 	result, err := g.taskSvc.Create(r.Context(), task)
 	if err != nil {
-		writeACPError(w, http.StatusInternalServerError, "INTERNAL", err.Error())
+		writeACPError(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
 
@@ -163,7 +199,7 @@ func (g *Gateway) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 	task, err := g.statusSvc.Get(r.Context(), tenantID, runID)
 	if err != nil {
-		writeACPError(w, http.StatusNotFound, "NOT_FOUND", err.Error())
+		writeACPError(w, http.StatusNotFound, "NOT_FOUND", sanitizeMsg(err.Error()))
 		return
 	}
 

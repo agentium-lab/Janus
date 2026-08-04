@@ -15,6 +15,9 @@ import (
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type PullResult struct {
@@ -64,6 +67,14 @@ func (s *DispatchService) WithLifecycle(lc *LifecycleService, outboxRepo *postgr
 }
 
 func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*PullResult, error) {
+	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.PullTask",
+		trace.WithAttributes(
+			attribute.String("tenant.id", tenantID),
+			attribute.String("mailbox.id", mailboxID),
+			attribute.String("agent.id", agentID),
+		),
+	)
+	defer span.End()
 	if tenantID == "" || mailboxID == "" || agentID == "" {
 		return nil, fmt.Errorf("tenant id, mailbox id, and agent id are required")
 	}
@@ -168,9 +179,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 				"reason": dispatchDecision.Reason,
 			}),
 		})
+		deliveryRef := delivery.DeliveryRef
 		time.AfterFunc(5*time.Second, func() {
-			bgCtx := context.Background()
-			_ = s.queueDriver.NackTask(bgCtx, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
+			nackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = s.queueDriver.NackTask(nackCtx, core.DeliveryRef(deliveryRef), core.NackRetriable)
 		})
 		return nil, &core.BackpressureError{
 			Reason:  core.ReasonApprovalRequired,
@@ -187,9 +200,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 				"reason": err.Error(),
 			}),
 		})
+		deliveryRef := delivery.DeliveryRef
 		time.AfterFunc(5*time.Second, func() {
-			bgCtx := context.Background()
-			_ = s.queueDriver.NackTask(bgCtx, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
+			nackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_ = s.queueDriver.NackTask(nackCtx, core.DeliveryRef(deliveryRef), core.NackRetriable)
 		})
 		return nil, err
 	}
@@ -325,6 +340,13 @@ func (s *DispatchService) TaskHeartbeat(ctx context.Context, tenantID, taskID, l
 }
 
 func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {
+	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.AckTask",
+		trace.WithAttributes(
+			attribute.String("tenant.id", tenantID),
+			attribute.String("task.id", taskID),
+		),
+	)
+	defer span.End()
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
@@ -496,6 +518,14 @@ func (s *DispatchService) ackTaskDirect(ctx context.Context, tenantID, taskID st
 }
 
 func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
+	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.NackTask",
+		trace.WithAttributes(
+			attribute.String("tenant.id", tenantID),
+			attribute.String("task.id", taskID),
+			attribute.Bool("task.retriable", retriable),
+		),
+	)
+	defer span.End()
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}

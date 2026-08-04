@@ -19,6 +19,7 @@ type Config struct {
 	Heartbeat  HeartbeatConfig `mapstructure:"heartbeat"`
 	Auth       AuthConfig     `mapstructure:"auth"`
 	TLS        TLSConfig      `mapstructure:"tls"`
+	CORS       CORSConfig     `mapstructure:"cors"`
 	Log        LogConfig      `mapstructure:"log"`
 	Metrics    MetricsConfig  `mapstructure:"metrics"`
 	Tracing    TracingConfig  `mapstructure:"tracing"`
@@ -33,16 +34,26 @@ type PostgresConfig struct {
 	Password string `mapstructure:"password"`
 	Database string `mapstructure:"database"`
 	MaxConns int    `mapstructure:"max_conns"`
+	SSLMode  string `mapstructure:"sslmode"`
+}
+
+const defaultPgSSLMode = "require"
+
+func (p PostgresConfig) sslMode() string {
+	if p.SSLMode != "" {
+		return p.SSLMode
+	}
+	return defaultPgSSLMode
 }
 
 func (p PostgresConfig) DSN() string {
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable",
-		p.User, p.Password, p.Host, p.Port, p.Database)
+	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+		p.User, p.Password, p.Host, p.Port, p.Database, p.sslMode())
 }
 
 func (p PostgresConfig) ConnStr() string {
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=disable",
-		p.Host, p.Port, p.User, p.Password, p.Database)
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
+		p.Host, p.Port, p.User, p.Password, p.Database, p.sslMode())
 }
 
 type NATSConfig struct {
@@ -77,6 +88,12 @@ type TLSConfig struct {
 	CertFile     string `mapstructure:"cert_file"`
 	KeyFile      string `mapstructure:"key_file"`
 	ClientCAFile string `mapstructure:"client_ca_file"`
+}
+
+// CORSConfig controls the Cross-Origin Resource Sharing policy. The default
+// is deny (empty allowlist); configure AllowedOrigins to permit specific origins.
+type CORSConfig struct {
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
 type LogConfig struct {
@@ -146,6 +163,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("postgres.password", "")
 	v.SetDefault("postgres.database", "janus")
 	v.SetDefault("postgres.max_conns", 20)
+	v.SetDefault("postgres.sslmode", "require")
 	v.SetDefault("nats.url", "nats://localhost:4222")
 	v.SetDefault("redis.addr", "localhost:6379")
 	v.SetDefault("redis.password", "")
@@ -182,6 +200,8 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_PG_PASSWORD":           "postgres.password",
 		"JANUS_PG_DATABASE":           "postgres.database",
 		"JANUS_PG_MAX_CONNS":          "postgres.max_conns",
+		"JANUS_PG_SSLMODE":            "postgres.sslmode",
+		"PGSSLMODE":                   "postgres.sslmode",
 		"JANUS_NATS_URL":              "nats.url",
 		"JANUS_REDIS_ADDR":            "redis.addr",
 		"JANUS_REDIS_PASSWORD":        "redis.password",
@@ -195,6 +215,7 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_TLS_CERT_FILE":         "tls.cert_file",
 		"JANUS_TLS_KEY_FILE":          "tls.key_file",
 		"JANUS_TLS_CLIENT_CA_FILE":    "tls.client_ca_file",
+		"JANUS_CORS_ALLOWED_ORIGINS":  "cors.allowed_origins",
 		"JANUS_LOG_LEVEL":             "log.level",
 		"JANUS_LOG_FORMAT":            "log.format",
 		"JANUS_METRICS_ENABLED":       "metrics.enabled",
