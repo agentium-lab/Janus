@@ -150,9 +150,15 @@ func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
 		taskID = fmt.Sprintf("run_%d", time.Now().UnixNano())
 	}
 
+	if req.Target == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "target is required; call GET /v1/tenants/{tenant}/catalog to discover capabilities",
+		})
+		return
+	}
 	targetType := core.TargetType(req.TargetType)
 	if targetType == "" {
-		targetType = core.TargetType("intent")
+		targetType = core.TargetTypeCapability
 	}
 
 	task := core.Task{

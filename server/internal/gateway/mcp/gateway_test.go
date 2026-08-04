@@ -57,7 +57,7 @@ func TestMCP_ToolCall(t *testing.T) {
 	assert.Equal(t, core.TargetTypeCapability, taskSvc.created.TargetType)
 }
 
-func TestMCP_ToolCallNoTarget(t *testing.T) {
+func TestMCP_ToolCallNoTarget_400(t *testing.T) {
 	taskSvc := &mockTaskCreator{}
 	gw := NewGateway(taskSvc, nil, nil)
 
@@ -67,9 +67,8 @@ func TestMCP_ToolCallNoTarget(t *testing.T) {
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Equal(t, core.TargetType("intent"), taskSvc.created.TargetType,
-		"no explicit target should default to intent")
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Nil(t, taskSvc.created)
 }
 
 func TestMCP_Resource(t *testing.T) {
@@ -171,7 +170,7 @@ func TestMCP_ResourceError(t *testing.T) {
 func TestMCP_ToolCallCreateError(t *testing.T) {
 	taskSvc := &mockTaskCreator{err: fmt.Errorf("db down")}
 	gw := NewGateway(taskSvc, nil, nil)
-	body := `{"call_id":"c1","tool_name":"x"}`
+	body := `{"call_id":"c1","tool_name":"x","target":"cap-x"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
 	req = withAuthCtx(req)
 	w := httptest.NewRecorder()
@@ -182,7 +181,7 @@ func TestMCP_ToolCallCreateError(t *testing.T) {
 func TestMCP_ToolCallAutoID(t *testing.T) {
 	taskSvc := &mockTaskCreator{}
 	gw := NewGateway(taskSvc, nil, nil)
-	body := `{"tool_name":"search"}`
+	body := `{"tool_name":"search","target":"search-cap"}`
 	req := httptest.NewRequest("POST", "/mcp/tools/call?tenant_id=acme", strings.NewReader(body))
 	req = withAuthCtx(req)
 	w := httptest.NewRecorder()

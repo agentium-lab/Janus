@@ -150,6 +150,45 @@ func (r *AgentRepository) FindByCapability(ctx context.Context, tenantID, capabi
 	return scanAgents(rows)
 }
 
+func (r *AgentRepository) ListOnlineWithCapabilities(ctx context.Context, tenantID string) ([]*core.Agent, error) {
+	agents, err := r.ListByStatus(ctx, tenantID, core.AgentStatusOnline)
+	if err != nil {
+		return nil, err
+	}
+	if len(agents) == 0 {
+		return agents, nil
+	}
+
+	ids := make([]string, len(agents))
+	for i, a := range agents {
+		ids[i] = a.ID
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT agent_id, capability, schema::text, description
+		 FROM agent_capabilities
+		 WHERE tenant_id = $1 AND agent_id = ANY($2)
+		 ORDER BY agent_id, capability`,
+		tenantID, ids,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	caps := make(map[string][]core.AgentCapability)
+	for rows.Next() {
+		var c core.AgentCapability
+		if err := rows.Scan(&c.AgentID, &c.Capability, &c.Schema, &c.Description); err != nil {
+			return nil, err
+		}
+		caps[c.AgentID] = append(caps[c.AgentID], c)
+	}
+	for _, a := range agents {
+		a.Capabilities = caps[a.ID]
+	}
+	return agents, nil
+}
+
 func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 	var agents []*core.Agent
 	for rows.Next() {

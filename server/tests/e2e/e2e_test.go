@@ -149,6 +149,7 @@ func TestMain(m *testing.M) {
 
 	dispatchH := handler.NewDispatchHandler(&e2eDispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&e2eAuditAdapter{svc: eventSvc})
+	catalogH := handler.NewCatalogHandler(agentRepo)
 
 	mux := newTestRouter(
 		handler.NewTenantHandler(tenantSvc),
@@ -159,6 +160,7 @@ func TestMain(m *testing.M) {
 		auditH,
 		mcpGw,
 		wsH,
+		catalogH,
 	)
 
 	server = httptest.NewServer(mux)
@@ -493,7 +495,7 @@ func mustRequest(t *testing.T, method, path string, body interface{}) *http.Resp
 	return resp
 }
 
-func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, mcpGw http.Handler, wsH http.Handler) http.Handler {
+func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, mcpGw http.Handler, wsH http.Handler, catalogH *handler.CatalogHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.Handle("/ws", withTenantCtx(wsH))
@@ -527,6 +529,8 @@ func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler,
 			} else {
 				agentH.List(w, r)
 			}
+		case hasSfx(p, "/catalog"):
+			getOnly(w, r, catalogH.List)
 		case hasSfx(p, "/complete"):
 			postOnly(w, r, taskH.Complete)
 		case hasSfx(p, "/fail"):

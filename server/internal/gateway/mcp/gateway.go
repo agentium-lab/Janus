@@ -117,10 +117,11 @@ func (g *Gateway) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		callID = fmt.Sprintf("mcp_call_%d", time.Now().UnixNano())
 	}
 
-	targetType := core.TargetType("intent")
-	if req.Target != "" {
-		targetType = core.TargetTypeCapability
+	if req.Target == "" {
+		writeMCPError(w, http.StatusBadRequest, "TARGET_REQUIRED", "target is required; call GET /v1/tenants/{tenant}/catalog to discover capabilities")
+		return
 	}
+	targetType := core.TargetTypeCapability
 
 	task := core.Task{
 		ID:          callID,

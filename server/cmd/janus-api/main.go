@@ -120,6 +120,7 @@ func main() {
 
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv)
 	dlqH := handler.NewDLQHandler(dlqSvc)
+	catalogH := handler.NewCatalogHandler(agentRepo)
 
 	rawEventCh := make(chan core.JanusEvent, 256)
 	_, err = natsDrv.SubscribeEvents(context.Background(), rawEventCh)
@@ -199,7 +200,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH)
 
 	combined := http.NewServeMux()
 	combined.Handle("/metrics", promhttp.Handler())
@@ -319,7 +320,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -359,12 +360,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, agentH.Heartbeat)
 		case hasSegment(p, "agents") && !hasLastSegment(p, "agents"):
 			getOnly(w, r, agentH.Get)
-		case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
-			if r.Method == http.MethodPost {
-				agentH.Register(w, r)
-			} else {
-				agentH.List(w, r)
-			}
+	case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
+		if r.Method == http.MethodPost {
+			agentH.Register(w, r)
+		} else {
+			agentH.List(w, r)
+		}
+	case hasSuffix(p, "/catalog"):
+		getOnly(w, r, catalogH.List)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/start"):
 			postOnly(w, r, dispatchH.Start)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/heartbeat"):

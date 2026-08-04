@@ -93,7 +93,7 @@ func TestACP_RunStatus(t *testing.T) {
 	assert.Equal(t, "completed", resp["status"])
 }
 
-func TestACP_RunDefaultIntent(t *testing.T) {
+func TestACP_RunNoTarget_400(t *testing.T) {
 	taskSvc := &mockTaskCreator{}
 	gw := NewGateway(nil, taskSvc, nil)
 
@@ -103,8 +103,8 @@ func TestACP_RunDefaultIntent(t *testing.T) {
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusCreated, w.Code)
-	assert.Equal(t, core.TargetType("intent"), taskSvc.createdTask.TargetType)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Nil(t, taskSvc.createdTask)
 }
 
 func TestACP_NotFound(t *testing.T) {
