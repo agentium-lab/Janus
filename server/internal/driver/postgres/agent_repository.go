@@ -164,7 +164,7 @@ func (r *AgentRepository) ListOnlineWithCapabilities(ctx context.Context, tenant
 		ids[i] = a.ID
 	}
 	rows, err := r.pool.Query(ctx,
-		`SELECT agent_id, capability, schema::text, description
+		`SELECT agent_id, capability, COALESCE(schema::text, ''), COALESCE(description, '')
 		 FROM agent_capabilities
 		 WHERE tenant_id = $1 AND agent_id = ANY($2)
 		 ORDER BY agent_id, capability`,
