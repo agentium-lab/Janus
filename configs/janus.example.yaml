@@ -62,3 +62,12 @@ observability:
     endpoint: ""
     service_name: "janus-api"
     insecure: true
+
+llm:
+  enabled: false
+  provider: "openai"
+  model: "gpt-4o-mini"
+  api_key: "${JANUS_LLM_API_KEY}"
+  base_url: "https://api.openai.com/v1"
+  max_tokens: 200
+  timeout_seconds: 5

@@ -29,3 +29,11 @@ data:
     redis:
       addr: {{ .Values.redis.addr | quote }}
       db: {{ .Values.redis.db }}
+    llm:
+      enabled: {{ .Values.config.llm.enabled | default false }}
+      provider: {{ .Values.config.llm.provider | default "openai" | quote }}
+      model: {{ .Values.config.llm.model | default "gpt-4o-mini" | quote }}
+      api_key: {{ .Values.config.llm.apiKey | default "" | quote }}
+      base_url: {{ .Values.config.llm.baseUrl | default "https://api.openai.com/v1" | quote }}
+      max_tokens: {{ .Values.config.llm.maxTokens | default 200 }}
+      timeout_seconds: {{ .Values.config.llm.timeoutSeconds | default 5 }}
