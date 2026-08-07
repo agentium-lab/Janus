@@ -36,6 +36,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/heartbeat"
 	"github.com/agentium-lab/Janus/server/internal/lease"
+	"github.com/agentium-lab/Janus/server/internal/llm"
 	_ "github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/observability"
@@ -44,8 +45,41 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/expiry"
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
+	"github.com/agentium-lab/Janus/server/internal/service/intent"
 	"github.com/agentium-lab/Janus/server/internal/service/routing"
 )
+
+type intentAgentLookup struct {
+	repo *pgdriver.AgentRepository
+}
+
+func (l *intentAgentLookup) ListOnlineAgents(ctx context.Context, tenantID string) ([]core.Agent, error) {
+	ptrs, err := l.repo.ListOnlineWithCapabilities(ctx, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]core.Agent, len(ptrs))
+	for i, a := range ptrs {
+		out[i] = *a
+	}
+	return out, nil
+}
+
+type intentAdapter struct {
+	r *intent.IntentResolver
+}
+
+func (a *intentAdapter) Resolve(ctx context.Context, tenantID, intentValue string, payload core.Payload, contextRefs []core.ContextRef, policyHints []string) (*service.IntentResolveResult, error) {
+	result, err := a.r.Resolve(ctx, tenantID, intentValue, payload, contextRefs, policyHints)
+	if err != nil {
+		return nil, err
+	}
+	return &service.IntentResolveResult{
+		ResolvedCapability: result.ResolvedCapability,
+		Confidence:         result.Confidence,
+		Reason:             result.Reason,
+	}, nil
+}
 
 func main() {
 	cfg := config.Load()
@@ -96,8 +130,22 @@ func main() {
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(redisDrv)
+
+	var llmClient *llm.Client
+	if cfg.LLM.Enabled && cfg.LLM.APIKey != "" {
+		llmClient = llm.NewClient(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.MaxTokens, cfg.LLM.TimeoutSeconds)
+		log.Println("LLM intent resolution enabled")
+	} else if cfg.LLM.Enabled {
+		log.Println("warning: LLM enabled but API key not set; keyword fallback only")
+	}
+
+	intentResolver := intent.NewResolver(&intentAgentLookup{repo: agentRepo})
+	if llmClient != nil {
+		intentResolver = intentResolver.WithLLM(llmClient)
+	}
+
 	router := routing.NewRouter(lookupRepo, nil, nil)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver})
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)

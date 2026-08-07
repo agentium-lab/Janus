@@ -108,6 +108,9 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		return nil, fmt.Errorf("target type is required")
 	}
 
+	if task.TargetType == core.TargetType("intent") && s.intentResolver == nil {
+		return nil, fmt.Errorf("intent routing not available; configure LLM (JANUS_LLM_ENABLED=true) or use target_type: capability")
+	}
 	if task.TargetType == core.TargetType("intent") && s.intentResolver != nil {
 		hints := []string{}
 		if task.Envelope.Policy != nil {

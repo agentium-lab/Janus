@@ -23,8 +23,19 @@ type Config struct {
 	Log        LogConfig      `mapstructure:"log"`
 	Metrics    MetricsConfig  `mapstructure:"metrics"`
 	Tracing    TracingConfig  `mapstructure:"tracing"`
-	Outbox     OutboxConfig   `mapstructure:"outbox"`
-	Artifacts  ArtifactsConfig `mapstructure:"artifacts"`
+	Outbox     OutboxConfig    `mapstructure:"outbox"`
+	Artifacts  ArtifactsConfig  `mapstructure:"artifacts"`
+	LLM        LLMConfig        `mapstructure:"llm"`
+}
+
+type LLMConfig struct {
+	Enabled        bool   `mapstructure:"enabled"`
+	Provider       string `mapstructure:"provider"`
+	Model          string `mapstructure:"model"`
+	APIKey         string `mapstructure:"api_key"`
+	BaseURL        string `mapstructure:"base_url"`
+	MaxTokens      int    `mapstructure:"max_tokens"`
+	TimeoutSeconds int    `mapstructure:"timeout_seconds"`
 }
 
 type PostgresConfig struct {
@@ -188,6 +199,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("outbox.max_attempts", 10)
 	v.SetDefault("artifacts.store_type", "local")
 	v.SetDefault("artifacts.local_dir", "/tmp/janus-artifacts")
+
+	v.SetDefault("llm.enabled", false)
+	v.SetDefault("llm.provider", "openai")
+	v.SetDefault("llm.model", "gpt-4o-mini")
+	v.SetDefault("llm.base_url", "https://api.openai.com/v1")
+	v.SetDefault("llm.max_tokens", 200)
+	v.SetDefault("llm.timeout_seconds", 5)
 }
 
 func bindEnvVars(v *viper.Viper) {
@@ -229,6 +247,13 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_OUTBOX_MAX_ATTEMPTS":    "outbox.max_attempts",
 		"JANUS_ARTIFACTS_STORE_TYPE":   "artifacts.store_type",
 		"JANUS_ARTIFACTS_LOCAL_DIR":    "artifacts.local_dir",
+		"JANUS_LLM_ENABLED":            "llm.enabled",
+		"JANUS_LLM_PROVIDER":           "llm.provider",
+		"JANUS_LLM_MODEL":              "llm.model",
+		"JANUS_LLM_API_KEY":            "llm.api_key",
+		"JANUS_LLM_BASE_URL":           "llm.base_url",
+		"JANUS_LLM_MAX_TOKENS":         "llm.max_tokens",
+		"JANUS_LLM_TIMEOUT_SECONDS":    "llm.timeout_seconds",
 	}
 
 	v.SetEnvPrefix("")

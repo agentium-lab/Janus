@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
@@ -131,4 +132,52 @@ func TestIntentResolver_NoAgents(t *testing.T) {
 	result, err := r.Resolve(context.Background(), "acme", "code_review", core.Payload{}, nil, nil)
 	require.NoError(t, err)
 	assert.Empty(t, result.ResolvedCapability)
+}
+
+type fakeLLM struct {
+	resp string
+	err  error
+}
+
+func (f *fakeLLM) Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
+	return f.resp, f.err
+}
+
+func TestResolve_LLMMatch(t *testing.T) {
+	lookup := &mockAgentLookup{
+		agents: []core.Agent{
+			{ID: "a1", Status: core.AgentStatusOnline, Capabilities: []core.AgentCapability{{Capability: "code_review", Description: "reviews code"}}},
+			{ID: "a2", Status: core.AgentStatusOnline, Capabilities: []core.AgentCapability{{Capability: "deploy", Description: "deploys"}}},
+		},
+	}
+	r := NewResolver(lookup).WithLLM(&fakeLLM{resp: "code_review"})
+	result, err := r.Resolve(context.Background(), "acme", "review my PR", core.Payload{}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "code_review", result.ResolvedCapability)
+	assert.Equal(t, 1.0, result.Confidence)
+	assert.Equal(t, "llm-resolved", result.Reason)
+}
+
+func TestResolve_LLMNone_FallbackKeyword(t *testing.T) {
+	lookup := &mockAgentLookup{
+		agents: []core.Agent{
+			{ID: "a1", Status: core.AgentStatusOnline, Capabilities: []core.AgentCapability{{Capability: "code_review", Description: "reviews"}}},
+		},
+	}
+	r := NewResolver(lookup).WithLLM(&fakeLLM{resp: "NONE"})
+	result, err := r.Resolve(context.Background(), "acme", "code_review", core.Payload{}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "code_review", result.ResolvedCapability, "NONE should fall through to keyword")
+}
+
+func TestResolve_LLMError_FallbackKeyword(t *testing.T) {
+	lookup := &mockAgentLookup{
+		agents: []core.Agent{
+			{ID: "a1", Status: core.AgentStatusOnline, Capabilities: []core.AgentCapability{{Capability: "code_review", Description: "reviews code"}}},
+		},
+	}
+	r := NewResolver(lookup).WithLLM(&fakeLLM{err: fmt.Errorf("timeout")})
+	result, err := r.Resolve(context.Background(), "acme", "code_review", core.Payload{}, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "code_review", result.ResolvedCapability, "LLM error should fall through to keyword")
 }

@@ -3,6 +3,7 @@ package intent
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
@@ -10,10 +11,15 @@ import (
 
 type IntentResolver struct {
 	lookup AgentLookup
+	llm    LLMCompleter
 }
 
 type AgentLookup interface {
 	ListOnlineAgents(ctx context.Context, tenantID string) ([]core.Agent, error)
+}
+
+type LLMCompleter interface {
+	Complete(ctx context.Context, systemPrompt, userPrompt string) (string, error)
 }
 
 type ResolveResult struct {
@@ -33,10 +39,53 @@ func NewResolver(lookup AgentLookup) *IntentResolver {
 	return &IntentResolver{lookup: lookup}
 }
 
+func (r *IntentResolver) WithLLM(client LLMCompleter) *IntentResolver {
+	r.llm = client
+	return r
+}
+
 func (r *IntentResolver) Resolve(ctx context.Context, tenantID, intentValue string, payload core.Payload, contextRefs []core.ContextRef, policyHints []string) (*ResolveResult, error) {
 	agents, err := r.lookup.ListOnlineAgents(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list online agents: %w", err)
+	}
+
+	if r.llm != nil {
+		catalogSet := make(map[string]bool)
+		var catalogLines []string
+		for _, agent := range agents {
+			for _, cap := range agent.Capabilities {
+				if !catalogSet[cap.Capability] {
+					catalogSet[cap.Capability] = true
+					line := "- " + cap.Capability
+					if cap.Description != "" {
+						line += ": " + cap.Description
+					}
+					catalogLines = append(catalogLines, line)
+				}
+			}
+		}
+		if len(catalogSet) > 0 {
+			catalog := strings.Join(catalogLines, "\n")
+			systemPrompt := "You are a task router. Select the best matching capability for the user's request from the catalog below. Respond with ONLY the capability name, or NONE if nothing matches."
+			userPrompt := "User request: " + intentValue + "\n\nAvailable capabilities:\n" + catalog
+			if resp, err := r.llm.Complete(ctx, systemPrompt, userPrompt); err == nil {
+				matched := strings.TrimSpace(resp)
+				if idx := strings.Index(matched, "\n"); idx > 0 {
+					matched = matched[:idx]
+				}
+				matched = strings.TrimSpace(strings.Trim(matched, "`\"'* "))
+				if catalogSet[matched] {
+					return &ResolveResult{
+						ResolvedCapability: matched,
+						Confidence:         1.0,
+						Reason:             "llm-resolved",
+					}, nil
+				}
+			} else {
+				log.Printf("intent llm: %v (falling back to keyword)", err)
+			}
+		}
 	}
 
 	intentLower := strings.ToLower(intentValue)
