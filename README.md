@@ -110,7 +110,7 @@ if result:
 - **Budget control** — RPM/TPM/concurrency per tenant/team/agent (cost limits planned — awaiting trusted token metering)
 - **Approval workflow** — human-in-the-loop for high-risk tasks
 - **Capability routing** — hard constraints (online/classification/policy/capacity/budget) + semantic scoring
-- **Intent resolver** — natural language to capability target
+- **Intent resolver** — natural language to capability target (optional LLM-powered; keyword fallback when LLM not configured; see `JANUS_LLM_*` env vars)
 - **12 policy templates** — one-line rules for common governance patterns
 
 ### Protocols
