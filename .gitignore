@@ -35,3 +35,5 @@ dist/
 # Local-only directories (not tracked)
 docs/
 demo/
+.codegraph/
+server/janus-api

@@ -228,15 +228,24 @@ func main() {
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 
-	hbSweeper := heartbeat.NewSweeper(redisDrv, agentRepo, 30*time.Second)
+	scannerInterval := 30 * time.Second
+	if v := os.Getenv("JANUS_SCANNER_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			scannerInterval = d
+		} else {
+			log.Printf("invalid JANUS_SCANNER_INTERVAL %q, using 30s", v)
+		}
+	}
+
+	hbSweeper := heartbeat.NewSweeper(redisDrv, agentRepo, scannerInterval)
 	go hbSweeper.Start(context.Background())
 	defer hbSweeper.Stop()
 
-	expiryScanner := expiry.NewScanner(taskRepo, 30*time.Second)
+	expiryScanner := expiry.NewScanner(taskRepo, scannerInterval)
 	go expiryScanner.Start(context.Background())
 	defer expiryScanner.Stop()
 
-	leaseScanner := lease.NewScanner(pool, 30*time.Second)
+	leaseScanner := lease.NewScanner(pool, scannerInterval)
 	go leaseScanner.Start(context.Background())
 	defer leaseScanner.Stop()
 
