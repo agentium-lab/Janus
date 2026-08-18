@@ -47,6 +47,12 @@ func (s *AgentService) Register(ctx context.Context, agent core.Agent) error {
 		return fmt.Errorf("register agent: %w", err)
 	}
 
+	if len(agent.Capabilities) > 0 {
+		if err := s.agentRepo.UpsertCapabilities(ctx, agent); err != nil {
+			return fmt.Errorf("upsert capabilities: %w", err)
+		}
+	}
+
 	if err := s.hbDriver.Ping(ctx, agent.TenantID, agent.ID); err != nil {
 		return fmt.Errorf("initial heartbeat: %w", err)
 	}

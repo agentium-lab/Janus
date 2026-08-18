@@ -35,6 +35,13 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 		Endpoint       string `json:"endpoint"`
 		Description    string `json:"description"`
 		MaxConcurrency int    `json:"max_concurrency"`
+		RPM            int    `json:"rpm"`
+		TPM            int    `json:"tpm"`
+		Capabilities   []struct {
+			Capability  string `json:"capability"`
+			Description string `json:"description"`
+			Schema      string `json:"schema"`
+		} `json:"capabilities"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -45,7 +52,14 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, TenantID: tenantID, TeamID: req.TeamID, DisplayName: req.DisplayName,
 		Protocol: core.AgentProtocol(req.Protocol), Endpoint: req.Endpoint,
 		Description: req.Description, MaxConcurrency: req.MaxConcurrency,
+		RPM: req.RPM, TPM: req.TPM,
 		Status: core.AgentStatusOffline,
+	}
+	for _, c := range req.Capabilities {
+		agent.Capabilities = append(agent.Capabilities, core.AgentCapability{
+			TenantID: tenantID, AgentID: req.ID,
+			Capability: c.Capability, Description: c.Description, Schema: c.Schema,
+		})
 	}
 	if agent.MaxConcurrency <= 0 {
 		agent.MaxConcurrency = 1

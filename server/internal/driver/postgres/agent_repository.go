@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -27,6 +28,38 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 		agent.MaxConcurrency, nilIfZero(agent.RPM), nilIfZero(agent.TPM),
 	)
 	return err
+}
+
+func (r *AgentRepository) UpsertCapabilities(ctx context.Context, agent core.Agent) error {
+	if len(agent.Capabilities) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin capabilities tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM agent_capabilities WHERE tenant_id = $1 AND agent_id = $2`,
+		agent.TenantID, agent.ID,
+	); err != nil {
+		return fmt.Errorf("clear capabilities: %w", err)
+	}
+
+	for _, c := range agent.Capabilities {
+		if c.Capability == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO agent_capabilities (tenant_id, agent_id, capability, schema, description)
+			 VALUES ($1, $2, $3, NULLIF($4, '')::jsonb, NULLIF($5, ''))`,
+			agent.TenantID, agent.ID, c.Capability, c.Schema, c.Description,
+		); err != nil {
+			return fmt.Errorf("insert capability %s: %w", c.Capability, err)
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *AgentRepository) Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error) {

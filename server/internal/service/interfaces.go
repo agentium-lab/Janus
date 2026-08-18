@@ -15,6 +15,7 @@ type TenantRepo interface {
 
 type AgentRepo interface {
 	Register(ctx context.Context, agent core.Agent) error
+	UpsertCapabilities(ctx context.Context, agent core.Agent) error
 	Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error)
 	List(ctx context.Context, tenantID string) ([]*core.Agent, error)
 	ListByStatus(ctx context.Context, tenantID string, status core.AgentStatus) ([]*core.Agent, error)

@@ -22,11 +22,11 @@ const (
 
 // AgentCapability represents a single capability of an agent.
 type AgentCapability struct {
-	TenantID    string
-	AgentID     string
-	Capability  string
-	Schema      string
-	Description string
+	TenantID    string `json:"tenant_id,omitempty"`
+	AgentID     string `json:"agent_id,omitempty"`
+	Capability  string `json:"capability"`
+	Schema      string `json:"schema,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // Agent represents a registered agent in Janus.

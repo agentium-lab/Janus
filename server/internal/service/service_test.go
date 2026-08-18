@@ -111,6 +111,10 @@ func (m *mockAgentRepo) Register(_ context.Context, a core.Agent) error {
 	return nil
 }
 
+func (m *mockAgentRepo) UpsertCapabilities(_ context.Context, a core.Agent) error {
+	return nil
+}
+
 func (m *mockAgentRepo) Get(_ context.Context, tenantID, agentID string) (*core.Agent, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -978,6 +982,10 @@ func (m *mockAgentRepoFailOn) Register(_ context.Context, a core.Agent) error {
 		m.agents = make(map[string]*core.Agent)
 	}
 	m.agents[a.TenantID+":"+a.ID] = &a
+	return nil
+}
+
+func (m *mockAgentRepoFailOn) UpsertCapabilities(_ context.Context, a core.Agent) error {
 	return nil
 }
 
