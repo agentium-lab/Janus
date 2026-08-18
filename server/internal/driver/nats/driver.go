@@ -13,6 +13,12 @@ import (
 	"github.com/agentium-lab/Janus/core"
 )
 
+// maxPendingEntries caps the in-flight pending map. When the cap is reached,
+// the oldest entries are evicted (their Msg is Nak()'d back to JetStream so
+// redelivery happens rather than silent loss). This prevents unbounded growth
+// if a consumer fetches but never ACKs (e.g. agent crash, slow processing).
+const maxPendingEntries = 4096
+
 type contextKey string
 
 const tenantCtxKey contextKey = "janus_tenant"
@@ -393,6 +399,17 @@ func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent)
 func (d *Driver) StorePending(ref core.DeliveryRef, msg jetstream.Msg) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if len(d.pending) >= maxPendingEntries {
+		for k, m := range d.pending {
+			if m != nil {
+				_ = m.Nak()
+			}
+			delete(d.pending, k)
+			if len(d.pending) < maxPendingEntries/2 {
+				break
+			}
+		}
+	}
 	d.pending[ref] = msg
 }
 
@@ -447,16 +464,20 @@ func sanitize(s string) string {
 }
 
 type eventIterator struct {
-	msgs   <-chan jetstream.Msg
-	js     jetstream.JetStream
-	stream string
-	name   string
+	msgs      <-chan jetstream.Msg
+	js        jetstream.JetStream
+	stream    string
+	name      string
+	closeOnce sync.Once
 }
 
 func (it *eventIterator) Next(ctx context.Context) (*core.JanusEvent, error) {
 	select {
 	case msg, ok := <-it.msgs:
 		if !ok {
+			// Channel closed: batch exhausted. Release the consumer so the
+			// ephemeral replay consumer does not linger on the stream.
+			_ = it.Close()
 			return nil, nil
 		}
 		msg.Ack()
@@ -471,8 +492,10 @@ func (it *eventIterator) Next(ctx context.Context) (*core.JanusEvent, error) {
 }
 
 func (it *eventIterator) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	it.js.DeleteConsumer(ctx, it.stream, it.name)
+	it.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = it.js.DeleteConsumer(ctx, it.stream, it.name)
+	})
 	return nil
 }

@@ -74,15 +74,15 @@ func (s *Scanner) scan(ctx context.Context) {
 // transitions them. Returns the number of attempts expired.
 //
 // The transition follows the mailbox retry policy: if attempt_count has not
-// exceeded max_deliver, the task is moved to retry_scheduled with a retry_at;
-// otherwise it is dead_lettered. Attempt status is set to 'failed'.
+// exceeded RetryPolicy.MaxAttempts, the task is moved to retry_scheduled with a
+// retry_at; otherwise it is dead_lettered. Attempt status is set to 'failed'.
 func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 	// Select expired in-flight attempts along with the mailbox ack_wait and
 	// retry policy needed to decide retry vs DLQ.
 	rows, err := s.pool.Query(ctx,
 		`SELECT ta.tenant_id, ta.task_id, ta.attempt, ta.agent_id,
 		        t.mailbox_id, t.attempt_count, t.priority, t.envelope,
-		        m.ack_wait_seconds, m.max_deliver
+		        m.ack_wait_seconds, m.max_deliver, m.retry_policy
 		 FROM task_attempts ta
 		 JOIN tasks t ON ta.tenant_id = t.tenant_id AND ta.task_id = t.id
 		 LEFT JOIN mailboxes m ON t.tenant_id = m.tenant_id AND t.mailbox_id = m.id
@@ -100,13 +100,18 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 		Priority                             core.Priority
 		Envelope                             []byte
 		AckWait, MaxDeliver                  int
+		RetryPolicy                          core.RetryPolicy
 	}
 	var list []expired
 	for rows.Next() {
 		var e expired
+		var retryJSON []byte
 		if err := rows.Scan(&e.TenantID, &e.TaskID, &e.Attempt, &e.AgentID,
-			&e.MailboxID, &e.AttemptCount, &e.Priority, &e.Envelope, &e.AckWait, &e.MaxDeliver); err != nil {
+			&e.MailboxID, &e.AttemptCount, &e.Priority, &e.Envelope, &e.AckWait, &e.MaxDeliver, &retryJSON); err != nil {
 			return 0, fmt.Errorf("scan expired lease: %w", err)
+		}
+		if len(retryJSON) > 0 {
+			_ = json.Unmarshal(retryJSON, &e.RetryPolicy)
 		}
 		list = append(list, e)
 	}
@@ -142,9 +147,9 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 				return false
 			}
 
-			canRetry := e.MaxDeliver <= 0 || e.AttemptCount < e.MaxDeliver
+			canRetry := !e.RetryPolicy.ExceedsMaxAttempts(e.AttemptCount)
 			if canRetry {
-				retryAt := time.Now().Add(backoff(e.AttemptCount))
+				retryAt := time.Now().Add(e.RetryPolicy.BackoffDuration(e.AttemptCount))
 				if _, err := tx.Exec(ctx,
 					`UPDATE tasks SET status = 'retry_scheduled', retry_at = $1, updated_at = now()
 					 WHERE tenant_id = $2 AND id = $3 AND status IN ('claimed', 'running')`,

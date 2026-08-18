@@ -97,6 +97,11 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 	if err != nil {
 		return nil, err
 	}
+	// Deferred rollback is a no-op once Commit succeeds (pgx returns
+	// ErrTxCommitRollback'd / the conn is already closed). It guarantees that
+	// any early return between Begin and Commit — including the rows.Err()
+	// path below — releases the transaction.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	rows, err := tx.Query(ctx,
 		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
@@ -108,7 +113,6 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 		 LIMIT $1 FOR UPDATE SKIP LOCKED`, limit,
 	)
 	if err != nil {
-		tx.Rollback(ctx)
 		return nil, err
 	}
 	defer rows.Close()
@@ -117,13 +121,11 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 	for rows.Next() {
 		var e OutboxEntry
 		if err := rows.Scan(&e.ID, &e.TenantID, &e.Kind, &e.Payload, &e.Status, &e.Attempts, &e.CreatedAt); err != nil {
-			tx.Rollback(ctx)
 			return nil, err
 		}
 		entries = append(entries, e)
 	}
 	if err := rows.Err(); err != nil {
-		tx.Rollback(ctx)
 		return nil, err
 	}
 
@@ -143,7 +145,6 @@ func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry
 			e.ID, workerID, lease,
 		)
 		if err != nil {
-			tx.Rollback(ctx)
 			return nil, err
 		}
 	}

@@ -2,12 +2,17 @@ package handler
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
 type DLQService interface {
@@ -79,6 +84,8 @@ func tenantAndTaskFromDLQPath(path string) (string, string) {
 type DLQServiceAdapter struct {
 	taskRepo    DLQTaskRepo
 	queueDriver DLQQueueDriver
+	outboxRepo  *postgres.OutboxRepo
+	pool        *pgxpool.Pool
 }
 
 type DLQTaskRepo interface {
@@ -96,6 +103,15 @@ func NewDLQServiceAdapter(repo DLQTaskRepo, driver DLQQueueDriver) *DLQServiceAd
 	return &DLQServiceAdapter{taskRepo: repo, queueDriver: driver}
 }
 
+// WithOutbox wires the transactional outbox + pool so ReplayDLQ commits the
+// status transition together with the task_publish/event_publish outbox rows
+// in a single transaction instead of publishing directly to the queue driver.
+func (a *DLQServiceAdapter) WithOutbox(outboxRepo *postgres.OutboxRepo, pool *pgxpool.Pool) *DLQServiceAdapter {
+	a.outboxRepo = outboxRepo
+	a.pool = pool
+	return a
+}
+
 func (a *DLQServiceAdapter) QueryDLQ(ctx context.Context, tenantID, mailboxID string, limit int) ([]*core.Task, error) {
 	if tenantID == "" {
 		return nil, nil
@@ -110,6 +126,12 @@ func (a *DLQServiceAdapter) ReplayDLQ(ctx context.Context, tenantID, taskID stri
 	}
 	if task.Status != core.TaskStatusDeadLettered {
 		return nil, fmt.Errorf("task is not dead_lettered, status: %s", task.Status)
+	}
+
+	// Atomic path: route through outbox inside a single tx when wired.
+	// Mirrors LifecycleService.ApplyTx + outbox pattern.
+	if a.pool != nil && a.outboxRepo != nil {
+		return a.replayDLQAtomic(ctx, tenantID, taskID, task)
 	}
 
 	if err := a.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusCreated, 0); err != nil {
@@ -138,6 +160,74 @@ func (a *DLQServiceAdapter) ReplayDLQ(ctx context.Context, tenantID, taskID stri
 	})
 
 	return a.taskRepo.Get(ctx, tenantID, taskID)
+}
+
+// replayDLQAtomic commits the task status transitions and the task_publish /
+// event_publish outbox rows in a single PG transaction. The direct queue
+// driver is bypassed; the outbox publisher will dispatch the rows reliably.
+func (a *DLQServiceAdapter) replayDLQAtomic(ctx context.Context, tenantID, taskID string, task *core.Task) (*core.Task, error) {
+	pgTaskRepo, ok := a.taskRepo.(*postgres.TaskRepository)
+	if !ok {
+		return nil, fmt.Errorf("replayDLQAtomic: postgres task repo required")
+	}
+
+	tx, err := a.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin dlq replay tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	if err := pgTaskRepo.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusCreated, 0); err != nil {
+		return nil, fmt.Errorf("set created: %w", err)
+	}
+
+	if task.MailboxID != "" {
+		envelopeJSON, _ := json.Marshal(task.Envelope)
+		queuePayload, _ := json.Marshal(core.TaskMessage{
+			TenantID: tenantID, MailboxID: task.MailboxID, TaskID: taskID,
+			Priority: task.Priority, Payload: envelopeJSON,
+		})
+		dedupeKey := fmt.Sprintf("task_publish:%s:%s:dlq_replay", tenantID, taskID)
+		if err := a.outboxRepo.InsertWithDedupe(ctx, tx, dlqULID(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
+			return nil, fmt.Errorf("outbox task_publish: %w", err)
+		}
+		if err := pgTaskRepo.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusQueued, 0); err != nil {
+			return nil, fmt.Errorf("set queued: %w", err)
+		}
+	}
+
+	createdPayload, _ := json.Marshal(core.JanusEvent{
+		EventType: core.EventTaskCreated, TenantID: tenantID, TaskID: taskID,
+		Payload: dlqMustMarshal(map[string]string{"status": "replayed_from_dlq"}),
+	})
+	if err := a.outboxRepo.Insert(ctx, tx, dlqULID(), tenantID, "event_publish", createdPayload); err != nil {
+		return nil, fmt.Errorf("outbox event_publish: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit dlq replay tx: %w", err)
+	}
+	committed = true
+
+	return a.taskRepo.Get(ctx, tenantID, taskID)
+}
+
+func dlqULID() string {
+	now := time.Now()
+	t := uint64(now.UnixMilli())
+	b := make([]byte, 10)
+	for i := 9; i >= 0; i-- {
+		b[i] = byte(t & 0xff)
+		t >>= 8
+	}
+	randBytes := make([]byte, 6)
+	_, _ = cryptorand.Read(randBytes)
+	return fmt.Sprintf("%x%x", b, randBytes)
 }
 
 func (a *DLQServiceAdapter) DiscardDLQ(ctx context.Context, tenantID, taskID string) error {

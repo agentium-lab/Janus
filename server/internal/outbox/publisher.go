@@ -58,8 +58,16 @@ func (p *Publisher) Stop() {
 	close(p.done)
 }
 
+// publishBatchTimeout caps how long a single publishBatch run may take. A
+// batch that exceeds this window aborts in-flight publishes (their entries stay
+// in 'publishing' and are reclaimed via the lease once it expires).
+const publishBatchTimeout = 30 * time.Second
+
 func (p *Publisher) publishBatch(ctx context.Context) {
-	entries, err := p.repo.FetchPending(ctx, 100)
+	batchCtx, cancel := context.WithTimeout(ctx, publishBatchTimeout)
+	defer cancel()
+
+	entries, err := p.repo.FetchPending(batchCtx, 100)
 	if err != nil {
 		log.Printf("outbox fetch: %v", err)
 		return
@@ -68,10 +76,10 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 
 	for _, e := range entries {
 		metrics.OutboxPublishTotal.Inc()
-		if err := p.publishOne(ctx, e); err != nil {
+		if err := p.publishOne(batchCtx, e); err != nil {
 			metrics.OutboxPublishFailedTotal.Inc()
 			log.Printf("outbox publish %s: %v", e.ID, err)
-			_ = p.repo.MarkFailedWithReason(ctx, e.ID, err.Error())
+			_ = p.repo.MarkFailedWithReason(batchCtx, e.ID, err.Error())
 			continue
 		}
 		// NATS publish succeeded. If MarkPublished fails here, the row stays
@@ -81,8 +89,11 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 		// drops the redelivery as a duplicate. Log the mark failure so it is
 		// observable; do NOT call MarkFailed (that would retry immediately,
 		// increasing duplicate risk).
-		if err := p.repo.MarkPublished(ctx, e.ID); err != nil {
+		if err := p.repo.MarkPublished(batchCtx, e.ID); err != nil {
 			log.Printf("outbox mark-published %s failed (will be reclaimed via lease): %v", e.ID, err)
+		}
+		if batchCtx.Err() != nil {
+			break
 		}
 	}
 }

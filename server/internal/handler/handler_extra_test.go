@@ -378,3 +378,33 @@ func TestAgentHandler_Register_DefaultConcurrency(t *testing.T) {
 	h.Register(w, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
 }
+
+func TestSanitizeError_RedactsInternalLeaks(t *testing.T) {
+	cases := []struct {
+		name   string
+		msg    string
+		status int
+		want   string
+	}{
+		{"sql driver error on 5xx", "pq: connection refused", 500, "internal server error"},
+		{"sql driver error on 4xx", "duplicate key value violates", 400, "bad request"},
+		{"DSN leak on 5xx", "postgres://user:pass@host:5432/db?sslmode=disable", 500, "internal server error"},
+		{"DSN leak on 4xx", "host=db port=5432 user=u", 404, "bad request"},
+		{"runtime error on 5xx", "runtime error: invalid memory address", 500, "internal server error"},
+		{"generic 5xx becomes internal", "operation took too long", 500, "internal server error"},
+		{"safe message on 4xx passes through", "tenant id is required", 400, "tenant id is required"},
+		{"not found safe on 4xx", "not found", 404, "not found"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, sanitizeError(c.msg, c.status))
+		})
+	}
+}
+
+func TestReadJSONWithLimit_RejectsOversizedBody(t *testing.T) {
+	big := strings.Repeat("a", 1024)
+	req := httptest.NewRequest(http.MethodPost, "/x", strings.NewReader(big))
+	err := readJSONWithLimit(req, &struct{}{}, 16)
+	assert.Error(t, err)
+}
