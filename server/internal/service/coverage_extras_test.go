@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -844,6 +845,36 @@ func TestExtra_Create_EnvelopeValidationError(t *testing.T) {
 	assert.Contains(t, err.Error(), "envelope validation")
 }
 
+func extraTestDSN() string {
+	host := os.Getenv("JANUS_PG_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("JANUS_PG_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("JANUS_PG_USER")
+	if user == "" {
+		user = "silv"
+	}
+	return fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
+}
+
+func openExtraTestPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), extraTestDSN())
+	if err != nil {
+		t.Skipf("postgres not reachable: %v", err)
+	}
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Skipf("postgres not reachable: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
 func TestExtra_LifecycleService_ApplyTx_BeginError(t *testing.T) {
 	pool, err := pgxpool.New(context.Background(), "host=/tmp port=5433 user=silv dbname=nonexistent connect_timeout=2")
 	require.NoError(t, err)
@@ -855,11 +886,9 @@ func TestExtra_LifecycleService_ApplyTx_BeginError(t *testing.T) {
 }
 
 func TestExtra_LifecycleService_ApplyTx_FnError(t *testing.T) {
-	pool, err := pgxpool.New(context.Background(), "host=/tmp port=5432 user=silv dbname=janus_test")
-	require.NoError(t, err)
-	defer pool.Close()
+	pool := openExtraTestPool(t)
 	ls := NewLifecycleService(pool)
-	err = ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
+	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
 		return fmt.Errorf("fn error")
 	})
 	assert.Error(t, err)
@@ -867,11 +896,9 @@ func TestExtra_LifecycleService_ApplyTx_FnError(t *testing.T) {
 }
 
 func TestExtra_LifecycleService_ApplyTx_CommitError(t *testing.T) {
-	pool, err := pgxpool.New(context.Background(), "host=/tmp port=5432 user=silv dbname=janus_test")
-	require.NoError(t, err)
-	defer pool.Close()
+	pool := openExtraTestPool(t)
 	ls := NewLifecycleService(pool)
-	err = ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
+	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
 		_ = tx.Rollback(context.Background())
 		return nil
 	})

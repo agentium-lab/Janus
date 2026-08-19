@@ -215,9 +215,14 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if idempotencyKey != "" && result.CreatedAt.Before(createStart.Add(-1 * time.Millisecond)) {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, map[string]string{
-		"id":     result.ID,
-		"status": string(result.Status),
+	writeJSON(w, status, struct {
+		ID     string     `json:"id"`
+		Status string     `json:"status"`
+		Task   *core.Task `json:"task"`
+	}{
+		ID:     result.ID,
+		Status: string(result.Status),
+		Task:   result,
 	})
 }
 
