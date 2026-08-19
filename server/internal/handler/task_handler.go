@@ -42,6 +42,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Priority       string `json:"priority"`
 		TTLSeconds     int    `json:"ttl_seconds"`
 		Deadline       string `json:"deadline"`
+		ToolInvocation *core.ToolInvocation `json:"tool_invocation"`
 		Envelope       struct {
 			JanusVersion   string `json:"janus_version"`
 			TaskID         string `json:"task_id"`
@@ -81,6 +82,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				Classification string   `json:"classification"`
 				AccessScope    []string `json:"access_scope"`
 			} `json:"context_refs"`
+			ToolInvocation *core.ToolInvocation `json:"tool_invocation"`
 		} `json:"envelope"`
 	}
 	if err := readJSON(r, &req); err != nil {
@@ -181,6 +183,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 			Budget:         budget,
 			Policy:         policy,
 			ContextRefs:    contextRefs,
+			ToolInvocation: firstNonNil(req.ToolInvocation, req.Envelope.ToolInvocation),
 			Target: core.Target{
 				Type:  core.TargetType(req.Envelope.Target.Type),
 				Value: req.Envelope.Target.Value,
@@ -327,4 +330,11 @@ func tenantAndTaskFromPath(path string) (string, string) {
 		}
 	}
 	return tenantID, taskID
+}
+
+func firstNonNil(a, b *core.ToolInvocation) *core.ToolInvocation {
+	if a != nil {
+		return a
+	}
+	return b
 }

@@ -441,6 +441,20 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", completedPayload); oerr != nil {
 			return fmt.Errorf("outbox completed: %w", oerr)
 		}
+
+		if task.Envelope.ToolInvocation != nil {
+			toolPayload, _ := json.Marshal(map[string]string{
+				"tool_name":  task.Envelope.ToolInvocation.Name,
+				"result_ref": resultRef,
+			})
+			toolEvt, _ := json.Marshal(core.JanusEvent{
+				EventType: core.EventToolInvocationCompleted, TenantID: tenantID, TaskID: taskID,
+				SourceAgent: attempt.AgentID, Payload: toolPayload,
+			})
+			if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", toolEvt); oerr != nil {
+				return fmt.Errorf("outbox tool completed: %w", oerr)
+			}
+		}
 		committed = true
 		return nil
 	})

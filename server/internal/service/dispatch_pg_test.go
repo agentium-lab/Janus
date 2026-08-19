@@ -562,3 +562,108 @@ func TestTaskService_Create_IdempotentDedup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, first.ID, second.ID, "dedup should return same task")
 }
+
+func toolTask(id string) core.Task {
+	return core.Task{
+		ID: id, TenantID: "acme", MailboxID: "mb-1", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "mb-1",
+		Status: core.TaskStatusCreated, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{
+			JanusVersion: "1", TaskID: id, TenantID: "acme", SourceAgent: "agent-1",
+			Target: core.Target{Type: "mailbox", Value: "mb-1"},
+			Payload: core.Payload{Type: "json", Content: "{}"},
+			Trace:   core.TraceContext{TraceID: "trace-" + id},
+			ToolInvocation: &core.ToolInvocation{ID: id, Name: "search", Namespace: "mcp", SourceProtocol: "mcp"},
+		},
+	}
+}
+
+func TestTaskService_ToolEvent_AllowedDenied(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	allowed, err := env.taskSvc.Create(ctx, toolTask("tool-allow-1"))
+	require.NoError(t, err)
+	require.NotNil(t, allowed)
+
+	drv := env.driver
+	hasAllowed := false
+	for _, e := range drv.events {
+		if e.EventType == core.EventToolInvocationAllowed && e.TaskID == "tool-allow-1" {
+			hasAllowed = true
+		}
+	}
+	assert.True(t, hasAllowed, "tool.invocation_allowed should be published for tool tasks")
+
+	require.NoError(t, postgres.NewPolicyRuleRepository(env.pool).Create(ctx, core.PolicyRule{
+		TenantID:  "acme",
+		ID:        "rule-tool-deny-test",
+		Name:      "test deny mb-1",
+		Status:    "active",
+		Priority:  10,
+		Condition: json.RawMessage(`{"resource.value":"mb-1"}`),
+		Action:    json.RawMessage(`{"decision":"deny"}`),
+	}))
+	_, err = env.taskSvc.Create(ctx, toolTask("tool-deny-1"))
+	require.Error(t, err)
+	hasDenied := false
+	for _, e := range drv.events {
+		if e.EventType == core.EventToolInvocationDenied && e.TaskID == "tool-deny-1" {
+			hasDenied = true
+		}
+	}
+	assert.True(t, hasDenied, "tool.invocation_denied should be published on policy deny")
+
+	noTool := core.Task{
+		ID: "plain-tool-evt-2", TenantID: "acme", MailboxID: "mb-1", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "plain-target",
+		Status: core.TaskStatusCreated, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{
+			JanusVersion: "1", TaskID: "plain-tool-evt-2", TenantID: "acme", SourceAgent: "agent-1",
+			Target:  core.Target{Type: "mailbox", Value: "plain-target"},
+			Payload: core.Payload{Type: "json", Content: "{}"},
+			Trace:   core.TraceContext{TraceID: "trace-plain-tool-evt-2"},
+		},
+	}
+	_, err = env.taskSvc.Create(ctx, noTool)
+	require.NoError(t, err)
+	for _, e := range drv.events {
+		if e.TaskID == "plain-tool-evt-2" &&
+			(e.EventType == core.EventToolInvocationAllowed || e.EventType == core.EventToolInvocationDenied) {
+			t.Fatal("non-tool tasks must not emit tool.invocation_* events")
+		}
+	}
+}
+
+func TestDispatch_AckTask_ToolInvocationCompleted(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	tool := toolTask("tool-done-1")
+	tool.Status = core.TaskStatusQueued
+	require.NoError(t, env.taskRepo.Create(ctx, tool))
+
+	env.driver.deliveries = []core.TaskDelivery{{
+		TaskID: tool.ID, DeliveryRef: "delivery-tool-done-1",
+	}}
+	pulled, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, err)
+	require.NotNil(t, pulled)
+
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", tool.ID, pulled.LeaseID))
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", tool.ID, pulled.LeaseID, "ref-1", nil))
+
+	outbox, _ := env.outboxRepo.FetchPending(ctx, 100)
+	hasCompleted := false
+	for _, e := range outbox {
+		if e.Kind != "event_publish" {
+			continue
+		}
+		var event core.JanusEvent
+		if json.Unmarshal(e.Payload, &event) == nil &&
+			event.EventType == core.EventToolInvocationCompleted && event.TaskID == tool.ID {
+			hasCompleted = true
+		}
+	}
+	assert.True(t, hasCompleted, "outbox should contain tool.invocation_completed for tool tasks")
+}

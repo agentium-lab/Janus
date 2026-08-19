@@ -157,6 +157,7 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		if err != nil {
 			return nil, fmt.Errorf("policy check: %w", err)
 		}
+		s.emitToolPolicyEvent(ctx, &task, decision.Decision, decision.Reason)
 		if decision.Decision == core.PolicyDecisionDeny {
 			return nil, fmt.Errorf("policy denied: %s", decision.Reason)
 		}
@@ -537,6 +538,27 @@ func (s *TaskService) publishEvent(ctx context.Context, event core.JanusEvent) e
 		return err
 	}
 	return s.queueDriver.PublishEvent(ctx, event)
+}
+
+func (s *TaskService) emitToolPolicyEvent(ctx context.Context, task *core.Task, decision core.PolicyDecisionType, reason string) {
+	ti := task.Envelope.ToolInvocation
+	if ti == nil {
+		return
+	}
+	var typ core.EventType
+	switch decision {
+	case core.PolicyDecisionDeny:
+		typ = core.EventToolInvocationDenied
+	case core.PolicyDecisionAllow, core.PolicyDecisionApprovalRequired:
+		typ = core.EventToolInvocationAllowed
+	default:
+		return
+	}
+	payload, _ := json.Marshal(map[string]string{"tool_name": ti.Name, "reason": reason})
+	_ = s.publishEvent(ctx, core.JanusEvent{
+		EventType: typ, TenantID: task.TenantID, TaskID: task.ID,
+		SourceAgent: task.SourceAgent, Payload: payload,
+	})
 }
 
 type IdempotentError struct {
