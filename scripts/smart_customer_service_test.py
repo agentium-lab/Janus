@@ -120,6 +120,12 @@ def wait_status(task_id, target, timeout=30):
 def setup():
     print("\n📡 Setup: agents, mailboxes, capabilities")
 
+    caps = {
+        "logistics-bot": "wrong_item_investigate",
+        "shipping-bot": "reship",
+        "return-bot": "retrieve_wrong",
+        "notify-bot": "notify",
+    }
     agents = [
         ("logistics-bot", "Logistics Bot", "logistics"),
         ("shipping-bot", "Shipping Bot", "warehouse"),
@@ -129,7 +135,8 @@ def setup():
     ]
     for aid, name, team in agents:
         client.post(f"/v1/tenants/{TENANT}/agents",
-                    json={"id": aid, "display_name": name, "team": team, "protocol": "a2a"})
+                    json={"id": aid, "display_name": name, "team": team, "protocol": "a2a",
+                          "capabilities": [{"capability": caps[aid], "description": f"handles {caps[aid]}"}] if aid in caps else []})
 
     mailboxes = [
         ("logistics-mb", "logistics-bot", 5),
@@ -140,23 +147,6 @@ def setup():
     for mid, aid, ack_wait in mailboxes:
         client.post(f"/v1/tenants/{TENANT}/mailboxes",
                     json={"id": mid, "agent_id": aid, "ack_wait_seconds": ack_wait})
-
-    import subprocess
-    caps = [
-        ("logistics-bot", "wrong_item_investigate", "investigate wrong item complaints"),
-        ("shipping-bot", "reship", "reship correct items to customers"),
-        ("return-bot", "retrieve_wrong", "retrieve wrong items from customers"),
-        ("notify-bot", "notify", "send notifications to customers"),
-    ]
-    for aid, cap, desc in caps:
-        subprocess.run(["psql", "-h", "localhost", "-U", "silv", "-d", "janus", "-c",
-                        f"INSERT INTO agent_capabilities (tenant_id, agent_id, capability, description) "
-                        f"VALUES ('{TENANT}','{aid}','{cap}','{desc}') ON CONFLICT DO NOTHING"],
-                       capture_output=True)
-
-    subprocess.run(["psql", "-h", "localhost", "-U", "silv", "-d", "janus", "-c",
-                    f"UPDATE agents SET status='online' WHERE tenant_id='{TENANT}'"],
-                   capture_output=True)
 
     for aid, _, _ in agents:
         client.post(f"/v1/tenants/{TENANT}/agents/{aid}/heartbeat")

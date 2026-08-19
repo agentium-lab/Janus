@@ -111,6 +111,8 @@ if result:
 - **Approval workflow** — human-in-the-loop for high-risk tasks
 - **Capability routing** — hard constraints (online/classification/policy/capacity/budget) + semantic scoring
 - **Intent resolver** — natural language to capability target (optional LLM-powered; keyword fallback when LLM not configured; see `JANUS_LLM_*` env vars)
+- **Group routing** — team-based delivery via the agent `team` field
+- **Capability catalog** — `GET /v1/tenants/{tenant}/catalog` lists online agents with their capabilities for client-side matching
 - **12 policy templates** — one-line rules for common governance patterns
 
 ### Protocols
