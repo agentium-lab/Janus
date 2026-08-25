@@ -101,10 +101,12 @@ postgres:
   secretKey: "password"
 
 nats:
+  # Use tls:// scheme for transport encryption; credentials via existingSecret.
   url: "nats://nats:4222"
 
 redis:
   addr: "redis:6379"
+  enableTLS: false  # set true when Redis frontends TLS (enable-tls yes)
   password: ""
   db: 0
   existingSecret: ""

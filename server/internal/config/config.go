@@ -76,6 +76,7 @@ type RedisConfig struct {
 	Addr     string `mapstructure:"addr"`
 	Password string `mapstructure:"password"`
 	DB       int    `mapstructure:"db"`
+	EnableTLS bool  `mapstructure:"enable_tls"`
 }
 
 type MigrationConfig struct {
@@ -228,6 +229,7 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_REDIS_ADDR":            "redis.addr",
 		"JANUS_REDIS_PASSWORD":        "redis.password",
 		"JANUS_REDIS_DB":              "redis.db",
+		"JANUS_REDIS_ENABLE_TLS":      "redis.enable_tls",
 		"JANUS_MIGRATION_AUTO":        "migration.auto",
 		"JANUS_MIGRATION_PATH":        "migration.path",
 		"JANUS_HB_SWEEPER_INTERVAL":   "heartbeat.sweeper_interval",

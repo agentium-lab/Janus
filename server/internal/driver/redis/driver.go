@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"log"
 	"time"
@@ -17,9 +18,10 @@ const (
 )
 
 type Config struct {
-	Addr     string
-	Password string
-	DB       int
+	Addr      string
+	Password  string
+	DB        int
+	EnableTLS bool
 }
 
 type Driver struct {
@@ -27,11 +29,15 @@ type Driver struct {
 }
 
 func NewDriver(cfg Config) (*Driver, error) {
-	rdb := go_redis.NewClient(&go_redis.Options{
+	opts := &go_redis.Options{
 		Addr:     cfg.Addr,
 		Password: cfg.Password,
 		DB:       cfg.DB,
-	})
+	}
+	if cfg.EnableTLS {
+		opts.TLSConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	rdb := go_redis.NewClient(opts)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

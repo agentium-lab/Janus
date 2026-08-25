@@ -100,9 +100,10 @@ func main() {
 	defer natsDrv.Close()
 
 	redisDrv, err := redisdriver.NewDriver(redisdriver.Config{
-		Addr:     cfg.Redis.Addr,
-		Password: cfg.Redis.Password,
-		DB:       cfg.Redis.DB,
+		Addr:      cfg.Redis.Addr,
+		Password:  cfg.Redis.Password,
+		DB:        cfg.Redis.DB,
+		EnableTLS: cfg.Redis.EnableTLS,
 	})
 	if err != nil {
 		log.Fatalf("redis: %v", err)
