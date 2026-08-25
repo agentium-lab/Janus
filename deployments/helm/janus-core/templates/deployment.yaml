@@ -1,3 +1,6 @@
+{{- if and .Values.artifacts.enabled (eq .Values.artifacts.accessMode "ReadWriteOnce") (gt (int .Values.replicaCount) 1) }}
+{{- fail "artifacts: ReadWriteOnce storage cannot serve replicaCount > 1 — switch accessMode to ReadWriteMany (shared FS), use object storage for result refs, or run a single replica" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

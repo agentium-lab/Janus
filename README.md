@@ -252,3 +252,8 @@ make verify-production         # all 11 gates + GA readiness
 [Documentation](https://janusa2a.com/docs/quickstart.html) · [Report an Issue](https://github.com/agentium-lab/Janus/issues) · Apache-2.0
 
 </div>
+
+## Known Limitations
+
+- **At-least-once delivery.** A worker whose lease expires mid-task (default 300s) will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should call the task heartbeat endpoint to renew the lease before expiry.
+- **Cost accounting is estimated.** `CostUSD` is derived from reported token counts at a flat rate (`EstimatedCostPerTokenUSD`); authoritative per-model metering arrives with the enterprise llm-proxy.
