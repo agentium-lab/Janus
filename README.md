@@ -133,7 +133,7 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 | Observability | Security |
 |---|---|
-| OpenTelemetry — W3C traceparent + OTLP | API-key auth — SHA-256 hashed, prefix lookup |
+| OpenTelemetry — W3C traceparent + OTLP | API-key auth — SHA-256 hashed, prefix lookup, optional scopes (`admin` / `task:write` / `task:read` / `audit:read`) |
 | Prometheus — 16+ metrics | mTLS — TLS 1.2+ with client cert verification |
 | Structured JSON logs — tenant/task/trace in every line | Tenant isolation — every query, subject, key, path scoped |
 | Grafana dashboard — backlog, latency, errors pre-built | TenantGuard — path tenant must match authenticated tenant |

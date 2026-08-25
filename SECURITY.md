@@ -42,6 +42,9 @@ Credit is given unless anonymity is requested.
 ## Security Controls
 
 - API keys stored as SHA-256 hashes with indexed prefix lookup (`server/internal/auth/apikey.go`)
+- Optional key scopes (`admin`, `task:write`, `task:read`, `audit:read`); empty set keeps legacy full access
+- Key revocation takes effect immediately on the next request
+- `X-Janus-Acting-User` is recorded as a non-authoritative `claimed_actor` annotation on audit events
 - Tenant isolation enforced by `TenantGuard` (path tenant must match authenticated tenant)
 - CI runs build + vet + staticcheck + unit/E2E tests on every change to `main`
 - Release artifacts ship with SHA-256 checksums
