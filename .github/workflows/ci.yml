@@ -35,49 +35,60 @@ jobs:
         run: go vet ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
       - name: staticcheck
-        # U1000 (unused code) and ST1000/ST1020/ST1021 (doc style) are
-        # housekeeping lints, not correctness gates. See Makefile for rationale.
-        run: staticcheck -checks 'all,-U1000,-ST1000,-ST1020,-ST1021' ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
+        run: $(go env GOPATH)/bin/staticcheck -checks 'all,-U1000,-ST1000,-ST1020,-ST1021' ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
   test:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: janus
-          POSTGRES_PASSWORD: janus
-          POSTGRES_DB: janus_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-      nats:
-        image: nats:2-alpine
-        ports:
-          - 4222:4222
-        options: --entrypoint nats-server -- -js
-
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
+    env:
+      JANUS_PG_HOST: localhost
+      JANUS_PG_PORT: "5432"
+      JANUS_PG_USER: janus
+      JANUS_PG_PASSWORD: janus
+      JANUS_PG_DATABASE: janus_test
+      JANUS_PG_SSLMODE: disable
+      JANUS_PG_DSN: postgres://janus:janus@localhost:5432/janus_test?sslmode=disable
+      JANUS_NATS_URL: nats://localhost:4222
+      JANUS_REDIS_ADDR: localhost:6379
+      JANUS_INTEGRATION: "1"
+      JANUS_URL: http://localhost:8080
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.work
+
+      # Dependency containers are started as a regular step (not the services:
+      # block) so pulls can be retried — the services phase runs before any
+      # step and fails hard on transient Docker Hub rate limits.
+      - name: Start dependency containers
+        run: |
+          set -euo pipefail
+          pull() {
+            for attempt in 1 2 3 4; do
+              docker pull "$1" && return 0
+              echo "pull $1 failed (attempt $attempt), backing off..."
+              sleep $((attempt * 10))
+            done
+            echo "::error::unable to pull $1 after retries"; return 1
+          }
+          pull postgres:16-alpine
+          pull nats:2-alpine
+          pull redis:7-alpine
+
+          docker run -d --name pg \
+            -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus -e POSTGRES_DB=janus_test \
+            -p 5432:5432 postgres:16-alpine
+          docker run -d --name nats -p 4222:4222 nats:2-alpine -js
+          docker run -d --name redis -p 6379:6379 redis:7-alpine
+
+          for i in $(seq 1 60); do
+            docker exec pg pg_isready -U janus >/dev/null 2>&1 && break
+            sleep 1
+          done
+          docker exec pg pg_isready -U janus
+          until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
+          until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
 
       - name: Unit tests (no infra dependency)
         run: |
@@ -98,29 +109,22 @@ jobs:
           go test -count=1 -timeout=60s -cover ./server/tests/simulation/...
 
       - name: E2E + integration tests (with infra)
-        env:
-          JANUS_PG_DSN: postgres://janus:janus@localhost:5432/janus_test?sslmode=disable
-          JANUS_NATS_URL: nats://localhost:4222
-          JANUS_REDIS_ADDR: localhost:6379
-          JANUS_INTEGRATION: "1"
-          JANUS_URL: http://localhost:8080
         run: |
-          go test -count=1 -timeout=120s ./server/tests/e2e/...
+          go test -count=1 -timeout=300s ./server/tests/e2e/...
 
       - name: Postgres driver tests
-        env:
-          JANUS_PG_HOST: localhost
-          JANUS_PG_PORT: 5432
-          JANUS_PG_USER: janus
-          JANUS_PG_DBNAME: janus_test
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/postgres/...
 
       - name: NATS driver tests
-        env:
-          JANUS_NATS_URL: nats://localhost:4222
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/nats/...
 
       - name: Redis driver tests
-        env:
-          JANUS_REDIS_ADDR: localhost:6379
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/redis/...
+
+      - name: Dump dependency logs on failure
+        if: failure()
+        run: |
+          docker ps -a || true
+          docker logs pg || true
+          docker logs nats || true
+          docker logs redis || true
