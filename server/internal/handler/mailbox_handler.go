@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -12,6 +13,8 @@ type MailboxService interface {
 	Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error)
 	ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error)
 	UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error
+	Pause(ctx context.Context, tenantID, mailboxID string) error
+	Resume(ctx context.Context, tenantID, mailboxID string) error
 }
 
 type MailboxHandler struct {
@@ -112,4 +115,41 @@ func (h *MailboxHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": mailboxID, "status": "updated"})
+}
+
+func (h *MailboxHandler) Pause(w http.ResponseWriter, r *http.Request) {
+	h.toggleLifecycle(w, r, false)
+}
+
+func (h *MailboxHandler) Resume(w http.ResponseWriter, r *http.Request) {
+	h.toggleLifecycle(w, r, true)
+}
+
+func (h *MailboxHandler) toggleLifecycle(w http.ResponseWriter, r *http.Request, resume bool) {
+	tenantID := tenantIDFromPath(r.URL.Path)
+	suffix := "/pause"
+	if resume {
+		suffix = "/resume"
+	}
+	mailboxID := lastSegment(strings.TrimSuffix(r.URL.Path, suffix))
+	if mailboxID == "" || mailboxID == "mailboxes" {
+		writeError(w, http.StatusBadRequest, "missing mailbox id")
+		return
+	}
+	var err error
+	if resume {
+		err = h.svc.Resume(r.Context(), tenantID, mailboxID)
+	} else {
+		err = h.svc.Pause(r.Context(), tenantID, mailboxID)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	mb, err := h.svc.Get(r.Context(), tenantID, mailboxID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, mb)
 }
