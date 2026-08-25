@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	HTTPPort   int            `mapstructure:"http_port"`
+	HTTPHost   string         `mapstructure:"http_host"`
 	GRPCPort   int            `mapstructure:"grpc_port"`
 	Postgres   PostgresConfig `mapstructure:"postgres"`
 	NATS       NATSConfig     `mapstructure:"nats"`
@@ -167,6 +168,8 @@ func Load() *Config {
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
+	v.SetDefault("http_port", 8080)
+	v.SetDefault("http_host", "")
 	v.SetDefault("grpc_port", 9090)
 	v.SetDefault("postgres.host", "localhost")
 	v.SetDefault("postgres.port", 5432)
@@ -211,6 +214,7 @@ func setDefaults(v *viper.Viper) {
 func bindEnvVars(v *viper.Viper) {
 	envBindings := map[string]string{
 		"JANUS_HTTP_PORT":             "http_port",
+		"JANUS_HTTP_HOST":             "http_host",
 		"JANUS_GRPC_PORT":             "grpc_port",
 		"JANUS_PG_HOST":               "postgres.host",
 		"JANUS_PG_PORT":               "postgres.port",

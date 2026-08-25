@@ -272,13 +272,16 @@ func main() {
 
 	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH)
 
-	combined := http.NewServeMux()
-	combined.Handle("/metrics", promhttp.Handler())
-	combined.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Orchestration probes and the Prometheus scrape stay unauthenticated:
+	// health checkers and scrapers cannot present API keys, and blocking them
+	// makes every authenticated deployment fail its own readiness gate.
+	public := http.NewServeMux()
+	public.Handle("/metrics", promhttp.Handler())
+	public.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
-	combined.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	public.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := pool.Ping(r.Context()); err != nil {
 			log.Printf("readyz: database unreachable: %v", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -288,20 +291,24 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
 	}))
-	combined.Handle("/", mux)
-	combined.Handle("/grpc/", http.StripPrefix("/grpc", gwMux))
 
-	addr := fmt.Sprintf(":%d", cfg.HTTPPort)
-	var core http.Handler = combined
+	protected := http.NewServeMux()
+	protected.Handle("/", mux)
+	protected.Handle("/grpc/", http.StripPrefix("/grpc", gwMux))
+
+	addr := fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort)
+	var core http.Handler = protected
 	if cfg.Auth.Enabled {
 		core = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(core))
 		log.Println("api key authentication enabled")
 	} else if !isLoopbackAddr(addr) {
-		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true for production", addr)
+		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true, or bind a loopback address via JANUS_HTTP_HOST=localhost for local development", addr)
 	} else {
 		log.Println("WARNING: authentication disabled — dev mode (loopback only)")
 	}
-	var handler http.Handler = observability.CORSMiddleware(cfg.CORS.AllowedOrigins)(core)
+	public.Handle("/", core)
+
+	handler := observability.CORSMiddleware(cfg.CORS.AllowedOrigins)(public)
 	if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
 		handler = observability.HSTSMiddleware(handler)
 	}
