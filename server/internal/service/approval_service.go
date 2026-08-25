@@ -22,12 +22,12 @@ type ApprovalRepo interface {
 }
 
 type ApprovalService struct {
-	repo        ApprovalRepo
-	taskSvc     *TaskService
-	queueDrv    core.QueueEventDriver
-	outbox      OutboxWriter
-	outboxRepo  *postgres.OutboxRepo
-	pool        *pgxpool.Pool
+	repo       ApprovalRepo
+	taskSvc    *TaskService
+	queueDrv   core.QueueEventDriver
+	outbox     OutboxWriter
+	outboxRepo *postgres.OutboxRepo
+	pool       *pgxpool.Pool
 }
 
 func NewApprovalService(repo ApprovalRepo, taskSvc *TaskService, queueDrv core.QueueEventDriver) *ApprovalService {
@@ -161,17 +161,15 @@ func (s *ApprovalService) approveAtomic(ctx context.Context, tenantID, approvalI
 		}
 	}
 
+	if terr := s.taskSvc.TransitionInTx(ctx, tx, tenantID, approval.TaskID,
+		task.Status, core.TaskStatusQueued, core.EventTaskQueued, 0); terr != nil {
+		return fmt.Errorf("queue task in approval tx: %w", terr)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit approve tx: %w", err)
 	}
 	committed = true
-
-	// Best-effort task status update outside the approval tx (taskSvc owns the
-	// task lifecycle + its own tx). A failure here is logged: the approval is
-	// already committed and the outbox row will publish the task regardless.
-	if err := s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusQueued, core.EventTaskQueued, 0); err != nil {
-		log.Printf("approval %s: post-commit task transition: %v", approvalID, err)
-	}
 	return nil
 }
 
@@ -183,6 +181,10 @@ func (s *ApprovalService) Reject(ctx context.Context, tenantID, approvalID, appr
 	if approval.Status != "pending" {
 		return fmt.Errorf("approval already decided: %s", approval.Status)
 	}
+	if s.pool != nil && s.outboxRepo != nil {
+		return s.decideAtomic(ctx, tenantID, approvalID, approver, reason, "rejected",
+			approval, core.TaskStatusCancelled, core.EventTaskCancelled)
+	}
 	if err := s.repo.UpdateDecision(ctx, tenantID, approvalID, "rejected", approver, reason); err != nil {
 		return fmt.Errorf("update approval: %w", err)
 	}
@@ -192,19 +194,51 @@ func (s *ApprovalService) Reject(ctx context.Context, tenantID, approvalID, appr
 	return nil
 }
 
+// decideAtomic commits a terminal decision together with the guarded task
+// status change on one transaction, so an approval can never read decided
+// while its task still reads pending (or vice versa).
+func (s *ApprovalService) decideAtomic(ctx context.Context, tenantID, approvalID, approver, reason, decision string, approval *core.Approval, target core.TaskStatus, event core.EventType) error {
+	pgRepo, ok := s.repo.(*postgres.ApprovalRepo)
+	if !ok {
+		return fmt.Errorf("decideAtomic: postgres approval repo required")
+	}
+	task, err := s.taskSvc.Get(ctx, tenantID, approval.TaskID)
+	if err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin decision tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if err := pgRepo.UpdateDecisionTx(ctx, tx, tenantID, approvalID, decision, approver, reason); err != nil {
+		return fmt.Errorf("update approval: %w", err)
+	}
+	if terr := s.taskSvc.TransitionInTx(ctx, tx, tenantID, approval.TaskID,
+		task.Status, target, event, 0); terr != nil {
+		return fmt.Errorf("transition task in decision tx: %w", terr)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit decision tx: %w", err)
+	}
+	return nil
+}
+
 func (s *ApprovalService) Expire(ctx context.Context, tenantID, approvalID string) error {
+	approval, err := s.repo.Get(ctx, tenantID, approvalID)
+	if err != nil || approval == nil {
+		return err
+	}
+	if s.pool != nil && s.outboxRepo != nil {
+		return s.decideAtomic(ctx, tenantID, approvalID, "system", "approval timeout", "expired",
+			approval, core.TaskStatusCancelled, core.EventTaskCancelled)
+	}
 	if err := s.repo.UpdateDecision(ctx, tenantID, approvalID, "expired", "system", "approval timeout"); err != nil {
 		return fmt.Errorf("expire approval: %w", err)
 	}
-	approval, err := s.repo.Get(ctx, tenantID, approvalID)
-	if err != nil {
-		log.Printf("approval expire: get %s/%s after update: %v", tenantID, approvalID, err)
-		return nil
-	}
-	if approval != nil {
-		if err := s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0); err != nil {
-			log.Printf("approval expire: cancel task %s: %v", approval.TaskID, err)
-		}
+	if err := s.taskSvc.transition(ctx, tenantID, approval.TaskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0); err != nil {
+		log.Printf("approval expire: cancel task %s: %v", approval.TaskID, err)
 	}
 	return nil
 }

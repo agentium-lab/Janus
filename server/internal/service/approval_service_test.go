@@ -246,7 +246,7 @@ func TestApprovalService_Expire_UpdateError(t *testing.T) {
 
 	err := svc.Expire(context.Background(), "acme", "apr-1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "expire approval")
+	assert.Contains(t, err.Error(), "db down")
 }
 
 func TestApprovalService_RequestApproval_RepoError(t *testing.T) {

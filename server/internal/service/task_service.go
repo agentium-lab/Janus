@@ -516,20 +516,9 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 
 	// Lifecycle path: CAS + event outbox in one tx (when PG repos + lifecycle).
 	if s.lifecycle != nil {
-		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
+		if _, ok := s.taskRepo.(*postgres.TaskRepository); ok {
 			err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-				ok, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, current.Status, status, attemptInc)
-				if err := uerr; err != nil {
-					return fmt.Errorf("update task status to %s: %w", status, err)
-				}
-				if !ok {
-					return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, current.Status)
-				}
-				payload, _ := json.Marshal(core.JanusEvent{
-					EventType: eventType, TenantID: tenantID, TaskID: taskID,
-					Payload: mustMarshal(map[string]string{"status": string(status)}),
-				})
-				return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload)
+				return s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, status, eventType, attemptInc)
 			})
 			if err != nil {
 				return err
@@ -575,6 +564,38 @@ func appendClaimedActor(payload []byte, actor string) []byte {
 		return payload
 	}
 	return out
+}
+
+// TransitionInTx applies a guarded status change and records the lifecycle
+// event on the caller's transaction so decision tables and task state commit
+// atomically. expectedStatus is what the caller read before opening the tx;
+// a mismatch fails the whole transaction (retryable).
+func (s *TaskService) TransitionInTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expected, status core.TaskStatus, eventType core.EventType, attemptInc int) error {
+	pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository)
+	if !ok {
+		return fmt.Errorf("transition in tx requires postgres task repo")
+	}
+	if !core.CanTransition(expected, status) {
+		return fmt.Errorf("invalid transition: %s -> %s for task %s", expected, status, taskID)
+	}
+	ok2, err := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, expected, status, attemptInc)
+	if err != nil {
+		return fmt.Errorf("update task status to %s: %w", status, err)
+	}
+	if !ok2 {
+		return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, expected)
+	}
+	if s.outboxRepo != nil {
+		payload, _ := json.Marshal(core.JanusEvent{
+			EventType: eventType, TenantID: tenantID, TaskID: taskID,
+			Payload: mustMarshal(map[string]string{"status": string(status)}),
+		})
+		if ierr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload); ierr != nil {
+			return fmt.Errorf("record event: %w", ierr)
+		}
+	}
+	recordTaskMetric(tenantID, status)
+	return nil
 }
 
 func (s *TaskService) publishEvent(ctx context.Context, event core.JanusEvent) error {
