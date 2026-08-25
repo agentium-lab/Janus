@@ -147,6 +147,9 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 | **TypeScript** | `@agentium-lab/janus-sdk` (`sdk/typescript/`) | 30 methods + Worker helper |
 
 **Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
+**Import:** `from janus_broker import JanusClient` · `import { Client } from "@agentium-lab/janus-sdk"`
+
+**Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
 
 > Naming note: distribution names carry a disambiguator where registries require it — the generic `janus-sdk` name on PyPI belongs to an unrelated project.
 
