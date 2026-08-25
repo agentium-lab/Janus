@@ -83,6 +83,8 @@ type scopeRule struct {
 var scopeRules = []scopeRule{
 	{segment: "approvals", suffixes: []string{"/approve", "/reject"}, scope: ScopeAdmin},
 	{segment: "api-keys", scope: ScopeAdmin},
+	{segment: "policy-rules", scope: ScopeAdmin},
+	{segment: "budgets", scope: ScopeAdmin},
 	{segment: "dlq", suffixes: []string{"/replay", "/discard"}, scope: ScopeAdmin},
 	{segment: "traces", scope: ScopeAuditRead},
 }
