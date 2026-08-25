@@ -22,6 +22,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nats-io/nats.go"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/agentium-lab/Janus/core"
@@ -29,6 +30,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/bootstrap"
 	"github.com/agentium-lab/Janus/server/internal/config"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
+	pgqueue "github.com/agentium-lab/Janus/server/internal/driver/pgqueue"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
@@ -93,11 +95,31 @@ func main() {
 	pool := mustOpenPool(cfg)
 	defer pool.Close()
 
-	natsDrv, err := natsdriver.NewDriver(natsdriver.Config{URL: cfg.NATS.URL})
-	if err != nil {
-		log.Fatalf("nats: %v", err)
+	var natsDrv *natsdriver.Driver
+	if cfg.Queue.Driver == "nats" {
+		var derr error
+		natsDrv, derr = natsdriver.NewDriver(natsdriver.Config{URL: cfg.NATS.URL})
+		if derr != nil {
+			log.Fatalf("nats: %v", derr)
+		}
+		defer natsDrv.Close()
 	}
-	defer natsDrv.Close()
+
+	var queueDrv core.QueueEventDriver = natsDrv
+	if queueDrv == nil {
+		queueDrv = pgqueue.NewDriver(pool)
+		log.Println("queue driver: postgres (single-dependency mode; NATS disabled)")
+		log.Println("PGONLY_MARKER_XYZ")
+	}
+	subscribeEvents := func(ctx context.Context, ch chan<- core.JanusEvent) (*nats.Subscription, error) {
+		if q, ok := queueDrv.(*pgqueue.Driver); ok {
+			if _, serr := q.SubscribeEvents(ctx, ch); serr != nil {
+				return nil, serr
+			}
+			return nil, nil
+		}
+		return natsDrv.SubscribeEvents(ctx, ch)
+	}
 
 	redisDrv, err := redisdriver.NewDriver(redisdriver.Config{
 		Addr:      cfg.Redis.Addr,
@@ -113,7 +135,7 @@ func main() {
 	tenantRepo := pgdriver.NewTenantRepository(pool)
 	bootstrap.Run(context.Background(), bootstrap.Options{
 		TenantLister: tenantRepo,
-		QueueEnsurer: natsDrv,
+		QueueEnsurer: queueDrv,
 	})
 
 	agentRepo := pgdriver.NewAgentRepository(pool)
@@ -131,7 +153,7 @@ func main() {
 	apiKeyRepo := pgdriver.NewAPIKeyRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
-	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
+	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, queueDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(redisDrv)
 
@@ -150,14 +172,14 @@ func main() {
 
 	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
 	router := routing.NewRouter(lookupRepo, policyCheckerAdapter{svc: policySvc}, budgetCheckerAdapter{svc: budgetSvc})
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc)
-	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
-	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
+	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc)
+	mailboxSvc := service.NewMailboxService(mailboxRepo, queueDrv)
+	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)
 	taskSvc = taskSvc.WithLifecycle(lifecycleSvc)
 	dispatchSvc = dispatchSvc.WithLifecycle(lifecycleSvc, outboxRepo, budgetUsageRepo)
 	eventSvc := service.NewEventService(eventRepo)
-	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, natsDrv)
+	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, queueDrv)
 	approvalSvc.WithOutboxRepo(outboxRepo, pool)
 	taskSvc.WithApproval(approvalSvc)
 
@@ -175,16 +197,16 @@ func main() {
 	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc)
 
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
-	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(queueDrv)
 
-	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, natsDrv).WithOutbox(outboxRepo, pool)
+	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, queueDrv).WithOutbox(outboxRepo, pool)
 	dlqH := handler.NewDLQHandler(dlqSvc)
 	catalogH := handler.NewCatalogHandler(agentRepo)
 
 	rawEventCh := make(chan core.JanusEvent, 256)
-	eventSub, err := natsDrv.SubscribeEvents(context.Background(), rawEventCh)
-	if err != nil {
-		log.Fatalf("subscribe events: %v", err)
+	eventSub, serr := subscribeEvents(context.Background(), rawEventCh)
+	if serr != nil {
+		log.Fatalf("subscribe events: %v", serr)
 	}
 	defer func() {
 		// Drain the NATS subscription then close rawEventCh so the fan-out

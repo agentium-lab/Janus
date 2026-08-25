@@ -127,7 +127,7 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A Gateway** (`/a2a/agent/card`, `/a2a/task/send`) · **ACP Gateway** (`/acp/agent/manifest`, `/acp/runs`) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
+**HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A Gateway** (`/a2a/agent/card`, `/a2a/task/send`) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
 
 ### 📊 Observability & 🔐 Security
 
@@ -177,11 +177,11 @@ janus project diff
 ## Architecture
 
 ```
- External Agents (A2A / ACP / MCP / SDK / CI-CD)
+ External Agents (A2A / ACP* / MCP / SDK / CI-CD)
                       │
  ┌────────────────────▼────────────────────┐
  │                Ingress                  │
- │   A2A GW · ACP GW · MCP GW · HTTP/gRPC  │
+ │   A2A GW · ACP GW* · MCP GW · HTTP/gRPC │
  └────────────────────┬────────────────────┘
                       │
  ┌────────────────────▼────────────────────┐
@@ -264,3 +264,5 @@ make verify-production         # all 11 gates + GA readiness
 
 - **At-least-once delivery.** A worker whose lease expires mid-task (default 300s) will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should call the task heartbeat endpoint to renew the lease before expiry.
 - **Cost accounting is estimated.** `CostUSD` is derived from reported token counts at a flat rate (`EstimatedCostPerTokenUSD`); authoritative per-model metering arrives with the enterprise llm-proxy.
+
+\* ACP gateway is **deprecated** (protocol merged into A2A). Endpoints keep serving with `Deprecation`/`Sunset` headers until removal; new integrations should target `/a2a/`.
