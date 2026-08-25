@@ -10,23 +10,24 @@ import (
 )
 
 type Config struct {
-	HTTPPort   int            `mapstructure:"http_port"`
-	HTTPHost   string         `mapstructure:"http_host"`
-	GRPCPort   int            `mapstructure:"grpc_port"`
-	Postgres   PostgresConfig `mapstructure:"postgres"`
-	NATS       NATSConfig     `mapstructure:"nats"`
-	Redis      RedisConfig    `mapstructure:"redis"`
-	Migration  MigrationConfig `mapstructure:"migration"`
-	Heartbeat  HeartbeatConfig `mapstructure:"heartbeat"`
-	Auth       AuthConfig     `mapstructure:"auth"`
-	TLS        TLSConfig      `mapstructure:"tls"`
-	CORS       CORSConfig     `mapstructure:"cors"`
-	Log        LogConfig      `mapstructure:"log"`
-	Metrics    MetricsConfig  `mapstructure:"metrics"`
-	Tracing    TracingConfig  `mapstructure:"tracing"`
-	Outbox     OutboxConfig    `mapstructure:"outbox"`
-	Artifacts  ArtifactsConfig  `mapstructure:"artifacts"`
-	LLM        LLMConfig        `mapstructure:"llm"`
+	Queue     QueueConfig     `mapstructure:"queue"`
+	HTTPPort  int             `mapstructure:"http_port"`
+	HTTPHost  string          `mapstructure:"http_host"`
+	GRPCPort  int             `mapstructure:"grpc_port"`
+	Postgres  PostgresConfig  `mapstructure:"postgres"`
+	NATS      NATSConfig      `mapstructure:"nats"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	Migration MigrationConfig `mapstructure:"migration"`
+	Heartbeat HeartbeatConfig `mapstructure:"heartbeat"`
+	Auth      AuthConfig      `mapstructure:"auth"`
+	TLS       TLSConfig       `mapstructure:"tls"`
+	CORS      CORSConfig      `mapstructure:"cors"`
+	Log       LogConfig       `mapstructure:"log"`
+	Metrics   MetricsConfig   `mapstructure:"metrics"`
+	Tracing   TracingConfig   `mapstructure:"tracing"`
+	Outbox    OutboxConfig    `mapstructure:"outbox"`
+	Artifacts ArtifactsConfig `mapstructure:"artifacts"`
+	LLM       LLMConfig       `mapstructure:"llm"`
 }
 
 type LLMConfig struct {
@@ -72,11 +73,15 @@ type NATSConfig struct {
 	URL string `mapstructure:"url"`
 }
 
+type QueueConfig struct {
+	Driver string `mapstructure:"driver"` // "nats" (default) | "pg"
+}
+
 type RedisConfig struct {
-	Addr     string `mapstructure:"addr"`
-	Password string `mapstructure:"password"`
-	DB       int    `mapstructure:"db"`
-	EnableTLS bool  `mapstructure:"enable_tls"`
+	Addr      string `mapstructure:"addr"`
+	Password  string `mapstructure:"password"`
+	DB        int    `mapstructure:"db"`
+	EnableTLS bool   `mapstructure:"enable_tls"`
 }
 
 type MigrationConfig struct {
@@ -115,7 +120,7 @@ type LogConfig struct {
 }
 
 type MetricsConfig struct {
-	Enabled bool `mapstructure:"enabled"`
+	Enabled bool   `mapstructure:"enabled"`
 	Path    string `mapstructure:"path"`
 }
 
@@ -126,10 +131,10 @@ type TracingConfig struct {
 }
 
 type OutboxConfig struct {
-	WorkerInterval  string `mapstructure:"worker_interval"`
-	BatchSize       int    `mapstructure:"batch_size"`
-	LeaseDuration   string `mapstructure:"lease_duration"`
-	MaxAttempts     int    `mapstructure:"max_attempts"`
+	WorkerInterval string `mapstructure:"worker_interval"`
+	BatchSize      int    `mapstructure:"batch_size"`
+	LeaseDuration  string `mapstructure:"lease_duration"`
+	MaxAttempts    int    `mapstructure:"max_attempts"`
 }
 
 type ArtifactsConfig struct {
@@ -171,6 +176,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
 	v.SetDefault("http_port", 8080)
 	v.SetDefault("http_host", "")
+	v.SetDefault("queue.driver", "nats")
 	v.SetDefault("grpc_port", 9090)
 	v.SetDefault("postgres.host", "localhost")
 	v.SetDefault("postgres.port", 5432)
@@ -214,39 +220,40 @@ func setDefaults(v *viper.Viper) {
 
 func bindEnvVars(v *viper.Viper) {
 	envBindings := map[string]string{
-		"JANUS_HTTP_PORT":             "http_port",
-		"JANUS_HTTP_HOST":             "http_host",
-		"JANUS_GRPC_PORT":             "grpc_port",
-		"JANUS_PG_HOST":               "postgres.host",
-		"JANUS_PG_PORT":               "postgres.port",
-		"JANUS_PG_USER":               "postgres.user",
-		"JANUS_PG_PASSWORD":           "postgres.password",
-		"JANUS_PG_DATABASE":           "postgres.database",
-		"JANUS_PG_MAX_CONNS":          "postgres.max_conns",
-		"JANUS_PG_SSLMODE":            "postgres.sslmode",
-		"PGSSLMODE":                   "postgres.sslmode",
-		"JANUS_NATS_URL":              "nats.url",
-		"JANUS_REDIS_ADDR":            "redis.addr",
-		"JANUS_REDIS_PASSWORD":        "redis.password",
-		"JANUS_REDIS_DB":              "redis.db",
-		"JANUS_REDIS_ENABLE_TLS":      "redis.enable_tls",
-		"JANUS_MIGRATION_AUTO":        "migration.auto",
-		"JANUS_MIGRATION_PATH":        "migration.path",
-		"JANUS_HB_SWEEPER_INTERVAL":   "heartbeat.sweeper_interval",
-		"JANUS_HB_TTL":                "heartbeat.ttl",
-		"JANUS_AUTH_ENABLED":          "auth.enabled",
-		"JANUS_TLS_ENABLED":           "tls.enabled",
-		"JANUS_TLS_CERT_FILE":         "tls.cert_file",
-		"JANUS_TLS_KEY_FILE":          "tls.key_file",
-		"JANUS_TLS_CLIENT_CA_FILE":    "tls.client_ca_file",
-		"JANUS_CORS_ALLOWED_ORIGINS":  "cors.allowed_origins",
-		"JANUS_LOG_LEVEL":             "log.level",
-		"JANUS_LOG_FORMAT":            "log.format",
-		"JANUS_METRICS_ENABLED":       "metrics.enabled",
-		"JANUS_METRICS_PATH":          "metrics.path",
-		"JANUS_TRACING_ENABLED":       "tracing.enabled",
-		"JANUS_TRACING_OTLP_ENDPOINT": "tracing.otlp_endpoint",
-		"JANUS_TRACING_SERVICE_NAME":  "tracing.service_name",
+		"JANUS_HTTP_PORT":              "http_port",
+		"JANUS_HTTP_HOST":              "http_host",
+		"JANUS_GRPC_PORT":              "grpc_port",
+		"JANUS_PG_HOST":                "postgres.host",
+		"JANUS_PG_PORT":                "postgres.port",
+		"JANUS_PG_USER":                "postgres.user",
+		"JANUS_PG_PASSWORD":            "postgres.password",
+		"JANUS_PG_DATABASE":            "postgres.database",
+		"JANUS_PG_MAX_CONNS":           "postgres.max_conns",
+		"JANUS_PG_SSLMODE":             "postgres.sslmode",
+		"PGSSLMODE":                    "postgres.sslmode",
+		"JANUS_NATS_URL":               "nats.url",
+		"JANUS_REDIS_ADDR":             "redis.addr",
+		"JANUS_REDIS_PASSWORD":         "redis.password",
+		"JANUS_REDIS_DB":               "redis.db",
+		"JANUS_REDIS_ENABLE_TLS":       "redis.enable_tls",
+		"JANUS_QUEUE_DRIVER":           "queue.driver",
+		"JANUS_MIGRATION_AUTO":         "migration.auto",
+		"JANUS_MIGRATION_PATH":         "migration.path",
+		"JANUS_HB_SWEEPER_INTERVAL":    "heartbeat.sweeper_interval",
+		"JANUS_HB_TTL":                 "heartbeat.ttl",
+		"JANUS_AUTH_ENABLED":           "auth.enabled",
+		"JANUS_TLS_ENABLED":            "tls.enabled",
+		"JANUS_TLS_CERT_FILE":          "tls.cert_file",
+		"JANUS_TLS_KEY_FILE":           "tls.key_file",
+		"JANUS_TLS_CLIENT_CA_FILE":     "tls.client_ca_file",
+		"JANUS_CORS_ALLOWED_ORIGINS":   "cors.allowed_origins",
+		"JANUS_LOG_LEVEL":              "log.level",
+		"JANUS_LOG_FORMAT":             "log.format",
+		"JANUS_METRICS_ENABLED":        "metrics.enabled",
+		"JANUS_METRICS_PATH":           "metrics.path",
+		"JANUS_TRACING_ENABLED":        "tracing.enabled",
+		"JANUS_TRACING_OTLP_ENDPOINT":  "tracing.otlp_endpoint",
+		"JANUS_TRACING_SERVICE_NAME":   "tracing.service_name",
 		"JANUS_OUTBOX_WORKER_INTERVAL": "outbox.worker_interval",
 		"JANUS_OUTBOX_BATCH_SIZE":      "outbox.batch_size",
 		"JANUS_OUTBOX_LEASE_DURATION":  "outbox.lease_duration",
