@@ -86,75 +86,42 @@ func (d *Driver) FetchTasks(ctx context.Context, mailbox string, opts core.Fetch
 	if limit <= 0 {
 		limit = 1
 	}
-	deliveries := []core.TaskDelivery{}
-	tx, err := d.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin fetch: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	rows, err := tx.Query(ctx, `
+	rows, err := d.pool.Query(ctx, `
 		WITH picked AS (
-			SELECT id FROM tasks
+			SELECT id, attempt_count FROM tasks
 			WHERE mailbox_id = $1 AND status = 'queued'
 			  AND (retry_at IS NULL OR retry_at <= now())
+			  AND (queue_lease_until IS NULL OR queue_lease_until <= now())
 			ORDER BY priority DESC, created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
 		)
-		UPDATE tasks t SET status = 'claimed', updated_at = now(), attempt_count = attempt_count + 1
+		UPDATE tasks t SET queue_lease_until = now() + interval '45 seconds', updated_at = now()
 		FROM picked WHERE t.id = picked.id
-		RETURNING t.id, t.attempt_count`, mailbox, limit)
+		RETURNING t.id, t.tenant_id, t.source_agent, t.attempt_count,
+		          COALESCE(t.envelope->>'content_type',''), COALESCE(t.envelope->'payload','{}'::jsonb)`, mailbox, limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim query: %w", err)
 	}
-	type claimed struct {
-		id      string
-		attempt int
-	}
-	var got []claimed
+	defer rows.Close()
+
+	deliveries := []core.TaskDelivery{}
 	for rows.Next() {
-		var c claimed
-		if err := rows.Scan(&c.id, &c.attempt); err != nil {
-			rows.Close()
+		var (
+			id, tenantID, srcAgent, ctype string
+			attempt                       int
+			payload                       []byte
+		)
+		if err := rows.Scan(&id, &tenantID, &srcAgent, &attempt, &ctype, &payload); err != nil {
 			return nil, err
 		}
-		got = append(got, c)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	for _, c := range got {
-		ref := ref(c.id, c.attempt)
-		if _, ierr := tx.Exec(ctx,
-			`INSERT INTO task_attempts (tenant_id, task_id, attempt, lease_id, status, started_at, delivery_ref)
-			 SELECT tenant_id, id, $2, $3, 'claimed', now(), $4 FROM tasks WHERE id = $1`,
-			c.id, c.attempt, ref, ref); ierr != nil {
-			return nil, fmt.Errorf("insert attempt %s: %w", ref, ierr)
-		}
-		env := []byte("{}")
-		var tenantID, srcAgent, ctype string
-		var payload []byte
-		if qerr := tx.QueryRow(ctx,
-			`SELECT tenant_id, source_agent, envelope->>'content_type',
-			        COALESCE(envelope->'payload','null'::jsonb)::text
-			 FROM tasks WHERE id=$1`, c.id).
-			Scan(&tenantID, &srcAgent, &ctype, &payload); qerr == nil {
-			env, _ = jsonEnvelope(tenantID, c.id, srcAgent, ctype, payload)
-		}
+		ref := ref(id, attempt)
+		env, _ := jsonEnvelope(tenantID, id, srcAgent, ctype, payload)
 		deliveries = append(deliveries, core.TaskDelivery{
-			TaskID:      c.id,
-			Attempt:     c.attempt,
-			Payload:     env,
-			DeliveryRef: ref,
+			TaskID: id, Attempt: attempt, Payload: env, DeliveryRef: ref,
 		})
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit fetch: %w", err)
-	}
-	return deliveries, nil
+	return deliveries, rows.Err()
 }
 
 func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byte, error) {
@@ -166,36 +133,35 @@ func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byt
 // AckTask finalizes the attempt row; authoritative task completion still runs
 // through DispatchService.AckTask's own guarded transaction.
 func (d *Driver) AckTask(ctx context.Context, r core.DeliveryRef) error {
-	taskID, attempt, err := splitRef(r)
+	taskID, _, err := splitRef(r)
 	if err != nil {
 		return err
 	}
 	_, err = d.pool.Exec(ctx,
-		`UPDATE task_attempts SET status='completed', finished_at=now()
-		 WHERE task_id=$1 AND attempt=$2 AND status='claimed'`, taskID, attempt)
+		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1`, taskID)
 	return err
 }
 
 func (d *Driver) NackTask(ctx context.Context, r core.DeliveryRef, reason core.NackReason) error {
-	taskID, attempt, err := splitRef(r)
+	taskID, _, err := splitRef(r)
 	if err != nil {
 		return err
 	}
-	if _, err := d.pool.Exec(ctx,
-		`UPDATE task_attempts SET status='nacked', finished_at=now()
-		 WHERE task_id=$1 AND attempt=$2 AND status='claimed'`, taskID, attempt); err != nil {
-		return err
-	}
+	d.clearLease(ctx, taskID)
 	if reason == core.NackNonRetriable {
 		_, err = d.pool.Exec(ctx,
 			`UPDATE tasks SET status='dead_letter', updated_at=now() WHERE id=$1`, taskID)
 		return err
 	}
-	// Retriable: back to queued immediately; retry_at scheduling stays owned by
-	// the existing retry policy columns.
+	// Retriable: release the lease immediately; retry_at scheduling stays
+	// owned by the existing retry policy columns.
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET status='queued', updated_at=now() WHERE id=$1 AND status='claimed'`, taskID)
+		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1`, taskID)
 	return err
+}
+
+func (d *Driver) clearLease(ctx context.Context, taskID string) {
+	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1`, taskID)
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
