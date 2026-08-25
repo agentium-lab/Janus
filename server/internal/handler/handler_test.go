@@ -489,6 +489,14 @@ func (m *mockMailboxService) UpdateConfig(_ context.Context, tenantID, mailboxID
 	return m.err
 }
 
+func (m *mockMailboxService) Pause(_ context.Context, tenantID, mailboxID string) error {
+	return m.err
+}
+
+func (m *mockMailboxService) Resume(_ context.Context, tenantID, mailboxID string) error {
+	return m.err
+}
+
 func TestMailboxHandler_Create(t *testing.T) {
 	svc := &mockMailboxService{}
 	h := NewMailboxHandler(svc)
