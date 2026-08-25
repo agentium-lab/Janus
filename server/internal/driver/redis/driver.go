@@ -44,6 +44,12 @@ func NewDriver(cfg Config) (*Driver, error) {
 	return &Driver{rdb: rdb}, nil
 }
 
+// Ready performs a read-only connectivity probe suitable for /readyz;
+// unlike Ping it writes nothing.
+func (d *Driver) Ready(ctx context.Context) error {
+	return d.rdb.Ping(ctx).Err()
+}
+
 func (d *Driver) Ping(ctx context.Context, tenantID, agentID string) error {
 	key := heartbeatSetKey(tenantID)
 	expireAt := float64(time.Now().Add(heartbeatTTL).UTC().UnixMilli())

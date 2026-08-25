@@ -262,7 +262,22 @@ func main() {
 	defer pgDB.Close()
 	validator := auth.NewAPIKeyValidator(pgDB)
 
-	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, validator, agentSvc, taskSvc, dispatchSvc, eventSvc, mailboxSvc, dlqSvc)
+	var sharedTLSCfg *tls.Config
+	if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+		var err error
+		sharedTLSCfg, err = buildTLSConfig(cfg.TLS)
+		if err != nil {
+			log.Fatalf("tls: %v", err)
+		}
+	}
+	grpcOpts := []grpcserver.Option{}
+	if sharedTLSCfg != nil {
+		grpcOpts = append(grpcOpts, grpcserver.WithTLS(sharedTLSCfg))
+		log.Printf("gRPC TLS enabled (mTLS=%t)", cfg.TLS.ClientCAFile != "")
+	} else {
+		log.Println("WARNING: gRPC serving plaintext; set JANUS_TLS_ENABLED=true with cert/key to enable TLS")
+	}
+	grpcSrv := grpcserver.NewServer(cfg.GRPCPort, validator, agentSvc, taskSvc, dispatchSvc, eventSvc, mailboxSvc, dlqSvc, grpcOpts...)
 	go func() {
 		if err := grpcSrv.Start(); err != nil {
 			log.Fatalf("grpc: %v", err)
@@ -271,7 +286,7 @@ func main() {
 	defer grpcSrv.Stop()
 
 	grpcAddr := fmt.Sprintf("localhost:%d", cfg.GRPCPort)
-	gwMux, err := grpcserver.RegisterGateway(context.Background(), grpcAddr)
+	gwMux, err := grpcserver.RegisterGateway(context.Background(), grpcAddr, sharedTLSCfg)
 	if err != nil {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
@@ -287,16 +302,20 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 	}))
-	public.Handle("/readyz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := pool.Ping(r.Context()); err != nil {
-			log.Printf("readyz: database unreachable: %v", err)
-			w.WriteHeader(http.StatusServiceUnavailable)
-			json.NewEncoder(w).Encode(map[string]string{"status": "unavailable", "error": "database unreachable"})
-			return
+	readyChecker := observability.NewReadyChecker()
+	readyChecker.Add("postgres", func(ctx context.Context) error { return pool.Ping(ctx) })
+	readyChecker.Add("nats", func(ctx context.Context) error {
+		done := make(chan error, 1)
+		go func() { done <- natsDrv.Conn().FlushTimeout(2 * time.Second) }()
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
-	}))
+	})
+	readyChecker.Add("redis", redisDrv.Ready)
+	public.Handle("/readyz", readyChecker.Handler())
 
 	protected := http.NewServeMux()
 	protected.Handle("/", mux)
@@ -330,12 +349,8 @@ func main() {
 		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
-		if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
-			tlsCfg, err := buildTLSConfig(cfg.TLS)
-			if err != nil {
-				log.Fatalf("tls: %v", err)
-			}
-			srv.TLSConfig = tlsCfg
+		if sharedTLSCfg != nil {
+			srv.TLSConfig = sharedTLSCfg
 			log.Printf("janus-api starting with TLS (mTLS=%t)", cfg.TLS.ClientCAFile != "")
 			if err := srv.ListenAndServeTLS(cfg.TLS.CertFile, cfg.TLS.KeyFile); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("https: %v", err)
