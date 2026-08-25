@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -65,6 +66,10 @@ func (s *DispatchService) WithLifecycle(lc *LifecycleService, outboxRepo *postgr
 	s.budgetUsage = budgetUsage
 	return s
 }
+
+// errAgentAtCapacity marks the in-transaction capacity recheck inside the
+// claim transaction; the delivery is requeued rather than lost.
+var errAgentAtCapacity = errors.New("agent at capacity")
 
 func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*PullResult, error) {
 	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.PullTask",
@@ -228,6 +233,17 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
 			if pgAttemptRepo, ok := s.attemptRepo.(*postgres.TaskAttemptRepository); ok {
 				err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+					// Serialize pulls per agent and re-check capacity under the lock,
+					// closing the race between the pre-fetch count check and attempt
+					// creation that allowed concurrent pulls to exceed limits.
+					if _, lerr := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, tenantID+":"+agentID); lerr != nil {
+						return fmt.Errorf("advisory lock: %w", lerr)
+					}
+					tRunning, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
+					aRunning, _ := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
+					if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aRunning, tRunning); cerr != nil {
+						return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
+					}
 					if cerr := pgAttemptRepo.CreateTx(ctx, tx, attempt); cerr != nil {
 						return fmt.Errorf("create attempt: %w", cerr)
 					}
@@ -240,11 +256,16 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 					})
 					return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", claimedPayload)
 				})
-			if err != nil {
-				s.budgetSvc.Release(ctx, tenantID, agentID)
-				return nil, err
-			}
-			return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
+				if err != nil {
+					s.budgetSvc.Release(ctx, tenantID, agentID)
+					if errors.Is(err, errAgentAtCapacity) {
+						_ = s.queueDriver.NackTask(ctx, delivery.DeliveryRef, core.NackRetriable)
+						return nil, &core.BackpressureError{Reason: core.ReasonAgentConcurrencyExceeded,
+							Message: "agent concurrency limit reached; delivery requeued"}
+					}
+					return nil, err
+				}
+				return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
 			}
 		}
 	}
@@ -412,6 +433,10 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		}
 
 		// Idempotent settlement: ledger (two scopes), increment only on insert.
+		costUSD := 0.0
+		if usage != nil && total > 0 {
+			costUSD = EstimateCostUSD(total)
+		}
 		for _, scope := range []struct{ Type, ID string }{
 			{"tenant", tenantID},
 			{"agent", attempt.AgentID},
@@ -420,13 +445,13 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 				TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt,
 				ScopeType: scope.Type, ScopeID: scope.ID,
 				PromptTokens: prompt, CompletionTokens: completion,
-				TotalTokens: total, CostUSD: 0,
+				TotalTokens: total, CostUSD: costUSD,
 			})
 			if ierr != nil {
 				return fmt.Errorf("ledger insert %s: %w", scope.Type, ierr)
 			}
 			if inserted {
-				if ierr := s.budgetUsage.IncrementUsageTx(ctx, tx, tenantID, scope.Type, scope.ID, prompt, completion, total, 0); ierr != nil {
+				if ierr := s.budgetUsage.IncrementUsageTx(ctx, tx, tenantID, scope.Type, scope.ID, prompt, completion, total, costUSD); ierr != nil {
 					return fmt.Errorf("increment usage %s: %w", scope.Type, ierr)
 				}
 			}

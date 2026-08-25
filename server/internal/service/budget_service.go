@@ -133,6 +133,14 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 	return s.usageRepo.ReserveTask(ctx, tenantID, string(core.BudgetScopeAgent), agentID)
 }
 
+// EstimatedCostPerTokenUSD is the interim flat rate used until trusted token
+// metering supplies authoritative costs.
+const EstimatedCostPerTokenUSD = 0.00003
+
+func EstimateCostUSD(totalTokens int64) float64 {
+	return float64(totalTokens) * EstimatedCostPerTokenUSD
+}
+
 func (s *BudgetService) Settle(ctx context.Context, tenantID, agentID string, usage *core.TokenUsage) error {
 	if s.usageRepo == nil {
 		return nil
@@ -142,7 +150,7 @@ func (s *BudgetService) Settle(ctx context.Context, tenantID, agentID string, us
 	}
 
 	tokens := usage.TotalTokens
-	costUSD := float64(tokens) * 0.00003
+	costUSD := EstimateCostUSD(int64(tokens))
 
 	if err := s.usageRepo.SettleUsage(ctx, tenantID, string(core.BudgetScopeAgent), agentID, tokens, costUSD); err != nil {
 		return err
