@@ -9,8 +9,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      nats:
-        condition: service_started
       redis:
         condition: service_started
     environment:
@@ -21,12 +19,19 @@ services:
       JANUS_PG_DATABASE: janus
       # Dev PG runs without TLS; the default sslmode=require would hard-fail.
       JANUS_PG_SSLMODE: "disable"
+      # Default keeps parity with the bundled NATS. Start with
+      #   JANUS_QUEUE_DRIVER=pg docker compose up
+      # (plus `--profile with-nats` removed) for a PostgreSQL-only stack —
+      # see README "Running without NATS".
       JANUS_NATS_URL: "nats://nats:4222"
       JANUS_REDIS_ADDR: "redis:6379"
       JANUS_MIGRATION_AUTO: "true"
       JANUS_MIGRATION_PATH: "/migrations"
       # Auth must stay ON here: the container binds 0.0.0.0 for port publishing,
       # and the server refuses auth-disabled non-loopback binds by design.
+      # PostgreSQL-only by default (single dependency). For NATS delivery:
+      #   JANUS_QUEUE_DRIVER=nats docker compose --profile with-nats up
+      JANUS_QUEUE_DRIVER: ${JANUS_QUEUE_DRIVER:-pg}
       # A documented dev key is seeded by the api-key-seed service below.
       JANUS_AUTH_ENABLED: "true"
     healthcheck:
@@ -71,6 +76,7 @@ services:
       retries: 10
 
   nats:
+    profiles: ["with-nats"]
     image: nats:2-alpine
     command: -js -m 8222
     ports:

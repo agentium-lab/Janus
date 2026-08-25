@@ -63,6 +63,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "janus-core.postgresPasswordSecret" . }}
                   key: {{ .Values.postgres.secretKey }}
+            - name: JANUS_QUEUE_DRIVER
+              value: "{{ .Values.queue.driver }}"
             - name: JANUS_NATS_URL
               value: "{{ .Values.nats.url }}"
             - name: JANUS_REDIS_ADDR

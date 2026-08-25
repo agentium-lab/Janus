@@ -55,6 +55,21 @@ JANUS_NATS_URL=nats://localhost:4222 JANUS_REDIS_ADDR=localhost:6379 \
 JANUS_HTTP_HOST=localhost JANUS_AUTH_ENABLED=false ./janus-api
 ```
 
+### Running without NATS
+
+PostgreSQL can act as the task queue itself — deploy Janus with a single
+strong dependency:
+
+```bash
+JANUS_QUEUE_DRIVER=pg ./janus-api   # plus your usual PG/Redis settings
+# or
+JANUS_QUEUE_DRIVER=pg docker compose up
+```
+
+Claims use `FOR UPDATE SKIP LOCKED` so worker concurrency semantics match the
+NATS path. Add NATS back (`--profile with-nats`) when you want its throughput
+and event fan-out at scale.
+
 > **Full-stack alternative:** `docker compose up -d` runs everything with API-key auth enabled and seeds a public dev key for tenant `acme` (credential in [deployments/dev/seed-dev-key.sql](deployments/dev/seed-dev-key.sql)). Export it as `JANUS_API_KEY` and pass `api_key=` to the SDK client.
 
 **Send your first task** — natural language in, routed to the right agent:
