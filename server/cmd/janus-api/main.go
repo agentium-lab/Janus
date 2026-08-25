@@ -147,8 +147,9 @@ func main() {
 		intentResolver = intentResolver.WithLLM(llmClient)
 	}
 
-	router := routing.NewRouter(lookupRepo, nil, nil)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo})
+	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
+	router := routing.NewRouter(lookupRepo, policyCheckerAdapter{svc: policySvc}, budgetCheckerAdapter{svc: budgetSvc})
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)
@@ -158,7 +159,6 @@ func main() {
 	approvalSvc := service.NewApprovalService(approvalRepo, taskSvc, natsDrv)
 	approvalSvc.WithOutboxRepo(outboxRepo, pool)
 	taskSvc.WithApproval(approvalSvc)
-	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
 
 	tenantH := handler.NewTenantHandler(tenantSvc)
 	agentH := handler.NewAgentHandler(agentSvc)
@@ -168,6 +168,8 @@ func main() {
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 	approvalH := handler.NewApprovalHandler(approvalSvc)
 	apiKeyH := handler.NewAPIKeyHandler(service.NewAPIKeyService(apiKeyRepo))
+	policyH := handler.NewPolicyRuleHandler(service.NewPolicyRuleService(policyRuleRepo))
+	budgetH := handler.NewBudgetHandler(service.NewBudgetSpecService(budgetRepo))
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
@@ -274,7 +276,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH, policyH, budgetH)
 
 	// Orchestration probes and the Prometheus scrape stay unauthenticated:
 	// health checkers and scrapers cannot present API keys, and blocking them
@@ -401,7 +403,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -463,6 +465,22 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, taskH.Block)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/unblock"):
 			postOnly(w, r, taskH.Unblock)
+		case hasSegment(p, "policy-rules") && hasSuffix(p, "/templates"):
+			postOnly(w, r, policyH.CreateFromTemplate)
+		case hasSegment(p, "policy-rules") && r.Method == http.MethodGet:
+			getOnly(w, r, policyH.List)
+		case hasSegment(p, "policy-rules"):
+			postOnly(w, r, policyH.Create)
+		case hasSegment(p, "budgets") && hasSuffix(p, "/budgets") && r.Method == http.MethodGet:
+			getOnly(w, r, budgetH.List)
+		case hasSegment(p, "budgets") && hasSuffix(p, "/budgets"):
+			postOnly(w, r, budgetH.Upsert)
+		case hasSegment(p, "budgets") && r.Method == http.MethodGet:
+			getOnly(w, r, budgetH.Get)
+		case hasSegment(p, "mailboxes") && hasSuffix(p, "/pause"):
+			postOnly(w, r, mailboxH.Pause)
+		case hasSegment(p, "mailboxes") && hasSuffix(p, "/resume"):
+			postOnly(w, r, mailboxH.Resume)
 		case hasSegment(p, "api-keys") && hasSuffix(p, "/revoke"):
 			postOnly(w, r, apiKeyH.Revoke)
 		case hasSegment(p, "api-keys") && r.Method == http.MethodGet:
@@ -528,6 +546,35 @@ func (a agentExistenceAdapter) AgentExists(ctx context.Context, tenantID, agentI
 		return false, err
 	}
 	return true, nil
+}
+
+type policyCheckerAdapter struct {
+	svc *service.PolicyService
+}
+
+func (a policyCheckerAdapter) CheckRoute(ctx context.Context, tenantID, agentID, dataClass string) (bool, error) {
+	decision, err := a.svc.Evaluate(ctx, core.PolicyInput{
+		TenantID: tenantID,
+		Actor:    core.PolicyActor{Type: "agent", ID: agentID},
+		Action:   "execute",
+		Resource: core.PolicyResource{Type: "agent", Value: agentID},
+		Context:  core.PolicyContextData{DataClassification: dataClass, TargetAgentID: agentID},
+	})
+	if err != nil {
+		return false, err
+	}
+	return decision.Decision == core.PolicyDecisionAllow, nil
+}
+
+type budgetCheckerAdapter struct {
+	svc *service.BudgetService
+}
+
+// CheckCapacity filters routing candidates at agent level only; tenant-level
+// concurrency and rate limits stay enforced at PullTask where real counters
+// are available.
+func (b budgetCheckerAdapter) CheckCapacity(ctx context.Context, tenantID, agentID string, running int, _ int) (bool, error) {
+	return b.svc.CheckConcurrency(ctx, tenantID, agentID, running, 0) == nil, nil
 }
 
 func postOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
