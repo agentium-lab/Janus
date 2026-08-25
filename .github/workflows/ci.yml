@@ -1,31 +1,30 @@
 name: CI
 
-# Temporarily disabled — re-enable when infra is stable
 on:
   push:
-    branches: [never]
+    branches: [main]
   pull_request:
-    branches: [never]
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.work
 
       - name: Build all modules
-        run: go build ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
+        run: go build ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
   vet:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.work
 
@@ -33,12 +32,12 @@ jobs:
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: go vet
-        run: go vet ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
+        run: go vet ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
       - name: staticcheck
         # U1000 (unused code) and ST1000/ST1020/ST1021 (doc style) are
         # housekeeping lints, not correctness gates. See Makefile for rationale.
-        run: staticcheck -checks 'all,-U1000,-ST1000,-ST1020,-ST1021' ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
+        run: staticcheck -checks 'all,-U1000,-ST1000,-ST1020,-ST1021' ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
   test:
     runs-on: ubuntu-latest
@@ -74,9 +73,9 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.work
 
@@ -96,7 +95,6 @@ jobs:
           go test -count=1 -timeout=60s -cover ./server/internal/config/...
           go test -count=1 -timeout=60s -cover ./sdk/go/...
           go test -count=1 -timeout=60s -cover ./cli/...
-          go test -count=1 -timeout=60s -cover ./demo/...
           go test -count=1 -timeout=60s -cover ./server/tests/simulation/...
 
       - name: E2E + integration tests (with infra)
@@ -108,7 +106,6 @@ jobs:
           JANUS_URL: http://localhost:8080
         run: |
           go test -count=1 -timeout=120s ./server/tests/e2e/...
-          go test -count=1 -timeout=120s ./demo/pipeline/...
 
       - name: Postgres driver tests
         env:

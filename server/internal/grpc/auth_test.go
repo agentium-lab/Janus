@@ -25,6 +25,7 @@ func (f *fakeValidator) Validate(_ context.Context, _ string) (string, error) {
 
 type fakeTenantedReq struct{ tenant string }
 
+//lint:ignore ST1003 mirrors the protobuf-generated getter name
 func (r *fakeTenantedReq) GetTenantId() string { return r.tenant }
 
 type bareReq struct{}

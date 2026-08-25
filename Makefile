@@ -2,7 +2,7 @@
 
 # All Go modules managed by go.work. Commands must reference module paths
 # explicitly because the repo root is not itself a Go module.
-GO_MODULES := ./core/... ./server/... ./cli/... ./sdk/go/... ./demo/... ./proto/...
+GO_MODULES := ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
 # Internal packages that do not require external infrastructure (PostgreSQL,
 # NATS, Redis). These run on every change for fast feedback.
@@ -23,8 +23,7 @@ GO_INTERNAL_PKGS := \
 	./server/internal/lease/... \
 	./server/tests/simulation/... \
 	./sdk/go/... \
-	./cli/... \
-	./demo/...
+	./cli/...
 
 # Coverage gate packages: Core unit-testable production packages only.
 # Demo and simulation are excluded (not Core production code per the GA plan).
@@ -88,7 +87,7 @@ test:
 # the default threshold is 0 (report-only). Override via COVERAGE_THRESHOLD=90.
 coverage:
 	@mkdir -p .cover
-	go test -count=1 -timeout=120s -race -coverprofile=.cover/core.out $(COVERAGE_PKGS) >/dev/null 2>&1 || true
+	go test -count=1 -timeout=120s -race -coverprofile=.cover/core.out $(COVERAGE_PKGS)
 	@cov=$$(go tool cover -func=.cover/core.out | awk '/^total:/ {print $$3}' | tr -d '%'); \
 	cov_int=$${cov%.*}; \
 	thresh_int=$${COVERAGE_THRESHOLD:-0}; \
@@ -103,12 +102,12 @@ coverage:
 
 ## python-compile: Syntax-check the Python SDK.
 python-compile:
-	@command -v python3 >/dev/null 2>&1 || { echo "python3 not found"; exit 0; }
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
 	python3 -m py_compile $$(find sdk/python/janus_sdk -name '*.py')
 
 ## python-examples-compile: Syntax-check the Python interop examples.
 python-examples-compile:
-	@command -v python3 >/dev/null 2>&1 || { echo "python3 not found"; exit 0; }
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
 	python3 -m py_compile $$(find examples/interop -name '*.py')
 
 ## proto: Regenerate protobuf + grpc-gateway artifacts from proto/.
@@ -153,13 +152,13 @@ contract-check:
 
 ## python-test: Run Python SDK unit tests.
 python-test:
-	@command -v python3 >/dev/null 2>&1 || { echo "python3 not found"; exit 0; }
-	cd sdk/python && python3 -m pytest tests/ -v 2>&1 || true
+	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
+	cd sdk/python && python3 -m pytest tests/
 
 ## typescript-test: Run TypeScript SDK compilation check.
 typescript-test:
-	@command -v npx >/dev/null 2>&1 || { echo "npx not found"; exit 0; }
-	cd sdk/typescript && npx tsc --noEmit 2>&1 || true
+	@command -v npx >/dev/null 2>&1 || { echo "ERROR: npx is required"; exit 1; }
+	cd sdk/typescript && npx tsc --noEmit
 
 ## verify-sdk-cli: Run SDK conformance + CLI tests against auth-enabled API.
 verify-sdk-cli: python-test typescript-test
@@ -195,8 +194,10 @@ verify-reliability: verify beta-fast
 	@echo "verify-reliability: reliability checks passed"
 
 ## verify-ops-chaos: Redis/NATS/PG restart / readiness / rolling restart smoke.
+## Requires a running API at JANUS_URL (default http://localhost:8080);
+## failures propagate — start the stack first or skip this target explicitly.
 verify-ops-chaos:
-	@JANUS_URL=$${JANUS_URL:-http://localhost:8080} bash scripts/smoke_ops_chaos.sh || { echo "verify-ops-chaos: chaos checks skipped (no running API)"; }
+	JANUS_URL=$${JANUS_URL:-http://localhost:8080} bash scripts/smoke_ops_chaos.sh
 	@echo "verify-ops-chaos: ops chaos checks passed"
 
 ## verify-release-ops: Helm lint / migration rollback / load baseline smoke.

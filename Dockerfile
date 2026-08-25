@@ -14,7 +14,6 @@ COPY proto/ proto/
 COPY server/ server/
 COPY cli/ cli/
 COPY sdk/ sdk/
-COPY demo/ demo/
 COPY migrations/ migrations/
 
 WORKDIR /src/server
