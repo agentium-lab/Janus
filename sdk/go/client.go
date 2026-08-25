@@ -26,6 +26,7 @@ type APIKey struct {
 	TenantID   string     `json:"tenant_id"`
 	Name       string     `json:"name"`
 	Prefix     string     `json:"prefix"`
+	Scopes     []string   `json:"scopes,omitempty"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
 	RevokedAt  *time.Time `json:"revoked_at,omitempty"`

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -19,6 +20,7 @@ import (
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
@@ -26,20 +28,20 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/bootstrap"
 	"github.com/agentium-lab/Janus/server/internal/config"
-	grpcserver "github.com/agentium-lab/Janus/server/internal/grpc"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	pgdriver "github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/a2a"
 	"github.com/agentium-lab/Janus/server/internal/gateway/acp"
 	"github.com/agentium-lab/Janus/server/internal/gateway/mcp"
+	grpcserver "github.com/agentium-lab/Janus/server/internal/grpc"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/heartbeat"
 	"github.com/agentium-lab/Janus/server/internal/lease"
 	"github.com/agentium-lab/Janus/server/internal/llm"
 	_ "github.com/agentium-lab/Janus/server/internal/metrics"
-	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/observability"
+	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/agentium-lab/Janus/server/internal/expiry"
@@ -125,6 +127,7 @@ func main() {
 	lookupRepo := pgdriver.NewAgentLookupRepo(pool)
 
 	approvalRepo := pgdriver.NewApprovalRepo(pool)
+	apiKeyRepo := pgdriver.NewAPIKeyRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
@@ -145,7 +148,7 @@ func main() {
 	}
 
 	router := routing.NewRouter(lookupRepo, nil, nil)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver})
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo})
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)
@@ -164,6 +167,7 @@ func main() {
 	dispatchH := handler.NewDispatchHandler(&dispatchAdapter{svc: dispatchSvc})
 	auditH := handler.NewAuditHandler(&auditAdapter{svc: eventSvc})
 	approvalH := handler.NewApprovalHandler(approvalSvc)
+	apiKeyH := handler.NewAPIKeyHandler(service.NewAPIKeyService(apiKeyRepo))
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
 	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
 
@@ -270,7 +274,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH)
 
 	// Orchestration probes and the Prometheus scrape stay unauthenticated:
 	// health checkers and scrapers cannot present API keys, and blocking them
@@ -299,7 +303,7 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort)
 	var core http.Handler = protected
 	if cfg.Auth.Enabled {
-		core = auth.Middleware(validator)(auth.TenantGuard(extractTenantFromPath)(core))
+		core = auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(core)))
 		log.Println("api key authentication enabled")
 	} else if !isLoopbackAddr(addr) {
 		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true, or bind a loopback address via JANUS_HTTP_HOST=localhost for local development", addr)
@@ -397,7 +401,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -437,14 +441,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, agentH.Heartbeat)
 		case hasSegment(p, "agents") && !hasLastSegment(p, "agents"):
 			getOnly(w, r, agentH.Get)
-	case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
-		if r.Method == http.MethodPost {
-			agentH.Register(w, r)
-		} else {
-			agentH.List(w, r)
-		}
-	case hasSuffix(p, "/catalog"):
-		getOnly(w, r, catalogH.List)
+		case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
+			if r.Method == http.MethodPost {
+				agentH.Register(w, r)
+			} else {
+				agentH.List(w, r)
+			}
+		case hasSuffix(p, "/catalog"):
+			getOnly(w, r, catalogH.List)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/start"):
 			postOnly(w, r, dispatchH.Start)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/heartbeat"):
@@ -459,6 +463,12 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, taskH.Block)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/unblock"):
 			postOnly(w, r, taskH.Unblock)
+		case hasSegment(p, "api-keys") && hasSuffix(p, "/revoke"):
+			postOnly(w, r, apiKeyH.Revoke)
+		case hasSegment(p, "api-keys") && r.Method == http.MethodGet:
+			getOnly(w, r, apiKeyH.List)
+		case hasSegment(p, "api-keys"):
+			postOnly(w, r, apiKeyH.Create)
 		case hasSegment(p, "approvals") && hasSuffix(p, "/approve"):
 			postOnly(w, r, approvalH.Approve)
 		case hasSegment(p, "approvals") && hasSuffix(p, "/reject"):
@@ -503,6 +513,21 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 	})
 
 	return mux
+}
+
+type agentExistenceAdapter struct {
+	repo *pgdriver.AgentRepository
+}
+
+func (a agentExistenceAdapter) AgentExists(ctx context.Context, tenantID, agentID string) (bool, error) {
+	_, err := a.repo.Get(ctx, tenantID, agentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func postOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
