@@ -10,7 +10,7 @@ across frameworks, teams, and organizations.
 [![Release](https://img.shields.io/github/v/release/agentium-lab/Janus?color=brightgreen&label=release)](https://github.com/agentium-lab/Janus/releases)
 [![Go Version](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-988%E2%9C%93-brightgreen)](#verification)
+[![CI](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml)
 [![Website](https://img.shields.io/badge/website-janusa2a.com-ff5c8a)](https://janusa2a.com)
 
 [Documentation](https://janusa2a.com/docs/quickstart.html) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Releases](https://github.com/agentium-lab/Janus/releases)

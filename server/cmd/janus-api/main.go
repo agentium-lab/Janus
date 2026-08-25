@@ -425,7 +425,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
 	mux.Handle("/a2a/", a2aGw)
-	mux.Handle("/acp/", acpGw)
+	// ACP is deprecated in favor of A2A (protocol merged upstream). The shell
+	// keeps existing consumers working while advertising removal via headers.
+	mux.Handle("/acp/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Deprecation", "true")
+		w.Header().Set("Sunset", "Thu, 31 Dec 2026 23:59:59 GMT")
+		w.Header().Set("Link", "</a2a/>; rel=\"deprecation\"")
+		acpGw.ServeHTTP(w, r)
+	}))
 	mux.Handle("/mcp", mcpGw)
 	mux.Handle("/mcp/", mcpGw)
 
