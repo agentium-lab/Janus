@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -16,11 +17,46 @@ import (
 )
 
 type Driver struct {
+	mu   sync.Mutex
+	subs []chan<- core.JanusEvent
 	pool *pgxpool.Pool
 }
 
 func NewDriver(pool *pgxpool.Pool) *Driver {
 	return &Driver{pool: pool}
+}
+
+// SubscribeEvents registers an in-process event channel. Durability comes
+// from the outbox rows that precede every PublishEvent call; this bus only
+// carries live fan-out to WS broadcasters and audit projectors.
+func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent) (*Subscription, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	sub := &Subscription{ch: ch, driver: d}
+	d.subs = append(d.subs, ch)
+	go func() {
+		<-ctx.Done()
+		d.remove(ch)
+	}()
+	return sub, nil
+}
+
+type Subscription struct {
+	ch     chan<- core.JanusEvent
+	driver *Driver
+}
+
+func (s *Subscription) Unsubscribe() { s.driver.remove(s.ch) }
+
+func (d *Driver) remove(ch chan<- core.JanusEvent) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i, c := range d.subs {
+		if c == ch {
+			d.subs = append(d.subs[:i], d.subs[i+1:]...)
+			return
+		}
+	}
 }
 
 var ErrNotSupported = errors.New("pgqueue: not supported in postgres-only mode")
@@ -169,14 +205,23 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 	return err
 }
 
-// PublishEvent lands in the transactional outbox, which the existing worker
-// already drains independently of any broker.
-func (d *Driver) PublishEvent(ctx context.Context, event core.JanusEvent) error {
-	return ErrNotSupported
+// PublishEvent fans the event out to in-process subscribers (WS broadcaster,
+// audit projector). Durability is owned by the outbox row written before this
+// call, so dropping a notification on a full channel never loses the fact.
+func (d *Driver) PublishEvent(_ context.Context, event core.JanusEvent) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, ch := range d.subs {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+	return nil
 }
 
 func (d *Driver) ReplayEvents(ctx context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
-	return nil, ErrNotSupported
+	return nil, errors.New("pgqueue: historical replay pending; use the outbox table directly")
 }
 
 func (d *Driver) EnsureTenant(_ context.Context, _ string) error              { return nil }
