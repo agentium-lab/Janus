@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -25,6 +26,14 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Verify NPM_TOKEN present
+        run: |
+          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "::error::Secret NPM_TOKEN is not set on this repository"
+            exit 1
+          fi
+          echo "NPM_TOKEN present"
 
       - name: Publish @agentium-lab/janus-sdk
         working-directory: sdk/typescript
