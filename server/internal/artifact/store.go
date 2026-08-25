@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -95,13 +96,18 @@ func (s *LocalArtifactStore) Store(ctx context.Context, tenantID, artifactID str
 		return nil, fmt.Errorf("write artifact: %w", err)
 	}
 
-	return &Artifact{
+	art := &Artifact{
 		ID:          artifactID,
 		TenantID:    tenantID,
 		Hash:        hex.EncodeToString(hasher.Sum(nil)),
 		Size:        written,
 		ContentType: contentType,
-	}, nil
+	}
+	if err := writeMeta(metaPath(path), art); err != nil {
+		os.Remove(path)
+		return nil, fmt.Errorf("write artifact metadata: %w", err)
+	}
+	return art, nil
 }
 
 func (s *LocalArtifactStore) Get(ctx context.Context, tenantID, artifactID string) (io.ReadCloser, *Artifact, error) {
@@ -110,31 +116,47 @@ func (s *LocalArtifactStore) Get(ctx context.Context, tenantID, artifactID strin
 		return nil, nil, err
 	}
 
-	info, err := os.Stat(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("artifact not found: %w", err)
 	}
 
-	f, err := os.Open(path)
+	// Metadata comes from the sidecar written at Store time so the body can be
+	// streamed without loading it into memory. Falls back to a stat-only
+	// record for artifacts stored before sidecars existed.
+	art, err := readMeta(metaPath(path))
 	if err != nil {
-		return nil, nil, fmt.Errorf("open artifact: %w", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		f.Close()
-		return nil, nil, fmt.Errorf("read artifact for hash: %w", err)
-	}
-	hasher := sha256.Sum256(data)
-
-	art := &Artifact{
-		ID:       artifactID,
-		TenantID: tenantID,
-		Hash:     hex.EncodeToString(hasher[:]),
-		Size:     info.Size(),
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			f.Close()
+			return nil, nil, fmt.Errorf("stat artifact: %w", statErr)
+		}
+		art = &Artifact{ID: artifactID, TenantID: tenantID, Size: info.Size()}
 	}
 
 	return f, art, nil
+}
+
+func metaPath(dataPath string) string { return dataPath + ".meta.json" }
+
+func writeMeta(p string, art *Artifact) error {
+	b, err := json.Marshal(art)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(p, b, 0o644)
+}
+
+func readMeta(p string) (*Artifact, error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var art Artifact
+	if err := json.Unmarshal(b, &art); err != nil {
+		return nil, err
+	}
+	return &art, nil
 }
 
 func (s *LocalArtifactStore) Delete(ctx context.Context, tenantID, artifactID string) error {
@@ -145,5 +167,6 @@ func (s *LocalArtifactStore) Delete(ctx context.Context, tenantID, artifactID st
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete artifact: %w", err)
 	}
+	_ = os.Remove(metaPath(path))
 	return nil
 }
