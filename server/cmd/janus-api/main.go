@@ -105,11 +105,13 @@ func main() {
 		defer natsDrv.Close()
 	}
 
-	var queueDrv core.QueueEventDriver = natsDrv
-	if queueDrv == nil {
+	var queueDrv core.QueueEventDriver
+	switch cfg.Queue.Driver {
+	case "pg":
 		queueDrv = pgqueue.NewDriver(pool)
 		log.Println("queue driver: postgres (single-dependency mode; NATS disabled)")
-		log.Println("PGONLY_MARKER_XYZ")
+	default:
+		queueDrv = natsDrv
 	}
 	subscribeEvents := func(ctx context.Context, ch chan<- core.JanusEvent) (*nats.Subscription, error) {
 		if q, ok := queueDrv.(*pgqueue.Driver); ok {
