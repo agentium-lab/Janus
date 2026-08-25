@@ -36,6 +36,10 @@ type mockTaskCreator struct {
 	err  error
 }
 
+func (m *mockTaskCreator) Cancel(_ context.Context, _, _ string) error {
+	return m.err
+}
+
 func (m *mockTaskCreator) Create(_ context.Context, task core.Task) (*core.Task, error) {
 	if m.err != nil {
 		return nil, m.err

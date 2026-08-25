@@ -79,6 +79,8 @@ func (g *Gateway) WithEventPublisher(p EventPublisher) *Gateway {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case r.URL.Path == "/mcp" && r.Method == http.MethodPost:
+		g.handleJSONRPC(w, r)
 	case r.URL.Path == "/mcp/tools/call" && r.Method == http.MethodPost:
 		g.handleToolCall(w, r)
 	case r.URL.Path == "/mcp/resources" && r.Method == http.MethodPost:
@@ -200,10 +202,10 @@ func (g *Gateway) handleResource(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		URI           string   `json:"uri"`
-		Hash          string   `json:"hash"`
-		Classification string  `json:"classification"`
-		AccessScope   []string `json:"access_scope"`
+		URI            string   `json:"uri"`
+		Hash           string   `json:"hash"`
+		Classification string   `json:"classification"`
+		AccessScope    []string `json:"access_scope"`
 	}
 	if err := readJSONLimit(w, r, &req); err != nil {
 		writeMCPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
@@ -263,4 +265,111 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
+}
+
+// handleJSONRPC implements the MCP streamable-HTTP JSON-RPC surface on /mcp:
+// initialize handshake, ping, tools/list, tools/call and resources/list.
+// Tool execution remains the async task pipeline shared with the REST route.
+type mcpRPCRequest struct {
+	JSONRPC string          `json:"jsonrpc"`
+	Method  string          `json:"method"`
+	Params  json.RawMessage `json:"params"`
+	ID      interface{}     `json:"id"`
+}
+
+func (g *Gateway) writeMCPResult(w http.ResponseWriter, id interface{}, result interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"jsonrpc": "2.0", "id": id, "result": result,
+	})
+}
+
+func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
+	}
+	var req mcpRPCRequest
+	if err := readJSONLimit(w, r, &req); err != nil {
+		writeMCPError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
+		return
+	}
+	switch req.Method {
+	case "initialize":
+		var p struct {
+			ProtocolVersion string `json:"protocolVersion"`
+		}
+		_ = json.Unmarshal(req.Params, &p)
+		version := p.ProtocolVersion
+		if version == "" {
+			version = "2024-11-05"
+		}
+		g.writeMCPResult(w, req.ID, map[string]interface{}{
+			"protocolVersion": version,
+			"capabilities":    map[string]interface{}{"tools": map[string]bool{"listChanged": false}, "resources": map[string]bool{}},
+			"serverInfo":      map[string]string{"name": "janus-mcp", "version": "1.1.0"},
+		})
+	case "notifications/initialized":
+		w.WriteHeader(http.StatusAccepted)
+	case "ping":
+		g.writeMCPResult(w, req.ID, map[string]interface{}{})
+	case "tools/list":
+		g.writeMCPResult(w, req.ID, map[string]interface{}{"tools": []interface{}{}})
+	case "resources/list":
+		g.writeMCPResult(w, req.ID, map[string]interface{}{"resources": []interface{}{}})
+	case "tools/call":
+		var p struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}
+		if err := json.Unmarshal(req.Params, &p); err != nil || p.Name == "" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32602, "message": "invalid params: name required"},
+			})
+			return
+		}
+		sourceAgent := r.URL.Query().Get("source_agent")
+		if sourceAgent == "" {
+			sourceAgent = "mcp-client"
+		}
+		callID := fmt.Sprintf("mcp_%d", time.Now().UnixNano())
+		task := core.Task{
+			ID: callID, TenantID: tenantID, SourceAgent: sourceAgent,
+			TargetType: core.TargetTypeCapability, TargetValue: p.Name,
+			Status: core.TaskStatusCreated,
+			Envelope: core.TaskEnvelope{
+				JanusVersion: "0.3", TaskID: callID, TenantID: tenantID,
+				SourceAgent: sourceAgent,
+				Target:      core.Target{Type: core.TargetTypeCapability, Value: p.Name},
+				Payload:     core.Payload{Type: "mcp_tool_call", Content: p.Arguments},
+				Trace:       core.TraceContext{TraceID: "mcp-" + callID},
+				Policy:      &core.PolicyContext{DataClassification: "internal"},
+			},
+		}
+		result, err := g.taskSvc.Create(r.Context(), task)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]interface{}{"code": -32603, "message": sanitizeMsg(err.Error())},
+			})
+			return
+		}
+		g.emitToolEvent(r.Context(), core.EventToolInvocationStarted, tenantID, result.ID, sourceAgent, p.Name)
+		g.writeMCPResult(w, req.ID, map[string]interface{}{
+			"content": []interface{}{map[string]string{
+				"type": "text",
+				"text": fmt.Sprintf("tool call accepted: task_id=%s status=%s", result.ID, result.Status),
+			}},
+			"isError": false,
+		})
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"jsonrpc": "2.0", "id": req.ID,
+			"error": map[string]interface{}{"code": -32601, "message": "method not found: " + req.Method},
+		})
+	}
 }

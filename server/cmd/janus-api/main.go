@@ -172,7 +172,7 @@ func main() {
 	policyH := handler.NewPolicyRuleHandler(service.NewPolicyRuleService(policyRuleRepo))
 	budgetH := handler.NewBudgetHandler(service.NewBudgetSpecService(budgetRepo))
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
-	a2aGw := a2a.NewGateway(agentSvc, taskSvc)
+	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc)
 
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
@@ -299,6 +299,7 @@ func main() {
 	// makes every authenticated deployment fail its own readiness gate.
 	public := http.NewServeMux()
 	public.Handle("/metrics", promhttp.Handler())
+	public.Handle("/.well-known/agent.json", a2a.AgentCardHandler())
 	public.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -425,6 +426,7 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
 	mux.Handle("/a2a/", a2aGw)
 	mux.Handle("/acp/", acpGw)
+	mux.Handle("/mcp", mcpGw)
 	mux.Handle("/mcp/", mcpGw)
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
@@ -693,8 +695,7 @@ func extractTenantFromPath(path string) string {
 // TLS 1.2 and only strong AEAD cipher suites are enabled.
 func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 	cfg := &tls.Config{
-		MinVersion:               tls.VersionTLS12,
-		PreferServerCipherSuites: true,
+		MinVersion: tls.VersionTLS12,
 		CipherSuites: []uint16{
 			tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
 			tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,

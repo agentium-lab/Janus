@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"fmt"
 	"context"
 	"encoding/json"
 	"io"
@@ -51,6 +52,7 @@ type AgentRegistrar interface {
 
 type TaskCreator interface {
 	Create(ctx context.Context, task core.Task) (*core.Task, error)
+	Cancel(ctx context.Context, tenantID, taskID string) error
 }
 
 type TaskStatusGetter interface {
@@ -58,8 +60,8 @@ type TaskStatusGetter interface {
 }
 
 type Gateway struct {
-	agentSvc AgentRegistrar
-	taskSvc  TaskCreator
+	agentSvc  AgentRegistrar
+	taskSvc   TaskCreator
 	statusSvc TaskStatusGetter
 }
 
@@ -213,7 +215,7 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch req.Method {
-	case "task/send":
+	case "task/send", "message/send":
 		var msg SendMessageRequest
 		if err := json.Unmarshal(req.Params, &msg); err != nil {
 			writeJSONRPCError(w, req.ID, -32602, "invalid params")
@@ -233,7 +235,7 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 			"task_id": result.ID, "status": string(result.Status),
 		})
 
-	case "task/get":
+	case "task/get", "tasks/get":
 		var params struct {
 			TaskID string `json:"task_id"`
 		}
@@ -252,6 +254,22 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSONRPCResult(w, req.ID, map[string]interface{}{
 			"task_id": task.ID, "status": string(task.Status),
+		})
+
+	case "tasks/cancel":
+		var params struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil || params.TaskID == "" {
+			writeJSONRPCError(w, req.ID, -32602, "invalid params: task_id required")
+			return
+		}
+		if err := g.taskSvc.Cancel(r.Context(), tenantID, params.TaskID); err != nil {
+			writeJSONRPCError(w, req.ID, -32603, sanitizeMsg(err.Error()))
+			return
+		}
+		writeJSONRPCResult(w, req.ID, map[string]string{
+			"task_id": params.TaskID, "status": "cancelling",
 		})
 
 	default:
@@ -292,5 +310,31 @@ func writeJSONRPCError(w http.ResponseWriter, id interface{}, code int, msg stri
 		JSONRPC: "2.0",
 		Error:   &jsonRPCErr{Code: code, Message: msg},
 		ID:      id,
+	})
+}
+
+// AgentCardHandler serves the A2A well-known discovery document. Discovery is
+// unauthenticated by design so clients can bootstrap before holding keys.
+func AgentCardHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"name":        "Janus",
+			"description": "Durable agent task broker with governance, budgeting and audit.",
+			"url":         fmt.Sprintf("%s://%s/a2a/", scheme, r.Host),
+			"version":     "1.1.0",
+			"capabilities": map[string]bool{
+				"tasks":              true,
+				"streaming":          false,
+				"push_notifications": false,
+			},
+			"default_input_modes":  []string{"application/json"},
+			"default_output_modes": []string{"application/json"},
+			"skills":               []interface{}{},
+		})
 	})
 }
