@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/status"
 )
 
@@ -31,24 +33,49 @@ type listenFunc func(network, addr string) (net.Listener, error)
 var defaultListen listenFunc = net.Listen
 
 type Server struct {
+	creds      credentials.TransportCredentials
 	grpcServer *grpc.Server
 	addr       string
 	listen     listenFunc
 }
 
-func NewServer(port int, validator APIKeyValidator, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService, mailboxSvc *svc.MailboxService, dlqSvc *handler.DLQServiceAdapter) *Server {
-	s := grpc.NewServer(grpc.ChainUnaryInterceptor(AuthInterceptor(validator), errorMappingInterceptor))
-	pb.RegisterAgentServiceServer(s, NewAgentServiceServer(agentSvc))
-	pb.RegisterTaskServiceServer(s, NewTaskServiceServer(taskSvc))
-	pb.RegisterDispatchServiceServer(s, NewDispatchServiceServer(dispatchSvc))
-	pb.RegisterAuditServiceServer(s, NewAuditServiceServer(eventSvc))
-	pb.RegisterMailboxServiceServer(s, NewMailboxServiceServer(mailboxSvc))
-	pb.RegisterDLQServiceServer(s, NewDLQServiceServer(dlqSvc))
-	return &Server{
-		grpcServer: s,
-		addr:       fmt.Sprintf(":%d", port),
-		listen:     defaultListen,
+// Option configures the gRPC server at construction time.
+type Option func(*Server)
+
+// WithTLS enables transport credentials on the server listener. Without it
+// the gRPC endpoint serves plaintext regardless of the HTTP TLS settings.
+func WithTLS(cfg *tls.Config) Option {
+	return func(s *Server) {
+		if cfg != nil {
+			s.creds = credentials.NewTLS(cfg.Clone())
+		}
 	}
+}
+
+func NewServer(port int, validator APIKeyValidator, agentSvc *svc.AgentService, taskSvc *svc.TaskService, dispatchSvc *svc.DispatchService, eventSvc *svc.EventService, mailboxSvc *svc.MailboxService, dlqSvc *handler.DLQServiceAdapter, opts ...Option) *Server {
+	var srv Server
+	for _, opt := range opts {
+		opt(&srv)
+	}
+	serverOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(AuthInterceptor(validator), errorMappingInterceptor),
+	}
+	if srv.creds != nil {
+		serverOpts = append(serverOpts, grpc.Creds(srv.creds))
+	}
+	gs := grpc.NewServer(serverOpts...)
+	pb.RegisterAgentServiceServer(gs, NewAgentServiceServer(agentSvc))
+	pb.RegisterTaskServiceServer(gs, NewTaskServiceServer(taskSvc))
+	pb.RegisterDispatchServiceServer(gs, NewDispatchServiceServer(dispatchSvc))
+	pb.RegisterAuditServiceServer(gs, NewAuditServiceServer(eventSvc))
+	pb.RegisterMailboxServiceServer(gs, NewMailboxServiceServer(mailboxSvc))
+	pb.RegisterDLQServiceServer(gs, NewDLQServiceServer(dlqSvc))
+	srv.grpcServer = gs
+	srv.addr = fmt.Sprintf(":%d", port)
+	if srv.listen == nil {
+		srv.listen = defaultListen
+	}
+	return &srv
 }
 
 // errorMappingInterceptor maps service-layer errors to gRPC status codes via

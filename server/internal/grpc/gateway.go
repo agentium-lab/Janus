@@ -2,18 +2,20 @@ package grpc
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 	"strconv"
 
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
 
-func RegisterGateway(ctx context.Context, grpcAddr string) (http.Handler, error) {
+func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (http.Handler, error) {
 	// Use proto field names (snake_case) in JSON, matching the HTTP handlers.
 	mux := runtime.NewServeMux(
 		runtime.WithMarshalerOption(runtime.MIMEWildcard, &runtime.JSONPb{
@@ -23,7 +25,12 @@ func RegisterGateway(ctx context.Context, grpcAddr string) (http.Handler, error)
 		// Allow handlers to override HTTP status via metadata.
 		runtime.WithForwardResponseOption(setHTTPStatus),
 	)
-	opts := []grpc.DialOption{grpc.WithTransportCredentials(insecure.NewCredentials())}
+	opts := []grpc.DialOption{}
+	if tlsCfg != nil {
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg.Clone())))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
 
 	if err := pb.RegisterAgentServiceHandlerFromEndpoint(ctx, mux, grpcAddr, opts); err != nil {
 		return nil, err
