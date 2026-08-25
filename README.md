@@ -60,7 +60,7 @@ JANUS_HTTP_HOST=localhost JANUS_AUTH_ENABLED=false ./janus-api
 **Send your first task** — natural language in, routed to the right agent:
 
 ```python
-from janus_sdk import JanusClient
+from janus_broker import JanusClient
 
 client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
 
@@ -143,8 +143,12 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 | Language | Package | Coverage |
 |---|---|---|
 | **Go** | `github.com/agentium-lab/Janus/sdk/go` | 39 methods + Worker helper |
-| **Python** | `janus_sdk` (httpx + pydantic) | 34 methods + JanusWorker |
-| **TypeScript** | `sdk/typescript/` | 30 methods + Worker helper |
+| **Python** | `janus_broker` (httpx + pydantic) | 34 methods + JanusWorker |
+| **TypeScript** | `@agentium-lab/janus-sdk` (`sdk/typescript/`) | 30 methods + Worker helper |
+
+**Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
+
+> Naming note: distribution names carry a disambiguator where registries require it — the generic `janus-sdk` name on PyPI belongs to an unrelated project.
 
 All three SDKs share the same conformance fixtures (`sdk/conformance/`).
 

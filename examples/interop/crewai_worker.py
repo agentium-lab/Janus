@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from janus_sdk import JanusClient, JanusWorker, WorkerResult
+from janus_broker import JanusClient, JanusWorker, WorkerResult
 
 
 def build_crew():

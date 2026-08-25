@@ -2,7 +2,7 @@ import pytest
 import httpx
 import respx
 
-from janus_sdk import (
+from janus_broker import (
     JanusClient,
     RegisterAgentRequest,
     PublishTaskRequest,

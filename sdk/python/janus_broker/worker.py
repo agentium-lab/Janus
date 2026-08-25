@@ -8,7 +8,7 @@ from typing import Callable, Optional
 from .client import JanusClient, JanusAPIError
 from .models import Task, AckRequest, NackRequest, TaskError
 
-logger = logging.getLogger("janus_sdk.worker")
+logger = logging.getLogger("janus_broker.worker")
 
 
 class WorkerResult:

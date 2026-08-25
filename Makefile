@@ -103,7 +103,7 @@ coverage:
 ## python-compile: Syntax-check the Python SDK.
 python-compile:
 	@command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 is required"; exit 1; }
-	python3 -m py_compile $$(find sdk/python/janus_sdk -name '*.py')
+	python3 -m py_compile $$(find sdk/python/janus_broker -name '*.py')
 
 ## python-examples-compile: Syntax-check the Python interop examples.
 python-examples-compile:
