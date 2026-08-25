@@ -85,13 +85,20 @@ jobs:
           docker run -d --name nats -p 4222:4222 nats:2-alpine -js
           docker run -d --name redis -p 6379:6379 redis:7-alpine
 
-          for i in $(seq 1 60); do
-            docker exec pg pg_isready -U janus >/dev/null 2>&1 && break
-            sleep 1
+          # Health checks go over explicit TCP (-h) — the default unix-socket
+          # probe reports "/var/run/postgresql: no response" even when TCP is
+          # fine, and its silent failures were swallowed by the wait loop.
+          for i in $(seq 1 90); do
+            docker exec pg pg_isready -h 127.0.0.1 -U janus >/dev/null 2>&1 && pg_ok=1 && break
+            if [ "$((i % 15))" = 0 ]; then echo "--- pg logs @${i} ---"; docker logs --tail 20 pg; fi
+            sleep 2
           done
-          docker exec pg pg_isready -U janus
+          if [ "${pg_ok:-0}" != 1 ]; then
+            echo "::group::pg logs (final)"; docker logs pg; echo "::endgroup::"
+            echo "::error::postgres never became ready"; exit 1
+          fi
           until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
-          until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
+          until [ "$(docker exec rc redis-cli ping)" = "PONG" ]; do sleep 1; done
 
       - name: Unit tests (no infra dependency)
         run: |
