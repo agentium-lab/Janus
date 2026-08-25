@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/service/routing"
@@ -31,6 +32,12 @@ type IntentResolveResult struct {
 	Reason             string
 }
 
+// AgentExistenceChecker verifies an agent is registered under the tenant.
+// It backs the server-side source_agent ownership check.
+type AgentExistenceChecker interface {
+	AgentExists(ctx context.Context, tenantID, agentID string) (bool, error)
+}
+
 type TaskService struct {
 	taskRepo       TaskRepo
 	queueDriver    QueueDriver
@@ -42,6 +49,8 @@ type TaskService struct {
 	intentResolver IntentResolver
 	contextRefSvc  *ContextRefService
 	router         *routing.Router
+
+	agentExistence AgentExistenceChecker
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -81,6 +90,11 @@ func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService
 	return s
 }
 
+func (s *TaskService) WithAgentExistence(c AgentExistenceChecker) *TaskService {
+	s.agentExistence = c
+	return s
+}
+
 func (s *TaskService) WithRouter(r *routing.Router) *TaskService {
 	s.router = r
 	return s
@@ -103,6 +117,15 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 	if task.SourceAgent == "" {
 		return nil, fmt.Errorf("source agent is required")
+	}
+	if s.agentExistence != nil {
+		exists, err := s.agentExistence.AgentExists(ctx, task.TenantID, task.SourceAgent)
+		if err != nil {
+			return nil, fmt.Errorf("verify source agent: %w", err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("unknown source_agent %q: agents must be registered under the publishing tenant", task.SourceAgent)
+		}
 	}
 	if task.TargetType == "" {
 		return nil, fmt.Errorf("target type is required")
@@ -207,10 +230,10 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 
 	if task.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
 		if _, err := s.approvalSvc.RequestApproval(ctx, core.Approval{
-			TenantID:   task.TenantID,
-			TaskID:     task.ID,
+			TenantID:    task.TenantID,
+			TaskID:      task.ID,
 			RequestedBy: task.SourceAgent,
-			Reason:     "policy: approval required",
+			Reason:      "policy: approval required",
 		}); err != nil {
 			log.Printf("task %s: request approval: %v", task.ID, err)
 		}
@@ -533,7 +556,31 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 	})
 }
 
+// appendClaimedActor annotates an object-shaped event payload with the
+// non-authoritative claimed_actor hint. Non-object payloads and payloads that
+// already carry the field pass through untouched.
+func appendClaimedActor(payload []byte, actor string) []byte {
+	m := map[string]interface{}{}
+	if len(payload) > 0 {
+		if err := json.Unmarshal(payload, &m); err != nil || m == nil {
+			return payload
+		}
+	}
+	if _, exists := m["claimed_actor"]; exists {
+		return payload
+	}
+	m["claimed_actor"] = actor
+	out, err := json.Marshal(m)
+	if err != nil {
+		return payload
+	}
+	return out
+}
+
 func (s *TaskService) publishEvent(ctx context.Context, event core.JanusEvent) error {
+	if actor := auth.ActingUserFromContext(ctx); actor != "" {
+		event.Payload = appendClaimedActor(event.Payload, actor)
+	}
 	if err := enrichEvent(&event); err != nil {
 		return err
 	}
