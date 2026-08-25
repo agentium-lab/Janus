@@ -98,7 +98,7 @@ jobs:
             echo "::error::postgres never became ready"; exit 1
           fi
           until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
-          until [ "$(docker exec rc redis-cli ping)" = "PONG" ]; do sleep 1; done
+          until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
 
       - name: Unit tests (no infra dependency)
         run: |
