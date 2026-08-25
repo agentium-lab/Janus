@@ -19,16 +19,40 @@ services:
       JANUS_PG_USER: janus
       JANUS_PG_PASSWORD: janus
       JANUS_PG_DATABASE: janus
+      # Dev PG runs without TLS; the default sslmode=require would hard-fail.
+      JANUS_PG_SSLMODE: "disable"
       JANUS_NATS_URL: "nats://nats:4222"
       JANUS_REDIS_ADDR: "redis:6379"
       JANUS_MIGRATION_AUTO: "true"
       JANUS_MIGRATION_PATH: "/migrations"
-      JANUS_AUTH_ENABLED: "false"
+      # Auth must stay ON here: the container binds 0.0.0.0 for port publishing,
+      # and the server refuses auth-disabled non-loopback binds by design.
+      # A documented dev key is seeded by the api-key-seed service below.
+      JANUS_AUTH_ENABLED: "true"
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # Seeds the documented dev API key AFTER janus-api is healthy (= migrations
+  # applied). Credential is public by design — see deployments/dev/seed-dev-key.sql.
+  api-key-seed:
+    image: postgres:16-alpine
+    depends_on:
+      janus-api:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: janus
+      PGPASSWORD: janus
+      PGDATABASE: janus
+    volumes:
+      - ./deployments/dev/seed-dev-key.sql:/seed-dev-key.sql:ro
+    entrypoint: >
+      sh -c 'until psql -v ON_ERROR_STOP=1 -q -f /seed-dev-key.sql; do sleep 2; done;
+             echo "dev API key seeded for tenant acme"'
+    restart: "no"
 
   postgres:
     image: postgres:16-alpine

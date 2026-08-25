@@ -47,12 +47,15 @@ docker compose -f deployments/smoke-deps.compose.yaml up -d postgres nats redis
 # 2. Run migrations
 for f in migrations/*.up.sql; do psql -d janus -f "$f"; done
 
-# 3. Build and run
+# 3. Build and run — binding localhost keeps auth-off safe for local dev
 cd server && go build -o janus-api ./cmd/janus-api/
 JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_DATABASE=janus \
+JANUS_PG_SSLMODE=disable \
 JANUS_NATS_URL=nats://localhost:4222 JANUS_REDIS_ADDR=localhost:6379 \
-JANUS_AUTH_ENABLED=false ./janus-api
+JANUS_HTTP_HOST=localhost JANUS_AUTH_ENABLED=false ./janus-api
 ```
+
+> **Full-stack alternative:** `docker compose up -d` runs everything with API-key auth enabled and seeds a public dev key for tenant `acme` (credential in [deployments/dev/seed-dev-key.sql](deployments/dev/seed-dev-key.sql)). Export it as `JANUS_API_KEY` and pass `api_key=` to the SDK client.
 
 **Send your first task** — natural language in, routed to the right agent:
 
