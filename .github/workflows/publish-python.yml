@@ -29,7 +29,17 @@ jobs:
           python -m pip install --upgrade build
           cd sdk/python && python -m build
 
+      - name: Skip if version already published
+        run: |
+          VER=$(python -c "import tomllib;print(tomllib.load(open('sdk/python/pyproject.toml','rb'))['project']['version'])")
+          if curl -sf "https://pypi.org/pypi/janus-broker/$VER/json" >/dev/null; then
+            echo "janus-broker@$VER already on PyPI — skipping upload"
+            echo "skip_upload=true" >> "$GITHUB_OUTPUT"
+          fi
+        id: published
+
       - name: Publish to PyPI
+        if: steps.published.outputs.skip_upload != 'true' 
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: sdk/python/dist/
