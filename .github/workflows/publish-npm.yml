@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   npm:
@@ -27,16 +28,9 @@ jobs:
           npm ci
           npm run build
 
-      - name: Verify NPM_TOKEN present
-        run: |
-          if [ -z "${{ secrets.NPM_TOKEN }}" ]; then
-            echo "::error::Secret NPM_TOKEN is not set on this repository"
-            exit 1
-          fi
-          echo "NPM_TOKEN present"
-
+      # Tokenless: npm mints an OIDC token from GitHub's attestation endpoint
+      # (id-token: write) and the registry-side trusted publisher authorizes
+      # the upload. NPM_TOKEN is no longer used.
       - name: Publish @agentium-lab/janus-sdk
         working-directory: sdk/typescript
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --provenance
