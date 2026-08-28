@@ -278,6 +278,6 @@ make verify-production         # all 11 gates + GA readiness
 ## Known Limitations
 
 - **At-least-once delivery.** A worker whose lease expires mid-task (default 300s) will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should call the task heartbeat endpoint to renew the lease before expiry.
-- **Cost accounting is estimated.** `CostUSD` is derived from reported token counts at a flat rate (`EstimatedCostPerTokenUSD`); authoritative per-model metering arrives with the enterprise llm-proxy.
+- **Token & cost figures are agent-reported and unverified** (ADR-0002). Aggregates are visibility only; nothing is rejected based on them. The enforced budget surface is RPM / TPM / concurrency, which the broker counts itself.
 
 \* ACP gateway is **deprecated** (protocol merged into A2A). Endpoints keep serving with `Deprecation`/`Sunset` headers until removal; new integrations should target `/a2a/`.

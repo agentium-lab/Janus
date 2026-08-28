@@ -22,8 +22,11 @@ type BudgetSpec struct {
 	RPM            int             `json:"rpm,omitempty"`
 	TPM            int             `json:"tpm,omitempty"`
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
-	DailyCostUSD   float64         `json:"daily_cost_usd,omitempty"`   // Planned: enforcement unreachable — production ACK path accrues cost as 0 pending trusted token metering
-	MonthlyCostUSD float64         `json:"monthly_cost_usd,omitempty"` // Planned: not enforced yet, pending trusted token metering
+	// Self-reported observability only (ADR-0002): values come from agent ACKs
+	// and are never verified or enforced. Aggregation/display is fine; any
+	// rejection logic reading these fields is a design error.
+	DailyCostUSD   float64         `json:"daily_cost_usd,omitempty"`
+	MonthlyCostUSD float64         `json:"monthly_cost_usd,omitempty"`
 	CreatedAt      time.Time       `json:"created_at,omitempty"`
 	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
 }
