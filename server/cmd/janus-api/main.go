@@ -22,8 +22,8 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/nats-io/nats.go"
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/nats-io/nats.go"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
@@ -461,11 +461,14 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 	mux.Handle("/mcp/", mcpGw)
 
 	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
+		switch r.Method {
+		case http.MethodPost:
 			tenantH.Create(w, r)
-			return
+		case http.MethodGet:
+			tenantH.List(w, r)
+		default:
+			http.NotFound(w, r)
 		}
-		http.NotFound(w, r)
 	})
 
 	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {

@@ -14,6 +14,7 @@ import (
 type TenantService interface {
 	Create(ctx context.Context, id, name string) error
 	Get(ctx context.Context, id string) (*core.Tenant, error)
+	List(ctx context.Context) ([]core.Tenant, error)
 }
 
 type TenantHandler struct {
@@ -22,6 +23,15 @@ type TenantHandler struct {
 
 func NewTenantHandler(svc TenantService) *TenantHandler {
 	return &TenantHandler{svc: svc}
+}
+
+func (h *TenantHandler) List(w http.ResponseWriter, r *http.Request) {
+	tenants, err := h.svc.List(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, tenants)
 }
 
 func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {

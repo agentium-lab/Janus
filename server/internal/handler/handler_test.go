@@ -21,6 +21,17 @@ type mockTenantService struct {
 	err     error
 }
 
+func (m *mockTenantService) List(_ context.Context) ([]core.Tenant, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	out := make([]core.Tenant, 0, len(m.tenants))
+	for _, t := range m.tenants {
+		out = append(out, *t)
+	}
+	return out, nil
+}
+
 func (m *mockTenantService) Create(_ context.Context, id, name string) error {
 	if m.err != nil {
 		return m.err
@@ -270,7 +281,7 @@ func (m *mockTaskService) Get(_ context.Context, tenantID, taskID string) (*core
 	return t, nil
 }
 
-func (m *mockTaskService) Start(_ context.Context, tenantID, taskID string) error  { return m.err }
+func (m *mockTaskService) Start(_ context.Context, tenantID, taskID string) error    { return m.err }
 func (m *mockTaskService) Complete(_ context.Context, tenantID, taskID string) error { return m.err }
 func (m *mockTaskService) Fail(_ context.Context, tenantID, taskID string, taskErr *core.TaskError) error {
 	return m.err
@@ -329,11 +340,11 @@ func TestTaskHandler_CreateWithFullEnvelope(t *testing.T) {
 			"payload":      map[string]string{"type": "review", "content": "x"},
 			"trace":        map[string]string{"trace_id": "t1"},
 			"budget": map[string]interface{}{
-				"max_tokens":  1000,
+				"max_tokens":   1000,
 				"max_cost_usd": 0.5,
 			},
 			"policy": map[string]interface{}{
-				"data_classification":      "confidential",
+				"data_classification":     "confidential",
 				"requires_human_approval": true,
 				"allowed_tools":           []string{"search"},
 			},
