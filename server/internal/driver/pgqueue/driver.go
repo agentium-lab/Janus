@@ -81,7 +81,7 @@ func splitRef(r core.DeliveryRef) (taskID string, attempt int, err error) {
 // the queue entry; FetchTasks reads it directly.
 func (d *Driver) PublishTask(_ context.Context, _ core.TaskMessage) error { return nil }
 
-func (d *Driver) FetchTasks(ctx context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	limit := opts.MaxMessages
 	if limit <= 0 {
 		limit = 1
@@ -132,42 +132,42 @@ func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byt
 
 // AckTask finalizes the attempt row; authoritative task completion still runs
 // through DispatchService.AckTask's own guarded transaction.
-func (d *Driver) AckTask(ctx context.Context, r core.DeliveryRef) error {
+func (d *Driver) AckTask(ctx context.Context, tenantID string, r core.DeliveryRef) error {
 	taskID, _, err := splitRef(r)
 	if err != nil {
 		return err
 	}
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1`, taskID)
+		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
 	return err
 }
 
-func (d *Driver) NackTask(ctx context.Context, r core.DeliveryRef, reason core.NackReason) error {
+func (d *Driver) NackTask(ctx context.Context, tenantID string, r core.DeliveryRef, reason core.NackReason) error {
 	taskID, _, err := splitRef(r)
 	if err != nil {
 		return err
 	}
-	d.clearLease(ctx, taskID)
+	d.clearLease(ctx, tenantID, taskID)
 	if reason == core.NackNonRetriable {
 		_, err = d.pool.Exec(ctx,
-			`UPDATE tasks SET status='dead_letter', updated_at=now() WHERE id=$1`, taskID)
+			`UPDATE tasks SET status='dead_letter', updated_at=now() WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
 		return err
 	}
 	// Retriable: release the lease immediately; retry_at scheduling stays
 	// owned by the existing retry policy columns.
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1`, taskID)
+		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
 	return err
 }
 
-func (d *Driver) clearLease(ctx context.Context, taskID string) {
-	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1`, taskID)
+func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string) {
+	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
 	_, err := d.pool.Exec(ctx,
-		`UPDATE tasks SET status='dead_letter', error=$2::jsonb, updated_at=now() WHERE id=$1`,
-		msg.TaskID, string(errPayload))
+		`UPDATE tasks SET status='dead_letter', error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+		msg.TaskID, msg.TenantID, string(errPayload))
 	return err
 }
 

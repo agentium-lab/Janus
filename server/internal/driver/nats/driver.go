@@ -121,8 +121,7 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 	return nil
 }
 
-func (d *Driver) FetchTasks(ctx context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
-	tenantID := tenantFromCtx(ctx)
+func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	consumerKey := consumerName(tenantID, mailbox)
 
 	ts, ok := d.getTenant(tenantID)
@@ -171,7 +170,7 @@ func (d *Driver) FetchTasks(ctx context.Context, mailbox string, opts core.Fetch
 	return deliveries, nil
 }
 
-func (d *Driver) AckTask(_ context.Context, ref core.DeliveryRef) error {
+func (d *Driver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error {
 	msg, ok := d.popPending(ref)
 	if !ok {
 		return fmt.Errorf("delivery ref not found: %s", ref)
@@ -179,7 +178,7 @@ func (d *Driver) AckTask(_ context.Context, ref core.DeliveryRef) error {
 	return msg.Ack()
 }
 
-func (d *Driver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error {
+func (d *Driver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error {
 	msg, ok := d.popPending(ref)
 	if !ok {
 		return fmt.Errorf("delivery ref not found: %s", ref)

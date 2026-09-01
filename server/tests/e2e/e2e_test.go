@@ -465,7 +465,7 @@ func TestE2E_NATSQueueDriver(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	deliveries, err := natsDrv.FetchTasks(ctx, "mb-e2e-nats", core.FetchOptions{
+	deliveries, err := natsDrv.FetchTasks(ctx, "e2e-tenant", "mb-e2e-nats", core.FetchOptions{
 		MaxMessages: 1,
 		WaitTime:    5 * time.Second,
 	})
@@ -473,7 +473,7 @@ func TestE2E_NATSQueueDriver(t *testing.T) {
 	require.Len(t, deliveries, 1)
 	assert.Equal(t, "nats-task-1", deliveries[0].TaskID)
 
-	err = natsDrv.AckTask(ctx, deliveries[0].DeliveryRef)
+	err = natsDrv.AckTask(ctx, "e2e-tenant", deliveries[0].DeliveryRef)
 	require.NoError(t, err)
 }
 

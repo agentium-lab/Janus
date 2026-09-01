@@ -80,7 +80,7 @@ func (d *faultQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) 
 	return nil
 }
 
-func (d *faultQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *faultQueueDriver) FetchTasks(_ context.Context, _ string, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	q := d.deliveries[mailbox]
@@ -100,7 +100,7 @@ func (d *faultQueueDriver) FetchTasks(_ context.Context, mailbox string, opts co
 	return taken, nil
 }
 
-func (d *faultQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error {
+func (d *faultQueueDriver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.ackCalls++
@@ -108,7 +108,7 @@ func (d *faultQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) erro
 	return d.ackErr
 }
 
-func (d *faultQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, _ core.NackReason) error {
+func (d *faultQueueDriver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, _ core.NackReason) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.nackCalls++

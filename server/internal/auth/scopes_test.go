@@ -45,7 +45,10 @@ func TestRequiredScope(t *testing.T) {
 		{"task publish write", http.MethodPost, "/v1/tenants/acme/tasks", ScopeTaskWrite, true},
 		{"agent list read", http.MethodGet, "/v1/tenants/acme/agents", ScopeTaskRead, true},
 		{"probe exempt", http.MethodGet, "/healthz", "", false},
-		{"gateway exempt", http.MethodPost, "/a2a/task/send", "", false},
+		{"a2a write", http.MethodPost, "/a2a/task/send", "task:write", true},
+		{"a2a read", http.MethodGet, "/a2a/task/x/status", "task:read", true},
+		{"mcp write", http.MethodPost, "/mcp", "task:write", true},
+		{"acp write", http.MethodPost, "/acp/runs", "task:write", true},
 		{"ws exempt", http.MethodGet, "/ws", "", false},
 	}
 	for _, tc := range cases {

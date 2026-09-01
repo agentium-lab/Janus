@@ -49,7 +49,7 @@ func (d *simQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) er
 	return nil
 }
 
-func (d *simQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *simQueueDriver) FetchTasks(_ context.Context, _, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.queues == nil {
@@ -72,8 +72,8 @@ func (d *simQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core
 	return taken, nil
 }
 
-func (d *simQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error        { return nil }
-func (d *simQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error { return nil }
+func (d *simQueueDriver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error { return nil }
+func (d *simQueueDriver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error { return nil }
 
 func (d *simQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	d.mu.Lock()

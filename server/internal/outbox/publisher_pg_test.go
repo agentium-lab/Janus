@@ -221,11 +221,11 @@ func (d *recordingDriver) PublishTask(_ context.Context, msg core.TaskMessage) e
 	d.publishedTasks = append(d.publishedTasks, msg)
 	return nil
 }
-func (d *recordingDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *recordingDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *recordingDriver) AckTask(_ context.Context, _ core.DeliveryRef) error  { return nil }
-func (d *recordingDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (d *recordingDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *recordingDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 func (d *recordingDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error { return nil }
@@ -246,11 +246,11 @@ type errorDriver struct{}
 func (d *errorDriver) PublishTask(_ context.Context, _ core.TaskMessage) error {
 	return fmt.Errorf("nats publish failed")
 }
-func (d *errorDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *errorDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *errorDriver) AckTask(_ context.Context, _ core.DeliveryRef) error  { return nil }
-func (d *errorDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (d *errorDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *errorDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 func (d *errorDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {

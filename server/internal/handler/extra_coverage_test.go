@@ -406,7 +406,7 @@ func (m *mockDispatchServiceErr) StartTask(_ context.Context, _, _, _ string) er
 func (m *mockDispatchServiceErr) TaskHeartbeat(_ context.Context, _, _, _ string) error {
 	return fmt.Errorf("heartbeat error")
 }
-func (m *mockDispatchServiceErr) AckTask(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockDispatchServiceErr) NackTask(_ context.Context, _, _, _ string, _ bool, _ string) error {
+func (m *mockDispatchServiceErr) AckTask(_ context.Context, _ string, _, _, _ string) error { return nil }
+func (m *mockDispatchServiceErr) NackTask(_ context.Context, _ string, _, _, _ string, _ bool, _ string) error {
 	return nil
 }

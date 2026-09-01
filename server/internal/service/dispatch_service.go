@@ -115,7 +115,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 
 	s.ensureMailboxConsumer(ctx, tenantID, mailboxID)
 
-	deliveries, err := s.queueDriver.FetchTasks(ctx, mailboxID, core.FetchOptions{
+	deliveries, err := s.queueDriver.FetchTasks(ctx, tenantID, mailboxID, core.FetchOptions{
 		MaxMessages: 1,
 		WaitTime:    2 * time.Second,
 	})
@@ -139,18 +139,18 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	switch {
 	case task.Status.IsTerminal():
 		// completed/dead_lettered/cancelled/expired: ACK to clear stale delivery.
-		_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(delivery.DeliveryRef))
+		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
 	case task.Status == core.TaskStatusRetryScheduled:
 		// retry_scheduled: the retry scheduler / outbox will re-publish at the
 		// backoff time. ACK this stale delivery so NATS stops redelivering it.
-		_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(delivery.DeliveryRef))
+		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
 	case task.Status == core.TaskStatusCreated:
 		// created-but-not-yet-queued: the outbox hasn't published yet. NACK to
 		// preserve the broker message; it will be redelivered after the task
 		// reaches 'queued'. Use a short delay to avoid a tight redelivery loop.
-		_ = s.queueDriver.NackTask(ctx, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
+		_ = s.queueDriver.NackTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef), core.NackRetriable)
 		return nil, nil
 	case task.Status == core.TaskStatusClaimed || task.Status == core.TaskStatusRunning:
 		// In-flight task. Check whether this delivery matches the current
@@ -159,13 +159,13 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		latest, lerr := s.attemptRepo.GetLatest(ctx, tenantID, task.ID)
 		if lerr == nil && latest != nil && latest.DeliveryRef == string(delivery.DeliveryRef) {
 			// Same in-flight attempt redelivered: ACK the duplicate.
-			_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(delivery.DeliveryRef))
+			_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 			return nil, nil
 		}
 		// Otherwise this is a delivery for a different/older attempt while a
 		// newer attempt is in flight. ACK to clear it; the in-flight attempt
 		// owns the task.
-		_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(delivery.DeliveryRef))
+		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
 	}
 
@@ -188,7 +188,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		time.AfterFunc(5*time.Second, func() {
 			nackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = s.queueDriver.NackTask(nackCtx, core.DeliveryRef(deliveryRef), core.NackRetriable)
+			_ = s.queueDriver.NackTask(nackCtx, tenantID, core.DeliveryRef(deliveryRef), core.NackRetriable)
 		})
 		return nil, &core.BackpressureError{
 			Reason:  core.ReasonApprovalRequired,
@@ -209,7 +209,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		time.AfterFunc(5*time.Second, func() {
 			nackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			_ = s.queueDriver.NackTask(nackCtx, core.DeliveryRef(deliveryRef), core.NackRetriable)
+			_ = s.queueDriver.NackTask(nackCtx, tenantID, core.DeliveryRef(deliveryRef), core.NackRetriable)
 		})
 		return nil, err
 	}
@@ -259,7 +259,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 				if err != nil {
 					s.budgetSvc.Release(ctx, tenantID, agentID)
 					if errors.Is(err, errAgentAtCapacity) {
-						_ = s.queueDriver.NackTask(ctx, delivery.DeliveryRef, core.NackRetriable)
+						_ = s.queueDriver.NackTask(ctx, tenantID, delivery.DeliveryRef, core.NackRetriable)
 						return nil, &core.BackpressureError{Reason: core.ReasonAgentConcurrencyExceeded,
 							Message: "agent concurrency limit reached; delivery requeued"}
 					}
@@ -495,7 +495,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 	// ACK NATS only after DB commit.
 	if attempt.DeliveryRef != "" {
-		if aerr := s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef)); aerr != nil {
+		if aerr := s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef)); aerr != nil {
 			log.Printf("ack queue message failed after task completed: tenant=%s task=%s attempt=%d delivery_ref=%s err=%v",
 				tenantID, taskID, attempt.Attempt, attempt.DeliveryRef, aerr)
 			warnPayload, _ := json.Marshal(core.JanusEvent{
@@ -535,7 +535,7 @@ func (s *DispatchService) ackTaskDirect(ctx context.Context, tenantID, taskID st
 	_ = s.budgetSvc.Settle(ctx, tenantID, attempt.AgentID, usage)
 
 	if attempt.DeliveryRef != "" {
-		if err := s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef)); err != nil {
+		if err := s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef)); err != nil {
 			s.publishEvent(ctx, core.JanusEvent{
 				EventType: core.EventTaskCompleted,
 				TenantID:  tenantID,
@@ -681,11 +681,11 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	if attempt.DeliveryRef != "" {
 		if retriable {
 			// retriable: ACK original so redelivery/scheduler controls retry
-			if aerr := s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef)); aerr != nil {
+			if aerr := s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef)); aerr != nil {
 				log.Printf("ack queue failed after retry_scheduled: tenant=%s task=%s err=%v", tenantID, taskID, aerr)
 			}
 		} else {
-			if nerr := s.queueDriver.NackTask(ctx, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable); nerr != nil {
+			if nerr := s.queueDriver.NackTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable); nerr != nil {
 				log.Printf("nack queue failed after dead-letter: tenant=%s task=%s err=%v", tenantID, taskID, nerr)
 			}
 		}
@@ -706,9 +706,9 @@ func (s *DispatchService) nackTaskDirect(ctx context.Context, tenantID, taskID s
 
 	if attempt.DeliveryRef != "" {
 		if retriable {
-			_ = s.queueDriver.AckTask(ctx, core.DeliveryRef(attempt.DeliveryRef))
+			_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef))
 		} else {
-			_ = s.queueDriver.NackTask(ctx, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable)
+			_ = s.queueDriver.NackTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable)
 		}
 	}
 

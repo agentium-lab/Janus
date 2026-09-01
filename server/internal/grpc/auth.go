@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"fmt"
 	"context"
 	"errors"
 	"strings"
@@ -45,6 +46,15 @@ func AuthInterceptor(validator APIKeyValidator) grpc.UnaryServerInterceptor {
 				return nil, status.Error(codes.PermissionDenied, "tenant mismatch: request tenant_id does not match authenticated tenant")
 			}
 		}
+
+		// Scope enforcement: gRPC methods map to task:write (mutations) or
+		// task:read (queries); the API key's principal must carry the scope.
+		if scp, ok := validator.(ScopedValidator); ok {
+			if !scp.HasScope(ctx, scopeForMethod(info.FullMethod)) {
+				return nil, status.Error(codes.PermissionDenied,
+					fmt.Sprintf("missing required scope %q", scopeForMethod(info.FullMethod)))
+			}
+		}
 		ctx = context.WithValue(ctx, auth.TenantCtxKey, tenantID)
 		ctx = context.WithValue(ctx, auth.APIKeyCtxKey, apiKey[:8]+"...")
 		return handler(ctx, req)
@@ -71,4 +81,22 @@ func apiKeyFromMetadata(ctx context.Context) (string, error) {
 		}
 	}
 	return "", errors.New("missing api key")
+}
+
+
+// ScopedValidator is implemented by validators that carry scope information.
+type ScopedValidator interface {
+	HasScope(ctx context.Context, scope string) bool
+}
+
+// scopeForMethod maps a gRPC full method to its required scope. Mutating
+// methods (Publish/Create/Ack/Nack/Approve/Reject) need task:write; queries
+// default to task:read.
+func scopeForMethod(fullMethod string) string {
+	for _, mutate := range []string{"Publish", "Create", "Ack", "Nack", "Approve", "Reject", "Cancel", "Replay", "Discard", "Pause", "Resume"} {
+		if strings.Contains(fullMethod, mutate) {
+			return "task:write"
+		}
+	}
+	return "task:read"
 }

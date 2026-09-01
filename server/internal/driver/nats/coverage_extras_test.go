@@ -83,7 +83,7 @@ func TestDriver_FetchTasksMetadataError(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 
 	// This should still work because FetchTasks handles metadata errors gracefully (nak and continue)
-	deliveries, err := d.FetchTasks(tctx, "meta_err_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "meta_err_mb", core.FetchOptions{
 		MaxMessages: 10, WaitTime: 1 * time.Second,
 	})
 	// We may or may not get deliveries depending on whether the raw message is picked up
@@ -99,17 +99,18 @@ func TestDriver_FetchTasksMetadataError(t *testing.T) {
 // TestDriver_FetchTasksZeroMaxMessages tests FetchTasks with MaxMessages = 0
 func TestDriver_FetchTasksZeroMaxMessages(t *testing.T) {
 	d := openDriver(t)
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "zero_max_mb")
+	tn := testTenant(t)
+	tctx := setupTenantAndConsumer(t, d, tn, "zero_max_mb")
 
 	// Publish a task first
 	require.NoError(t, d.PublishTask(context.Background(), core.TaskMessage{
-		TenantID: testTenant(t), MailboxID: "zero_max_mb",
+		TenantID: tn, MailboxID: "zero_max_mb",
 		TaskID: "task_zero", Payload: []byte("data"),
 	}))
 	time.Sleep(200 * time.Millisecond)
 
 	// Fetch with MaxMessages = 0 should use default of 1
-	deliveries, err := d.FetchTasks(tctx, "zero_max_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "zero_max_mb", core.FetchOptions{
 		MaxMessages: 0, WaitTime: 500 * time.Millisecond,
 	})
 	require.NoError(t, err)
@@ -163,7 +164,7 @@ func TestDriver_PublishTaskWithAllPriorities(t *testing.T) {
 	}
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "priority_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "priority_mb", core.FetchOptions{
 		MaxMessages: 10, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
@@ -503,13 +504,13 @@ func TestDriver_PublishAndNackRetriable(t *testing.T) {
 	}))
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "nack_retry_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "nack_retry_mb", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
 
-	require.NoError(t, d.NackTask(ctx, deliveries[0].DeliveryRef, core.NackRetriable))
+	require.NoError(t, d.NackTask(ctx, tn, deliveries[0].DeliveryRef, core.NackRetriable))
 }
 
 // TestDriver_CloseDriver tests closing the driver
@@ -527,26 +528,27 @@ func TestDriver_CloseDriver(t *testing.T) {
 // TestDriver_StorePendingAndPopPending tests the internal pending map operations
 func TestDriver_StorePendingAndPopPending(t *testing.T) {
 	d := openDriver(t)
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "pending_mb")
+	tn := testTenant(t)
+	tctx := setupTenantAndConsumer(t, d, tn, "pending_mb")
 
 	// Publish a task so we have a real message to work with
 	require.NoError(t, d.PublishTask(context.Background(), core.TaskMessage{
-		TenantID: testTenant(t), MailboxID: "pending_mb",
+		TenantID: tn, MailboxID: "pending_mb",
 		TaskID: "pending_task", Payload: []byte("data"),
 	}))
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "pending_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "pending_mb", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
 
 	// Ack the task - this pops from pending
-	require.NoError(t, d.AckTask(context.Background(), deliveries[0].DeliveryRef))
+	require.NoError(t, d.AckTask(context.Background(), tn, deliveries[0].DeliveryRef))
 
 	// Try to ack again - should fail
-	err = d.AckTask(context.Background(), deliveries[0].DeliveryRef)
+	err = d.AckTask(context.Background(), tn, deliveries[0].DeliveryRef)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -579,7 +581,7 @@ func TestDriver_MultipleTenants(t *testing.T) {
 	// Fetch from each tenant
 	for _, tn := range tenants {
 		tctx := ContextWithTenant(ctx, tn)
-		deliveries, err := d.FetchTasks(tctx, "shared_mb", core.FetchOptions{
+		deliveries, err := d.FetchTasks(tctx, tn, "shared_mb", core.FetchOptions{
 			MaxMessages: 1, WaitTime: 1 * time.Second,
 		})
 		require.NoError(t, err)

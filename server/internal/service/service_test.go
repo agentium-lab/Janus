@@ -227,13 +227,13 @@ func (m *mockQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) e
 	return nil
 }
 
-func (m *mockQueueDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (m *mockQueueDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
 
-func (m *mockQueueDriver) AckTask(_ context.Context, _ core.DeliveryRef) error { return nil }
+func (m *mockQueueDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error { return nil }
 
-func (m *mockQueueDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (m *mockQueueDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 
@@ -1109,11 +1109,11 @@ type mockQueueDriverFailPublish struct {
 func (m *mockQueueDriverFailPublish) PublishTask(_ context.Context, _ core.TaskMessage) error {
 	return m.err
 }
-func (m *mockQueueDriverFailPublish) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (m *mockQueueDriverFailPublish) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (m *mockQueueDriverFailPublish) AckTask(_ context.Context, _ core.DeliveryRef) error        { return nil }
-func (m *mockQueueDriverFailPublish) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (m *mockQueueDriverFailPublish) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error        { return nil }
+func (m *mockQueueDriverFailPublish) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 func (m *mockQueueDriverFailPublish) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {

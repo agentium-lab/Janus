@@ -123,16 +123,21 @@ func main() {
 		return natsDrv.SubscribeEvents(ctx, ch)
 	}
 
-	redisDrv, err := redisdriver.NewDriver(redisdriver.Config{
+	redisDrv, rerr := redisdriver.NewDriver(redisdriver.Config{
 		Addr:      cfg.Redis.Addr,
 		Password:  cfg.Redis.Password,
 		DB:        cfg.Redis.DB,
 		EnableTLS: cfg.Redis.EnableTLS,
 	})
-	if err != nil {
-		log.Fatalf("redis: %v", err)
+	if rerr != nil {
+		if cfg.Queue.Driver == "pg" {
+			log.Printf("WARNING: redis unavailable (%v); pg-only mode continues without heartbeat/rate-limiter", rerr)
+		} else {
+			log.Fatalf("redis: %v", rerr)
+		}
+	} else {
+		defer redisDrv.Close()
 	}
-	defer redisDrv.Close()
 
 	tenantRepo := pgdriver.NewTenantRepository(pool)
 	bootstrap.Run(context.Background(), bootstrap.Options{
@@ -240,7 +245,7 @@ func main() {
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
 
-	outboxPub := outbox.NewPublisher(outboxRepo, natsDrv)
+	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
 	host, _ := os.Hostname()
 	outboxRepo.SetWorker(fmt.Sprintf("%s-%d", host, os.Getpid()), 60*time.Second)
 	go outboxPub.Start(context.Background(), 500*time.Millisecond)
@@ -255,7 +260,7 @@ func main() {
 	go eventProjector.Start(context.Background())
 	defer eventProjector.Stop()
 
-	retrySched := retry.NewScheduler(pool, natsDrv)
+	retrySched := retry.NewScheduler(pool, queueDrv)
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 
@@ -330,16 +335,18 @@ func main() {
 	}))
 	readyChecker := observability.NewReadyChecker()
 	readyChecker.Add("postgres", func(ctx context.Context) error { return pool.Ping(ctx) })
-	readyChecker.Add("nats", func(ctx context.Context) error {
-		done := make(chan error, 1)
-		go func() { done <- natsDrv.Conn().FlushTimeout(2 * time.Second) }()
-		select {
-		case err := <-done:
-			return err
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	})
+	if natsDrv != nil {
+		readyChecker.Add("nats", func(ctx context.Context) error {
+			done := make(chan error, 1)
+			go func() { done <- natsDrv.Conn().FlushTimeout(2 * time.Second) }()
+			select {
+			case err := <-done:
+				return err
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		})
+	}
 	readyChecker.Add("redis", redisDrv.Ready)
 	public.Handle("/readyz", readyChecker.Handler())
 

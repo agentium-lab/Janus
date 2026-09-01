@@ -93,7 +93,10 @@ var scopeRules = []scopeRule{
 // outside the versioned data-plane API (probes, gateways, ws) as needing no
 // key scope.
 func RequiredScope(method, path string) (scope string, ok bool) {
-	if !strings.HasPrefix(path, "/v1/tenants/") {
+	if !strings.HasPrefix(path, "/v1/tenants/") &&
+		!strings.HasPrefix(path, "/a2a/") &&
+		!strings.HasPrefix(path, "/mcp") &&
+		!strings.HasPrefix(path, "/acp/") {
 		return "", false
 	}
 	for _, rule := range scopeRules {
@@ -173,6 +176,16 @@ func (v *APIKeyValidator) ValidatePrincipal(ctx context.Context, apiKey string) 
 	}
 	p.KeyPrefix = apiKey[:8] + "..."
 	return p, nil
+}
+
+// HasScope reports whether the authenticated principal (from ctx) carries the
+// given scope. Used by the gRPC interceptor.
+func (v *APIKeyValidator) HasScope(ctx context.Context, scope string) bool {
+	p, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return false
+	}
+	return p.HasScope(scope)
 }
 
 func Middleware(validator *APIKeyValidator) func(http.Handler) http.Handler {

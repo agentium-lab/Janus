@@ -26,7 +26,7 @@ func (m *mockDispatchQueueDriver) PublishTask(_ context.Context, msg core.TaskMe
 	return nil
 }
 
-func (m *mockDispatchQueueDriver) FetchTasks(_ context.Context, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+func (m *mockDispatchQueueDriver) FetchTasks(_ context.Context, _, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
 	if m.fetchErr != nil {
 		return nil, m.fetchErr
 	}
@@ -35,12 +35,12 @@ func (m *mockDispatchQueueDriver) FetchTasks(_ context.Context, mailbox string, 
 	return result, nil
 }
 
-func (m *mockDispatchQueueDriver) AckTask(_ context.Context, ref core.DeliveryRef) error {
+func (m *mockDispatchQueueDriver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error {
 	m.ackCalls++
 	return m.ackErr
 }
 
-func (m *mockDispatchQueueDriver) NackTask(_ context.Context, ref core.DeliveryRef, reason core.NackReason) error {
+func (m *mockDispatchQueueDriver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error {
 	m.nackCalls++
 	return nil
 }

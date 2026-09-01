@@ -94,9 +94,10 @@ func setupTenantAndConsumer(t *testing.T, d *Driver, tenantID, mailboxID string)
 
 func TestDriver_EnsureTenant(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 }
 
 func TestDriver_EnsureTenantMultiple(t *testing.T) {
@@ -108,14 +109,15 @@ func TestDriver_EnsureTenantMultiple(t *testing.T) {
 
 func TestDriver_EnsureMailbox(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	require.NoError(t, d.EnsureMailbox(ctx, core.MailboxSpec{
-		TenantID: testTenant(t), MailboxID: "reviewer_default",
+		TenantID: tn, MailboxID: "reviewer_default",
 	}))
 	require.NoError(t, d.EnsureMailbox(ctx, core.MailboxSpec{
-		TenantID: testTenant(t), MailboxID: "reviewer_default",
+		TenantID: tn, MailboxID: "reviewer_default",
 	}))
 }
 
@@ -140,7 +142,7 @@ func TestDriver_EnsureConsumerWithoutTenant(t *testing.T) {
 func TestDriver_PublishAndFetch(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	tn := testTenant(t)
+	tn := genTenant(t)
 	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
 	taskStream, _ := d.js.Stream(ctx, streamName(tn, "TASKS"))
@@ -159,7 +161,7 @@ func TestDriver_PublishAndFetch(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "reviewer_default", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
@@ -172,7 +174,7 @@ func TestDriver_PublishAndFetch(t *testing.T) {
 func TestDriver_PublishDedupeByMsgId(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	tn := testTenant(t)
+	tn := genTenant(t)
 	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
 	taskStream, _ := d.js.Stream(ctx, streamName(tn, "TASKS"))
@@ -193,7 +195,7 @@ func TestDriver_PublishDedupeByMsgId(t *testing.T) {
 
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "reviewer_default", core.FetchOptions{
 		MaxMessages: 10, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
@@ -203,86 +205,92 @@ func TestDriver_PublishDedupeByMsgId(t *testing.T) {
 func TestDriver_AckTask(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "reviewer_default")
+	tn := genTenant(t)
+	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
 	require.NoError(t, d.PublishTask(ctx, core.TaskMessage{
-		TenantID: testTenant(t), MailboxID: "reviewer_default",
+		TenantID: tn, MailboxID: "reviewer_default",
 		TaskID: "task_ack", Priority: core.PriorityNormal, Payload: []byte("data"),
 	}))
 
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "reviewer_default", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	require.NoError(t, d.AckTask(ctx, deliveries[0].DeliveryRef))
+	require.NoError(t, d.AckTask(ctx, tn, deliveries[0].DeliveryRef))
 }
 
 func TestDriver_NackRetriable(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "reviewer_default")
+	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
 	require.NoError(t, d.PublishTask(ctx, core.TaskMessage{
-		TenantID: testTenant(t), MailboxID: "reviewer_default",
+		TenantID: tn, MailboxID: "reviewer_default",
 		TaskID: "task_nack_retry", Priority: core.PriorityNormal, Payload: []byte("data"),
 	}))
 
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "reviewer_default", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	require.NoError(t, d.NackTask(ctx, deliveries[0].DeliveryRef, core.NackRetriable))
+	require.NoError(t, d.NackTask(ctx, tn, deliveries[0].DeliveryRef, core.NackRetriable))
 }
 
 func TestDriver_NackNonRetriable(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "reviewer_default")
+	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
 	require.NoError(t, d.PublishTask(ctx, core.TaskMessage{
-		TenantID: testTenant(t), MailboxID: "reviewer_default",
+		TenantID: tn, MailboxID: "reviewer_default",
 		TaskID: "task_nack_term", Priority: core.PriorityNormal, Payload: []byte("data"),
 	}))
 
 	time.Sleep(200 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "reviewer_default", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "reviewer_default", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
-	require.NoError(t, d.NackTask(ctx, deliveries[0].DeliveryRef, core.NackNonRetriable))
+	require.NoError(t, d.NackTask(ctx, tn, deliveries[0].DeliveryRef, core.NackNonRetriable))
 }
 
 func TestDriver_AckNotFound(t *testing.T) {
 	d := openDriver(t)
-	err := d.AckTask(context.Background(), "nonexistent:0")
+ tn := genTenant(t)
+	err := d.AckTask(context.Background(), tn, "nonexistent:0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestDriver_NackNotFound(t *testing.T) {
 	d := openDriver(t)
-	err := d.NackTask(context.Background(), "nonexistent:0", core.NackRetriable)
+ tn := genTenant(t)
+	err := d.NackTask(context.Background(), tn, "nonexistent:0", core.NackRetriable)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
 
 func TestDriver_PublishEvent(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
 		EventID:   "evt_001",
 		EventType: core.EventTaskCreated,
-		TenantID:  testTenant(t),
+		TenantID:  tn,
 		TaskID:    "task_001",
 		Payload:   []byte(`{"status":"created"}`),
 	}))
@@ -291,7 +299,7 @@ func TestDriver_PublishEvent(t *testing.T) {
 func TestDriver_ReplayEvents(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	tn := testTenant(t)
+	tn := genTenant(t)
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	js, _ := d.js.Stream(ctx, streamName(tn, "EVENTS"))
@@ -340,10 +348,11 @@ func TestDriver_ReplayEventsWithoutTenant(t *testing.T) {
 
 func TestDriver_FetchTasksWithoutConsumer(t *testing.T) {
 	d := openDriver(t)
-	ctx := ContextWithTenant(context.Background(), testTenant(t))
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+ tn := genTenant(t)
+	ctx := ContextWithTenant(context.Background(), tn)
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
-	_, err := d.FetchTasks(ctx, "nonexistent", core.FetchOptions{
+	_, err := d.FetchTasks(ctx, tn, "nonexistent", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 500 * time.Millisecond,
 	})
 	assert.Error(t, err)
@@ -351,9 +360,10 @@ func TestDriver_FetchTasksWithoutConsumer(t *testing.T) {
 
 func TestDriver_FetchEmpty(t *testing.T) {
 	d := openDriver(t)
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "empty_mb")
+ tn := genTenant(t)
+	tctx := setupTenantAndConsumer(t, d, tn, "empty_mb")
 
-	deliveries, err := d.FetchTasks(tctx, "empty_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "empty_mb", core.FetchOptions{
 		MaxMessages: 1, WaitTime: 500 * time.Millisecond,
 	})
 	require.NoError(t, err)
@@ -362,25 +372,27 @@ func TestDriver_FetchEmpty(t *testing.T) {
 
 func TestDriver_EnsureConsumerDefaults(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	require.NoError(t, d.EnsureConsumer(ctx, core.ConsumerSpec{
-		TenantID: testTenant(t), MailboxID: "default_mb",
+		TenantID: tn, MailboxID: "default_mb",
 	}))
 	require.NoError(t, d.EnsureConsumer(ctx, core.ConsumerSpec{
-		TenantID: testTenant(t), MailboxID: "default_mb",
+		TenantID: tn, MailboxID: "default_mb",
 	}))
 }
 
 func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	tctx := setupTenantAndConsumer(t, d, testTenant(t), "ordered_mb")
+	tctx := setupTenantAndConsumer(t, d, tn, "ordered_mb")
 
 	for i := 0; i < 3; i++ {
 		require.NoError(t, d.PublishTask(ctx, core.TaskMessage{
-			TenantID: testTenant(t), MailboxID: "ordered_mb",
+			TenantID: tn, MailboxID: "ordered_mb",
 			TaskID:   fmt.Sprintf("task_%03d", i),
 			Priority: core.PriorityNormal,
 			Payload:  []byte(fmt.Sprintf("payload_%d", i)),
@@ -389,14 +401,14 @@ func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 
 	time.Sleep(300 * time.Millisecond)
 
-	deliveries, err := d.FetchTasks(tctx, "ordered_mb", core.FetchOptions{
+	deliveries, err := d.FetchTasks(tctx, tn, "ordered_mb", core.FetchOptions{
 		MaxMessages: 3, WaitTime: 2 * time.Second,
 	})
 	require.NoError(t, err)
 	assert.Len(t, deliveries, 3)
 
 	for _, del := range deliveries {
-		require.NoError(t, d.AckTask(ctx, del.DeliveryRef))
+		require.NoError(t, d.AckTask(ctx, tn, del.DeliveryRef))
 	}
 }
 
@@ -430,7 +442,7 @@ func TestContextWithTenant(t *testing.T) {
 	ctx := context.Background()
 	assert.Equal(t, "default", tenantFromCtx(ctx))
 
-	tn := testTenant(t)
+	tn := genTenant(t)
 	ctx2 := ContextWithTenant(ctx, tn)
 	assert.Equal(t, tn, tenantFromCtx(ctx2))
 }
@@ -468,19 +480,20 @@ func TestDriver_PublishTaskNoTenant(t *testing.T) {
 
 func TestDriver_ReplayEventsCancelled(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
 		EventID: "evt_cancel", EventType: core.EventTaskCreated,
-		TenantID: testTenant(t), Payload: []byte("x"),
+		TenantID: tn, Payload: []byte("x"),
 	}))
 	time.Sleep(200 * time.Millisecond)
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	iter, err := d.ReplayEvents(cancelCtx, core.EventReplayFilter{TenantID: testTenant(t)})
+	iter, err := d.ReplayEvents(cancelCtx, core.EventReplayFilter{TenantID: tn})
 	if err != nil {
 		assert.Contains(t, err.Error(), "replay")
 		return
@@ -501,21 +514,23 @@ func TestDriver_EnsureTenantError(t *testing.T) {
 
 func TestDriver_EnsureMailboxDuplicate(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	require.NoError(t, d.EnsureMailbox(ctx, core.MailboxSpec{
-		TenantID: testTenant(t), MailboxID: "mb1",
+		TenantID: tn, MailboxID: "mb1",
 	}))
 	require.NoError(t, d.EnsureMailbox(ctx, core.MailboxSpec{
-		TenantID: testTenant(t), MailboxID: "mb1",
+		TenantID: tn, MailboxID: "mb1",
 	}))
 }
 
 func TestDriver_SubscribeEvents(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	ch := make(chan core.JanusEvent, 16)
 	sub, err := d.SubscribeEvents(ctx, ch)
@@ -525,7 +540,7 @@ func TestDriver_SubscribeEvents(t *testing.T) {
 	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
 		EventID:   "evt_sub_1",
 		EventType: core.EventTaskCreated,
-		TenantID:  testTenant(t),
+		TenantID:  tn,
 		TaskID:    "task_sub_1",
 		Payload:   []byte(`{"status":"created"}`),
 	}))
@@ -534,7 +549,7 @@ func TestDriver_SubscribeEvents(t *testing.T) {
 	case event := <-ch:
 		assert.Equal(t, "evt_sub_1", event.EventID)
 		assert.Equal(t, core.EventTaskCreated, event.EventType)
-		assert.Equal(t, testTenant(t), event.TenantID)
+		assert.Equal(t, tn, event.TenantID)
 		assert.Equal(t, "task_sub_1", event.TaskID)
 	case <-time.After(3 * time.Second):
 		t.Fatal("timeout waiting for subscribed event")
@@ -574,8 +589,9 @@ func TestDriver_SubscribeEvents_MultiTenant(t *testing.T) {
 
 func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 	d := openDriver(t)
+ tn := genTenant(t)
 	ctx := context.Background()
-	require.NoError(t, d.EnsureTenant(ctx, testTenant(t)))
+	require.NoError(t, d.EnsureTenant(ctx, tn))
 
 	ch := make(chan core.JanusEvent, 16)
 	sub, err := d.SubscribeEvents(ctx, ch)
@@ -587,7 +603,7 @@ func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
-		EventID: "good", EventType: core.EventTaskCreated, TenantID: testTenant(t),
+		EventID: "good", EventType: core.EventTaskCreated, TenantID: tn,
 	}))
 
 	select {
@@ -596,4 +612,8 @@ func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("should receive good event after bad JSON is dropped")
 	}
+}
+
+func genTenant(t *testing.T) string {
+	return strings.ReplaceAll(fmt.Sprintf("t_%s", t.Name()), "/", "_")
 }

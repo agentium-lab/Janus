@@ -33,13 +33,13 @@ func (d *fakeDriver) PublishTask(_ context.Context, msg core.TaskMessage) error 
 	return nil
 }
 
-func (d *fakeDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *fakeDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
 
-func (d *fakeDriver) AckTask(_ context.Context, _ core.DeliveryRef) error { return nil }
+func (d *fakeDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error { return nil }
 
-func (d *fakeDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (d *fakeDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 

@@ -308,11 +308,11 @@ func (d *fakeQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) e
 	d.publishedTasks = append(d.publishedTasks, msg)
 	return nil
 }
-func (d *fakeQueueDriver) FetchTasks(_ context.Context, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
+func (d *fakeQueueDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *fakeQueueDriver) AckTask(_ context.Context, _ core.DeliveryRef) error  { return nil }
-func (d *fakeQueueDriver) NackTask(_ context.Context, _ core.DeliveryRef, _ core.NackReason) error {
+func (d *fakeQueueDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *fakeQueueDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 func (d *fakeQueueDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error { return nil }

@@ -131,9 +131,9 @@ type HeartbeatDriver interface {
 type QueueEventDriver interface {
 	// Task operations
 	PublishTask(ctx context.Context, msg TaskMessage) error
-	FetchTasks(ctx context.Context, mailbox string, opts FetchOptions) ([]TaskDelivery, error)
-	AckTask(ctx context.Context, ref DeliveryRef) error
-	NackTask(ctx context.Context, ref DeliveryRef, reason NackReason) error
+	FetchTasks(ctx context.Context, tenantID, mailbox string, opts FetchOptions) ([]TaskDelivery, error)
+	AckTask(ctx context.Context, tenantID string, ref DeliveryRef) error
+	NackTask(ctx context.Context, tenantID string, ref DeliveryRef, reason NackReason) error
 	PublishDLQ(ctx context.Context, msg TaskMessage, errPayload []byte) error
 
 	// Event operations
