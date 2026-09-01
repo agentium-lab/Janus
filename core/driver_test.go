@@ -43,16 +43,16 @@ func (m *mockDriver) PublishTask(ctx context.Context, msg TaskMessage) error {
 	return nil
 }
 
-func (m *mockDriver) FetchTasks(ctx context.Context, mailbox string, opts FetchOptions) ([]TaskDelivery, error) {
+func (m *mockDriver) FetchTasks(ctx context.Context, _, mailbox string, opts FetchOptions) ([]TaskDelivery, error) {
 	return m.deliveries[mailbox], nil
 }
 
-func (m *mockDriver) AckTask(ctx context.Context, ref DeliveryRef) error {
+func (m *mockDriver) AckTask(ctx context.Context, _ string, ref DeliveryRef) error {
 	m.acked = append(m.acked, ref)
 	return nil
 }
 
-func (m *mockDriver) NackTask(ctx context.Context, ref DeliveryRef, reason NackReason) error {
+func (m *mockDriver) NackTask(ctx context.Context, _ string, ref DeliveryRef, reason NackReason) error {
 	m.nacked = append(m.nacked, ref)
 	return nil
 }
@@ -125,7 +125,7 @@ func TestMockDriver_PublishAndFetch(t *testing.T) {
 	err := d.PublishTask(ctx, msg)
 	require.NoError(t, err)
 
-	deliveries, err := d.FetchTasks(ctx, "reviewer.default", FetchOptions{MaxMessages: 10})
+	deliveries, err := d.FetchTasks(ctx, "", "reviewer.default", FetchOptions{MaxMessages: 10})
 	require.NoError(t, err)
 	require.Len(t, deliveries, 1)
 	assert.Equal(t, "task_001", deliveries[0].TaskID)
@@ -139,10 +139,10 @@ func TestMockDriver_AckAndNack(t *testing.T) {
 	_ = d.PublishTask(ctx, TaskMessage{TaskID: "t1", MailboxID: "mb1"})
 	_ = d.PublishTask(ctx, TaskMessage{TaskID: "t2", MailboxID: "mb1"})
 
-	err := d.AckTask(ctx, DeliveryRef("ref-t1"))
+	err := d.AckTask(ctx, "", DeliveryRef("ref-t1"))
 	require.NoError(t, err)
 
-	err = d.NackTask(ctx, DeliveryRef("ref-t2"), NackRetriable)
+	err = d.NackTask(ctx, "", DeliveryRef("ref-t2"), NackRetriable)
 	require.NoError(t, err)
 
 	assert.Len(t, d.acked, 1)

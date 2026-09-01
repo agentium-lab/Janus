@@ -329,6 +329,7 @@ func main() {
 	public := http.NewServeMux()
 	public.Handle("/metrics", promhttp.Handler())
 	public.Handle("/.well-known/agent.json", a2a.AgentCardHandler())
+	public.Handle("/.well-known/agent-card.json", a2a.AgentCardHandler())
 	public.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
@@ -492,6 +493,10 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, dispatchH.Pull)
 		case hasSegment(p, "traces"):
 			getOnly(w, r, auditH.QueryByTrace)
+		case hasSegment(p, "mailboxes") && hasSuffix(p, "/pause"):
+			postOnly(w, r, mailboxH.Pause)
+		case hasSegment(p, "mailboxes") && hasSuffix(p, "/resume"):
+			postOnly(w, r, mailboxH.Resume)
 		case hasSegment(p, "mailboxes") && hasSuffix(p, "/mailboxes"):
 			postOnly(w, r, mailboxH.Create)
 		case hasSegment(p, "mailboxes") && r.Method == http.MethodPatch:
@@ -536,10 +541,6 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, budgetH.Upsert)
 		case hasSegment(p, "budgets") && r.Method == http.MethodGet:
 			getOnly(w, r, budgetH.Get)
-		case hasSegment(p, "mailboxes") && hasSuffix(p, "/pause"):
-			postOnly(w, r, mailboxH.Pause)
-		case hasSegment(p, "mailboxes") && hasSuffix(p, "/resume"):
-			postOnly(w, r, mailboxH.Resume)
 		case hasSegment(p, "api-keys") && hasSuffix(p, "/revoke"):
 			postOnly(w, r, apiKeyH.Revoke)
 		case hasSegment(p, "api-keys") && r.Method == http.MethodGet:

@@ -80,7 +80,7 @@ config:
   httpPort: 8080
   grpcPort: 9090
   auth:
-    enabled: false
+    enabled: true
   tls:
     enabled: false
   heartbeat:

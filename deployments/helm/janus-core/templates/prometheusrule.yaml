@@ -19,7 +19,7 @@ spec:
         severity: warning
       annotations:
         summary: "Janus high dead-letter rate"
-        description: "Dead-letter rate is high ({{ $value | humanize }}/s); inspect failing agents for tenant {{ $labels.tenant_id }}."
+        description: "Dead-letter rate is high ({{`{{ $value | humanize }}`}}/s); inspect failing agents for tenant {{`{{ $labels.tenant_id }}`}}."
     - alert: JanusNoOnlineAgents
       expr: janus_agent_online < 1
       for: 5m
@@ -27,7 +27,7 @@ spec:
         severity: critical
       annotations:
         summary: "Janus has no online agents"
-        description: "Zero agents online for tenant {{ $labels.tenant_id }} for 5m — tasks cannot be dispatched."
+        description: "Zero agents online for tenant {{`{{ $labels.tenant_id }}`}} for 5m — tasks cannot be dispatched."
     - alert: JanusQueueBacklogGrowing
       expr: janus_queue_backlog > 1000
       for: 10m
@@ -35,7 +35,7 @@ spec:
         severity: warning
       annotations:
         summary: "Janus queue backlog growing"
-        description: "Queue backlog above 1000 ({{ $value }}) for 10m; consumers may be saturated or offline."
+        description: "Queue backlog above 1000 ({{`{{ $value }}`}}) for 10m; consumers may be saturated or offline."
     - alert: JanusHighPolicyDenialRate
       expr: rate(janus_policy_denied_total[5m]) > 1
       for: 5m
@@ -43,7 +43,7 @@ spec:
         severity: warning
       annotations:
         summary: "Janus high policy denial rate"
-        description: "Policy denials exceeding 1/s for tenant {{ $labels.tenant_id }} — possible misconfiguration or attack."
+        description: "Policy denials exceeding 1/s for tenant {{`{{ $labels.tenant_id }}`}} — possible misconfiguration or attack."
     - alert: JanusHighTaskFailureRate
       expr: rate(janus_tasks_failed_total[5m]) > 0.5
       for: 5m
@@ -51,7 +51,7 @@ spec:
         severity: warning
       annotations:
         summary: "Janus high task failure rate"
-        description: "Task failures exceeding 0.5/s for tenant {{ $labels.tenant_id }}."
+        description: "Task failures exceeding 0.5/s for tenant {{`{{ $labels.tenant_id }}`}}."
     - alert: JanusHighNackRatio
       expr: rate(janus_nack_total[10m]) / (rate(janus_ack_total[10m]) + rate(janus_nack_total[10m]) + 0.001) > 0.3
       for: 10m
