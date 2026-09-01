@@ -128,7 +128,29 @@ export class Client {
   // --- Task ---
 
   async publishTask(req: PublishTaskRequest): Promise<Task> {
-    return this.json("POST", "/tasks", req);
+    const body: Record<string, unknown> = { ...req };
+    // Server requires a nested envelope; auto-construct from flat fields
+    // when the caller didn't provide one explicitly.
+    if (!req.envelope) {
+      const taskID = req.id ?? `ts-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      body.id = taskID;
+      body.envelope = {
+        janus_version: "1.0",
+        task_id: taskID,
+        tenant_id: this.tenantID,
+        source_agent: req.source_agent,
+        target: { type: req.target_type, value: req.target_value },
+        payload: { type: "application/json", content: "{}" },
+        trace: { trace_id: `ts-${taskID}` },
+        ...(req.priority && { priority: req.priority }),
+        ...(req.ttl_seconds && { ttl_seconds: req.ttl_seconds }),
+        ...(req.deadline && { deadline: req.deadline }),
+        ...(req.budget && { budget: req.budget }),
+        ...(req.policy && { policy: req.policy }),
+        ...(req.idempotency_key && { idempotency_key: req.idempotency_key }),
+      };
+    }
+    return this.json("POST", "/tasks", body);
   }
 
   async getTask(taskID: string): Promise<Task> {

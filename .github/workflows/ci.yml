@@ -125,6 +125,26 @@ jobs:
       - name: Postgres driver tests
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/postgres/...
 
+      - name: PostgreSQL-only integration (no NATS)
+        run: |
+          go build -o /tmp/janus-api-pg ./server/cmd/janus-api
+          JANUS_QUEUE_DRIVER=pg \
+            JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
+            JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
+            JANUS_REDIS_ADDR=localhost:6379 JANUS_MIGRATION_AUTO=true \
+            JANUS_MIGRATION_PATH=migrations JANUS_AUTH_ENABLED=true JANUS_HTTP_PORT=18099 \
+            /tmp/janus-api-pg &
+          API_PID=$!
+          for i in $(seq 1 30); do curl -sf http://localhost:18099/healthz >/dev/null 2>&1 && break; sleep 1; done
+          curl -sf http://localhost:18099/readyz || { kill $API_PID; echo "::error::PG-only readyz failed"; exit 1; }
+          kill $API_PID
+          echo "PG-only boot verified (no NATS container started)"
+
+      - name: Helm chart lint
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          helm lint deployments/helm/janus-core
+
       - name: NATS driver tests
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/nats/...
 

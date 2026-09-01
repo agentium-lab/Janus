@@ -128,6 +128,39 @@ export interface NackRequest {
   error?: TaskError;
 }
 
+export interface TaskEnvelope {
+  janus_version: string;
+  task_id: string;
+  tenant_id: string;
+  source_agent: string;
+  target: { type: string; value: string };
+  payload: { type: string; content: string };
+  trace: { trace_id: string; parent_task_id?: string; span_id?: string };
+  priority?: string;
+  ttl_seconds?: number;
+  deadline?: string;
+  budget?: Budget;
+  policy?: PolicyContext;
+  idempotency_key?: string;
+  context_refs?: ContextRef[];
+  tool_invocation?: ToolInvocation;
+}
+
+export interface ContextRef {
+  type: string;
+  uri: string;
+  hash?: string;
+  classification?: string;
+  access_scope?: string[];
+}
+
+export interface ToolInvocation {
+  id: string;
+  name: string;
+  namespace?: string;
+  source_protocol?: string;
+}
+
 export interface PublishTaskRequest {
   id?: string;
   source_agent: string;
@@ -141,7 +174,7 @@ export interface PublishTaskRequest {
   budget?: Budget;
   policy?: PolicyContext;
   trace?: TraceContext;
-}
+  envelope: TaskEnvelope;}
 
 export interface BudgetRequest {
   scope_type: string;
