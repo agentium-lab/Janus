@@ -9,10 +9,15 @@ import (
 	"github.com/agentium-lab/Janus/core"
 )
 
+// ProgressFn reports mid-task progress. Non-blocking: failures are logged
+// and discarded. Call it like a log statement from inside the handler.
+type ProgressFn func(message string, percent *int, data map[string]interface{})
+
 // WorkerHandler is the application-supplied function that processes a task.
-// It receives the pulled task and the agent ID. If it returns a non-nil error,
-// the Worker NACKs the task as retriable. If it returns nil, the Worker ACKs.
-type WorkerHandler func(ctx context.Context, task *core.Task, agentID string) (resultRef string, usage *core.TokenUsage, err error)
+// It receives the pulled task, the agent ID, and a ProgressFn for real-time
+// progress reporting. If it returns a non-nil error, the Worker NACKs the
+// task as retriable. If it returns nil, the Worker ACKs.
+type WorkerHandler func(ctx context.Context, task *core.Task, agentID string, progress ProgressFn) (resultRef string, usage *core.TokenUsage, err error)
 
 // WorkerConfig configures a JanusWorker.
 type WorkerConfig struct {
@@ -89,8 +94,15 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 	defer hbCancel()
 	go w.heartbeatLoop(hbCtx, task.ID, attempt, leaseID)
 
+	// Progress reporter: fire-and-forget, failures logged not propagated.
+	progress := func(message string, percent *int, data map[string]interface{}) {
+		if perr := w.client.ReportProgress(ctx, task.ID, message, w.config.AgentID, percent, data); perr != nil {
+			log.Printf("janus worker progress %s: %v (non-fatal)", task.ID, perr)
+		}
+	}
+
 	// Run the handler.
-	resultRef, usage, hErr := handler(ctx, task, w.config.AgentID)
+	resultRef, usage, hErr := handler(ctx, task, w.config.AgentID, progress)
 	hbCancel()
 
 	// ACK or NACK.
@@ -108,8 +120,8 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 	}
 
 	ackReq := AckRequest{
-		LeaseID:  leaseID,
-		Attempt:  attempt,
+		LeaseID:   leaseID,
+		Attempt:   attempt,
 		ResultRef: resultRef,
 	}
 	if usage != nil {

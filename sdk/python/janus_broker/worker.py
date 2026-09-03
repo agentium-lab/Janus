@@ -24,15 +24,20 @@ class WorkerError(Exception):
     """Raised when the worker encounters an unrecoverable error."""
 
 
-TaskHandler = Callable[[Task], "tuple[str, Optional[dict]]"]
+TaskHandler = Callable[[Task, Callable], "tuple[str, Optional[dict]]"]
+
+
+ProgressFunc = Callable[[str, Optional[int], Optional[dict]], None]
 
 
 class JanusWorker:
     """A high-level helper that runs a poll-process-ack loop.
 
-    The application provides a handler function that receives a Task and returns
+    The application provides a handler function that receives (Task, progress) and returns
     (result_ref, token_usage). The Worker handles polling, task start/heartbeat,
-    and ACK/NACK.
+    ACK/NACK, and progress reporting. Call progress("message", percent=50) inside
+    the handler to stream real-time updates to subscribers; it is non-blocking,
+    rate-limited (10/s), and failures are silently logged.
 
     Args:
         client: A JanusClient instance.
@@ -100,8 +105,15 @@ class JanusWorker:
 
         success = False
         error_msg = None
+
+        def progress(message: str, percent: Optional[int] = None, data: Optional[dict] = None) -> None:
+            try:
+                self._client.report_progress(task.id, message, percent=percent, data=data, agent_id=self._agent_id)
+            except Exception:
+                logger.debug("progress report failed for %s (non-fatal)", task.id)
+
         try:
-            result_ref, usage = handler(task)
+            result_ref, usage = handler(task, progress)
             success = True
         except Exception as e:
             error_msg = str(e)

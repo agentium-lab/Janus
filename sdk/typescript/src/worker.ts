@@ -3,7 +3,8 @@
 import { Client } from "./client";
 import type { Task, TokenUsage } from "./types";
 
-export type TaskHandler = (task: Task, agentID: string) => Promise<{ resultRef: string; usage?: TokenUsage }>;
+export type ProgressFn = (message: string, percent?: number, data?: Record<string, unknown>) => void;
+export type TaskHandler = (task: Task, agentID: string, progress: ProgressFn) => Promise<{ resultRef: string; usage?: TokenUsage }>;
 
 export interface WorkerConfig {
   agentID: string;
@@ -59,8 +60,15 @@ export class JanusWorker {
       this.client.heartbeat(task.id, attempt, leaseID).catch(() => {});
     }, this.config.heartbeatIntervalMs);
 
+    const progress: ProgressFn = (message, percent, data) => {
+      // Fire-and-forget: progress failures never block task processing.
+      this.client.reportProgress(task.id, message, {
+        percent, data, agentID: this.config.agentID,
+      }).catch(() => {});
+    };
+
     try {
-      const { resultRef, usage } = await handler(task, this.config.agentID);
+      const { resultRef, usage } = await handler(task, this.config.agentID, progress);
       clearInterval(hbTimer);
       const ack: import("./types").AckRequest = {
         lease_id: leaseID, attempt, result_ref: resultRef,

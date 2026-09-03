@@ -56,7 +56,7 @@ func TestJanusWorker_ACKOnSuccess(t *testing.T) {
 	defer cancel()
 
 	var processed int32
-	err := worker.Run(ctx, func(ctx context.Context, task *core.Task, agentID string) (string, *core.TokenUsage, error) {
+	err := worker.Run(ctx, func(ctx context.Context, task *core.Task, agentID string, progress ProgressFn) (string, *core.TokenUsage, error) {
 		atomic.AddInt32(&processed, 1)
 		return "result://ok", nil, nil
 	})
@@ -99,7 +99,7 @@ func TestJanusWorker_NACKOnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 
-	_ = worker.Run(ctx, func(ctx context.Context, task *core.Task, agentID string) (string, *core.TokenUsage, error) {
+	_ = worker.Run(ctx, func(ctx context.Context, task *core.Task, agentID string, progress ProgressFn) (string, *core.TokenUsage, error) {
 		return "", nil, fmt.Errorf("handler failed")
 	})
 
