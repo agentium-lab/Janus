@@ -201,8 +201,6 @@ func main() {
 	policyH := handler.NewPolicyRuleHandler(service.NewPolicyRuleService(policyRuleRepo))
 	budgetH := handler.NewBudgetHandler(service.NewBudgetSpecService(budgetRepo))
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
-	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc)
-
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(queueDrv)
 
@@ -246,6 +244,7 @@ func main() {
 	wsH := handler.NewWebSocketHandler(broadcaster)
 	sseH := handler.NewSSEHandler(broadcaster)
 	progressH := handler.NewProgressHandler(taskSvc, broadcaster)
+	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH)
 
 	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
 	host, _ := os.Hostname()

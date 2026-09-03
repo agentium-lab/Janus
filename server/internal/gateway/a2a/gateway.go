@@ -1,9 +1,9 @@
 package a2a
 
 import (
-	"fmt"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -60,13 +60,20 @@ type TaskStatusGetter interface {
 }
 
 type Gateway struct {
-	agentSvc  AgentRegistrar
-	taskSvc   TaskCreator
-	statusSvc TaskStatusGetter
+	agentSvc     AgentRegistrar
+	taskSvc      TaskCreator
+	statusSvc    TaskStatusGetter
+	taskStreamer TaskStreamer
 }
 
 func NewGateway(agentSvc AgentRegistrar, taskSvc TaskCreator) *Gateway {
 	return &Gateway{agentSvc: agentSvc, taskSvc: taskSvc}
+}
+
+// WithTaskStreamer injects the SSE handler for streaming support.
+func (g *Gateway) WithTaskStreamer(ts TaskStreamer) *Gateway {
+	g.taskStreamer = ts
+	return g
 }
 
 func NewGatewayWithStatus(agentSvc AgentRegistrar, taskSvc TaskCreator, statusSvc TaskStatusGetter) *Gateway {
@@ -77,6 +84,8 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.URL.Path == "/a2a/agent/card" && r.Method == http.MethodPost:
 		g.handleAgentCard(w, r)
+	case r.URL.Path == "/a2a/task/stream" && r.Method == http.MethodGet:
+		g.handleTaskStream(w, r)
 	case r.URL.Path == "/a2a/task/send" && r.Method == http.MethodPost:
 		g.handleTaskSend(w, r)
 	case r.URL.Path == "/a2a/jsonrpc" && r.Method == http.MethodPost:
@@ -337,4 +346,31 @@ func AgentCardHandler() http.Handler {
 			"skills":               []interface{}{},
 		})
 	})
+}
+
+// TaskStreamer streams task events for A2A clients (SSE). Implemented by
+// the handler.SSEHandler; injected from main.go to avoid import cycles.
+type TaskStreamer interface {
+	ServeHTTP(w http.ResponseWriter, r *http.Request)
+}
+
+// handleTaskStream delegates to the SSE handler with the A2A task_id query
+// parameter mapped to the REST path the SSE handler expects.
+func (g *Gateway) handleTaskStream(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
+	}
+	taskID := r.URL.Query().Get("task_id")
+	if taskID == "" {
+		writeA2AError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "task_id query parameter required")
+		return
+	}
+	if g.taskStreamer == nil {
+		writeA2AError(w, http.StatusNotImplemented, "INTERNAL", "streaming not configured")
+		return
+	}
+	// Rewrite the path to match the SSE handler's expected route shape.
+	r.URL.Path = "/v1/tenants/" + tenantID + "/tasks/" + taskID + "/stream"
+	g.taskStreamer.ServeHTTP(w, r)
 }
