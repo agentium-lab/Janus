@@ -161,6 +161,60 @@ export class Client {
     await this.doFetch("POST", `/tasks/${taskID}/cancel`);
   }
 
+  async reportProgress(taskID: string, message: string, opts?: {
+    percent?: number; data?: Record<string, unknown>; agentID?: string;
+  }): Promise<void> {
+    const body: Record<string, unknown> = {
+      message,
+      agent_id: opts?.agentID ?? "default",
+    };
+    if (opts?.percent !== undefined) body.percent = opts.percent;
+    if (opts?.data !== undefined) body.data = opts.data;
+    await this.json("POST", `/tasks/${taskID}/progress`, body);
+  }
+
+  streamTask(taskID: string): AsyncGenerator<{ event_type: string; [key: string]: unknown }> {
+    const url = `${this.baseURL}/v1/tenants/${this.tenantID}/tasks/${taskID}/stream`;
+    const terminal = new Set([
+      "task.completed", "task.failed", "task.cancelled",
+      "task.dead_lettered", "task.expired",
+    ]);
+    const self = this;
+    async function* gen() {
+      const resp = await fetch(url, {
+        headers: self.apiKey ? { "X-API-Key": self.apiKey } : {},
+      });
+      if (!resp.ok || !resp.body) throw new Error(`stream failed: ${resp.status}`);
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let eventType = "";
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) return;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() ?? "";
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith("data: ") && eventType) {
+              let data: Record<string, unknown> = {};
+              try { data = JSON.parse(line.slice(6)); } catch {}
+              const evt = { event_type: eventType, ...data };
+              yield evt;
+              if (terminal.has(eventType)) return;
+            }
+          }
+        }
+      } finally {
+        reader.releaseLock();
+      }
+    }
+    return gen();
+  }
+
   async replayTask(taskID: string): Promise<Task> {
     return this.json("POST", `/tasks/${taskID}/replay`);
   }

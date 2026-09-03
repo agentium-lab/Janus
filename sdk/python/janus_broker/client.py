@@ -248,6 +248,55 @@ class JanusClient:
         self._check(resp)
         return resp.json().get("budgets", [])
 
+    def report_progress(self, task_id: str, message: str, percent: Optional[int] = None,
+                        data: Optional[dict] = None, agent_id: str = "default") -> None:
+        """Report mid-task progress (visible via stream_task / SSE)."""
+        body: dict = {"message": message, "agent_id": agent_id}
+        if percent is not None:
+            body["percent"] = percent
+        if data is not None:
+            body["data"] = data
+        resp = self._client.post(
+            f"/v1/tenants/{self._tenant}/tasks/{task_id}/progress", json=body
+        )
+        resp.raise_for_status()
+
+    def stream_task(self, task_id: str, timeout: Optional[float] = 300.0):
+        """Yield SSE events for a task until it reaches a terminal state.
+
+        Usage:
+            for event in client.stream_task("task-123"):
+                if event["event_type"] == "task.progress":
+                    print(event["payload"].get("message"))
+        """
+        import requests
+        url = f"{self._client.base_url}/v1/tenants/{self._tenant}/tasks/{task_id}/stream"
+        headers = {}
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+        terminal = {"task.completed", "task.failed", "task.cancelled",
+                     "task.dead_lettered", "task.expired"}
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+                resp.raise_for_status()
+                event_type = ""
+                for line in resp.iter_lines(decode_unicode=True):
+                    if line is None:
+                        continue
+                    if line.startswith("event: "):
+                        event_type = line[7:].strip()
+                    elif line.startswith("data: ") and event_type:
+                        import json as _json
+                        try:
+                            data = _json.loads(line[6:])
+                        except (ValueError, TypeError):
+                            data = {"raw": line[6:]}
+                        yield {"event_type": event_type, **data}
+                        if event_type in terminal:
+                            return
+        except requests.exceptions.Timeout:
+            return
+
     def replay_task(self, task_id: str) -> dict:
         resp = self._client.post(self._url(f"/tasks/{task_id}/replay"))
         self._check(resp)

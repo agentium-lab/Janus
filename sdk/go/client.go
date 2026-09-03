@@ -1,6 +1,7 @@
 package janus
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -293,6 +294,74 @@ func (c *Client) NackTask(ctx context.Context, taskID string, req NackRequest) e
 
 func (c *Client) CancelTask(ctx context.Context, taskID string) error {
 	return c.doPost(ctx, "/v1/tenants/"+c.tenantID+"/tasks/"+taskID+"/cancel", nil, nil)
+}
+
+// ReportProgress sends a mid-task progress update visible to stream subscribers.
+func (c *Client) ReportProgress(ctx context.Context, taskID, message, agentID string, percent *int, data map[string]interface{}) error {
+	body := map[string]interface{}{
+		"message":  message,
+		"agent_id": agentID,
+	}
+	if percent != nil {
+		body["percent"] = *percent
+	}
+	if data != nil {
+		body["data"] = data
+	}
+	return c.doPost(ctx, "/v1/tenants/"+c.tenantID+"/tasks/"+taskID+"/progress", body, nil)
+}
+
+// StreamEvent is one SSE event from a task stream.
+type StreamEvent struct {
+	EventType string                 `json:"event_type"`
+	TaskID    string                 `json:"task_id"`
+	Payload   map[string]interface{} `json:"payload"`
+}
+
+// StreamTask subscribes to a task's SSE stream and calls fn for each event.
+// Returns when the task reaches a terminal state or ctx is cancelled.
+func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEvent) error) error {
+	url := c.baseURL + "/v1/tenants/" + c.tenantID + "/tasks/" + taskID + "/stream"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	if c.apiKey != "" {
+		req.Header.Set("X-API-Key", c.apiKey)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("stream failed: status %d", resp.StatusCode)
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	eventType := ""
+	for scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "event: ") {
+			eventType = strings.TrimPrefix(line, "event: ")
+		} else if strings.HasPrefix(line, "data: ") && eventType != "" {
+			var evt StreamEvent
+			evt.EventType = eventType
+			if err := json.Unmarshal([]byte(line[6:]), &evt); err == nil {
+				if err := fn(evt); err != nil {
+					return err
+				}
+			}
+			switch eventType {
+			case "task.completed", "task.failed", "task.cancelled", "task.dead_lettered", "task.expired":
+				return nil
+			}
+			eventType = ""
+		}
+	}
+	return scanner.Err()
 }
 
 func (c *Client) ReplayTask(ctx context.Context, taskID string) (*core.Task, error) {
