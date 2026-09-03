@@ -140,7 +140,7 @@ export class Client {
         tenant_id: this.tenantID,
         source_agent: req.source_agent,
         target: { type: req.target_type, value: req.target_value },
-        payload: { type: "application/json", content: "{}" },
+        payload: req.payload ?? { type: "application/json", content: "{}" },
         trace: { trace_id: `ts-${taskID}` },
         ...(req.priority && { priority: req.priority }),
         ...(req.ttl_seconds && { ttl_seconds: req.ttl_seconds }),

@@ -174,7 +174,8 @@ export interface PublishTaskRequest {
   budget?: Budget;
   policy?: PolicyContext;
   trace?: TraceContext;
-  envelope: TaskEnvelope;}
+  envelope?: TaskEnvelope;
+  payload?: { type: string; content: string };}
 
 export interface BudgetRequest {
   scope_type: string;

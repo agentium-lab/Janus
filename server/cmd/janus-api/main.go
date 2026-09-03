@@ -348,7 +348,9 @@ func main() {
 			}
 		})
 	}
-	readyChecker.Add("redis", redisDrv.Ready)
+	if redisDrv != nil {
+		readyChecker.Add("redis", redisDrv.Ready)
+	}
 	public.Handle("/readyz", readyChecker.Handler())
 
 	protected := http.NewServeMux()

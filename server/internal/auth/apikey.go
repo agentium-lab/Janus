@@ -93,7 +93,7 @@ var scopeRules = []scopeRule{
 // outside the versioned data-plane API (probes, gateways, ws) as needing no
 // key scope.
 func RequiredScope(method, path string) (scope string, ok bool) {
-	if !strings.HasPrefix(path, "/v1/tenants/") &&
+	if path != "/v1/tenants" && !strings.HasPrefix(path, "/v1/tenants/") &&
 		!strings.HasPrefix(path, "/a2a/") &&
 		!strings.HasPrefix(path, "/mcp") &&
 		!strings.HasPrefix(path, "/acp/") {
@@ -176,6 +176,15 @@ func (v *APIKeyValidator) ValidatePrincipal(ctx context.Context, apiKey string) 
 	}
 	p.KeyPrefix = apiKey[:8] + "..."
 	return p, nil
+}
+
+// InjectPrincipal validates the key and stores the Principal in ctx.
+func (v *APIKeyValidator) InjectPrincipal(ctx context.Context, apiKey string) context.Context {
+	p, err := v.ValidatePrincipal(ctx, apiKey)
+	if err != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, PrincipalCtxKey, p)
 }
 
 // HasScope reports whether the authenticated principal (from ctx) carries the

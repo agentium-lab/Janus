@@ -47,16 +47,19 @@ func AuthInterceptor(validator APIKeyValidator) grpc.UnaryServerInterceptor {
 			}
 		}
 
-		// Scope enforcement: gRPC methods map to task:write (mutations) or
-		// task:read (queries); the API key's principal must carry the scope.
+		// Inject identity BEFORE scope enforcement so HasScope resolves
+		// the principal from the context.
+		ctx = context.WithValue(ctx, auth.TenantCtxKey, tenantID)
+		ctx = context.WithValue(ctx, auth.APIKeyCtxKey, apiKey[:8]+"...")
+		if inj, ok := validator.(PrincipalInjector); ok {
+			ctx = inj.InjectPrincipal(ctx, apiKey)
+		}
 		if scp, ok := validator.(ScopedValidator); ok {
 			if !scp.HasScope(ctx, scopeForMethod(info.FullMethod)) {
 				return nil, status.Error(codes.PermissionDenied,
 					fmt.Sprintf("missing required scope %q", scopeForMethod(info.FullMethod)))
 			}
 		}
-		ctx = context.WithValue(ctx, auth.TenantCtxKey, tenantID)
-		ctx = context.WithValue(ctx, auth.APIKeyCtxKey, apiKey[:8]+"...")
 		return handler(ctx, req)
 	}
 }
@@ -93,10 +96,20 @@ type ScopedValidator interface {
 // methods (Publish/Create/Ack/Nack/Approve/Reject) need task:write; queries
 // default to task:read.
 func scopeForMethod(fullMethod string) string {
-	for _, mutate := range []string{"Publish", "Create", "Ack", "Nack", "Approve", "Reject", "Cancel", "Replay", "Discard", "Pause", "Resume"} {
+	for _, mutate := range []string{
+		"Publish", "Create", "Ack", "Nack", "Approve", "Reject",
+		"Cancel", "Replay", "Discard", "Pause", "Resume",
+		"Register", "Update", "Heartbeat", "Pull", "Start",
+	} {
 		if strings.Contains(fullMethod, mutate) {
 			return "task:write"
 		}
 	}
 	return "task:read"
+}
+
+// PrincipalInjector is implemented by validators that can inject a full
+// Principal into the context (needed for scope checks before the handler runs).
+type PrincipalInjector interface {
+	InjectPrincipal(ctx context.Context, apiKey string) context.Context
 }

@@ -89,17 +89,17 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 	rows, err := d.pool.Query(ctx, `
 		WITH picked AS (
 			SELECT id, attempt_count FROM tasks
-			WHERE mailbox_id = $1 AND status = 'queued'
+			WHERE tenant_id = $1 AND mailbox_id = $2 AND status = 'queued'
 			  AND (retry_at IS NULL OR retry_at <= now())
 			  AND (queue_lease_until IS NULL OR queue_lease_until <= now())
 			ORDER BY priority DESC, created_at
 			FOR UPDATE SKIP LOCKED
-			LIMIT $2
+			LIMIT $3
 		)
 		UPDATE tasks t SET queue_lease_until = now() + interval '45 seconds', updated_at = now()
 		FROM picked WHERE t.id = picked.id
 		RETURNING t.id, t.tenant_id, t.source_agent, t.attempt_count,
-		          COALESCE(t.envelope->>'content_type',''), COALESCE(t.envelope->'payload','{}'::jsonb)`, mailbox, limit)
+		          COALESCE(t.envelope->>'content_type',''), COALESCE(t.envelope->'payload','{}'::jsonb)`, tenantID, mailbox, limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim query: %w", err)
 	}

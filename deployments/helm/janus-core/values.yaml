@@ -137,3 +137,7 @@ prometheus:
   enabled: true
   port: 8080
   path: /metrics
+
+prometheusRule:
+  enabled: false
+  additionalLabels: {}
