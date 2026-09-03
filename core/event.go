@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // EventType represents the type of a Janus event.
 type EventType string
@@ -13,6 +16,7 @@ const (
 	EventTaskClaimed         EventType = "task.claimed"
 	EventTaskStarted         EventType = "task.started"
 	EventTaskHeartbeat       EventType = "task.heartbeat"
+	EventTaskProgress        EventType = "task.progress"
 	EventTaskBlocked         EventType = "task.blocked"
 	EventTaskCompleted       EventType = "task.completed"
 	EventTaskFailed          EventType = "task.failed"
@@ -62,8 +66,8 @@ const (
 
 // System events
 const (
-	EventQueueBacklogHigh  EventType = "queue.backlog_high"
-	EventConsumerLagHigh   EventType = "consumer.lag_high"
+	EventQueueBacklogHigh   EventType = "queue.backlog_high"
+	EventConsumerLagHigh    EventType = "consumer.lag_high"
 	EventSchedulerThrottled EventType = "scheduler.throttled"
 	EventStorageError       EventType = "storage.error"
 	EventNodeUnhealthy      EventType = "node.unhealthy"
@@ -71,10 +75,10 @@ const (
 
 // Security audit events (SEC-09)
 const (
-	EventSecurityAPIKeyCreated      EventType = "security.api_key_created"
-	EventSecurityAPIKeyRevoked      EventType = "security.api_key_revoked"
-	EventSecurityAuthFailed         EventType = "security.auth_failed"
-	EventSecurityTenantGuardDenied  EventType = "security.tenant_guard_denied"
+	EventSecurityAPIKeyCreated     EventType = "security.api_key_created"
+	EventSecurityAPIKeyRevoked     EventType = "security.api_key_revoked"
+	EventSecurityAuthFailed        EventType = "security.auth_failed"
+	EventSecurityTenantGuardDenied EventType = "security.tenant_guard_denied"
 )
 
 // JanusEvent is the immutable fact record in Janus.
@@ -90,4 +94,13 @@ type JanusEvent struct {
 	ActorType   string    `json:"actor_type,omitempty"`
 	ActorID     string    `json:"actor_id,omitempty"`
 	Payload     []byte    `json:"payload"`
+}
+
+// TaskProgress is the payload for task.progress events. Message is the only
+// required field; percent and data let agents express richer status without
+// the schema needing to enumerate every use case.
+type TaskProgress struct {
+	Message string          `json:"message"`
+	Percent *int            `json:"percent,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }

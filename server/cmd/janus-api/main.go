@@ -179,7 +179,7 @@ func main() {
 
 	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
 	router := routing.NewRouter(lookupRepo, policyCheckerAdapter{svc: policySvc}, budgetCheckerAdapter{svc: budgetSvc})
-	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc)
+	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc).WithAttemptRepo(attemptRepo)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, queueDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 	lifecycleSvc := service.NewLifecycleService(pool)
@@ -244,6 +244,8 @@ func main() {
 
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
+	sseH := handler.NewSSEHandler(broadcaster)
+	progressH := handler.NewProgressHandler(taskSvc, broadcaster)
 
 	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
 	host, _ := os.Hostname()
@@ -321,7 +323,7 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH, policyH, budgetH)
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, sseH, progressH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH, policyH, budgetH)
 
 	// Orchestration probes and the Prometheus scrape stay unauthenticated:
 	// health checkers and scrapers cannot present API keys, and blocking them
@@ -454,7 +456,7 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 	return pool
 }
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -495,6 +497,10 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, dispatchH.Pull)
 		case hasSegment(p, "traces"):
 			getOnly(w, r, auditH.QueryByTrace)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/progress"):
+			postOnly(w, r, progressH.Report)
+		case hasSegment(p, "tasks") && hasSuffix(p, "/stream"):
+			getOnly(w, r, sseH.ServeHTTP)
 		case hasSegment(p, "mailboxes") && hasSuffix(p, "/pause"):
 			postOnly(w, r, mailboxH.Pause)
 		case hasSegment(p, "mailboxes") && hasSuffix(p, "/resume"):

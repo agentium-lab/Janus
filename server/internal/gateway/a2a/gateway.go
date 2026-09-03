@@ -329,7 +329,7 @@ func AgentCardHandler() http.Handler {
 			"version":     "1.1.0",
 			"capabilities": map[string]bool{
 				"tasks":              true,
-				"streaming":          false,
+				"streaming":          true,
 				"push_notifications": false,
 			},
 			"default_input_modes":  []string{"application/json"},

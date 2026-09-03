@@ -51,6 +51,7 @@ type TaskService struct {
 	router         *routing.Router
 
 	agentExistence AgentExistenceChecker
+	attemptRepo    TaskAttemptRepo
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
@@ -87,6 +88,11 @@ func (s *TaskService) WithIntentResolver(r IntentResolver) *TaskService {
 
 func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService {
 	s.contextRefSvc = svc
+	return s
+}
+
+func (s *TaskService) WithAttemptRepo(r TaskAttemptRepo) *TaskService {
+	s.attemptRepo = r
 	return s
 }
 
@@ -487,6 +493,44 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	}
 
 	return s.taskRepo.Get(ctx, tenantID, taskID)
+}
+
+// ReportProgress validates that the reporting agent holds the latest attempt
+// on the task, persists the progress event through the outbox (audit trail),
+// and returns the event for in-memory fanout.
+func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) error {
+	task, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("task not found: %w", err)
+	}
+	// Task must be actively executing.
+	if task.Status != core.TaskStatusClaimed && task.Status != core.TaskStatusRunning {
+		return fmt.Errorf("task %s is %s, progress only accepted while claimed or running", taskID, task.Status)
+	}
+	// Reporter must be the agent processing this task (latest attempt).
+	if s.attemptRepo != nil {
+		attempt, err := s.attemptRepo.GetLatest(ctx, tenantID, taskID)
+		if err != nil || attempt.AgentID != agentID {
+			return fmt.Errorf("agent %s does not hold the latest attempt on task %s", agentID, taskID)
+		}
+	}
+	// Persist through outbox (dual-path: slow path for audit/replay).
+	payload, _ := json.Marshal(prog)
+	evt := core.JanusEvent{
+		EventType:   core.EventTaskProgress,
+		TenantID:    tenantID,
+		TaskID:      taskID,
+		SourceAgent: agentID,
+		Payload:     payload,
+	}
+	if s.outboxRepo != nil {
+		evtPayload, _ := json.Marshal(evt)
+		if err := s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "event_publish", evtPayload); err != nil {
+			// Audit write failure shouldn't block real-time delivery.
+			log.Printf("task %s progress: outbox write failed: %v", taskID, err)
+		}
+	}
+	return nil
 }
 
 func (s *TaskService) ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {
