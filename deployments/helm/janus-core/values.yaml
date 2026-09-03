@@ -1,4 +1,4 @@
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: ghcr.io/agentium-lab/janus-core
@@ -79,6 +79,14 @@ probes:
 config:
   httpPort: 8080
   grpcPort: 9090
+  llm:
+    enabled: false
+    provider: "openai"
+    model: "gpt-4o-mini"
+    baseUrl: ""
+    maxTokens: 200
+    apiKey: ""
+    timeoutSeconds: 5
   auth:
     enabled: true
   tls:
