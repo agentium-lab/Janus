@@ -15,5 +15,9 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentium-lab/Janus.git"
   }
 }
