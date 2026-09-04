@@ -245,7 +245,7 @@ func main() {
 	wsH := handler.NewWebSocketHandler(broadcaster)
 	sseH := handler.NewSSEHandler(broadcaster).WithStatusChecker(taskSvc)
 	progressH := handler.NewProgressHandler(taskSvc, broadcaster) // FanoutBroadcaster implements EventPublisher via its inbound channel
-	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH)
+	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH).WithEventSubscriber(broadcaster)
 
 	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
 	host, _ := os.Hostname()
@@ -331,7 +331,7 @@ func main() {
 	public := http.NewServeMux()
 	public.Handle("/metrics", promhttp.Handler())
 	public.Handle("/.well-known/agent.json", a2a.AgentCardHandler())
-	public.Handle("/.well-known/agent-card.json", a2a.AgentCardHandler())
+	public.Handle("/.well-known/agent-card.json", a2a.AgentCardV1Handler())
 	public.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})

@@ -17,7 +17,20 @@ type ProgressFn func(message string, percent *int, data map[string]interface{})
 // It receives the pulled task, the agent ID, and a ProgressFn for real-time
 // progress reporting. If it returns a non-nil error, the Worker NACKs the
 // task as retriable. If it returns nil, the Worker ACKs.
+// WorkerHandler receives (ctx, task, agentID, progress). Handlers that don't
+// need progress reporting can use the 3-param variant via WorkerHandlerSimple.
 type WorkerHandler func(ctx context.Context, task *core.Task, agentID string, progress ProgressFn) (resultRef string, usage *core.TokenUsage, err error)
+
+// WorkerHandlerSimple is the pre-v1.4 signature for backward compatibility.
+// Wrap with FromSimple() to use with Run().
+type WorkerHandlerSimple func(ctx context.Context, task *core.Task, agentID string) (resultRef string, usage *core.TokenUsage, err error)
+
+// FromSimple adapts a 3-param handler to the full WorkerHandler signature.
+func FromSimple(h WorkerHandlerSimple) WorkerHandler {
+	return func(ctx context.Context, task *core.Task, agentID string, _ ProgressFn) (string, *core.TokenUsage, error) {
+		return h(ctx, task, agentID)
+	}
+}
 
 // WorkerConfig configures a JanusWorker.
 type WorkerConfig struct {

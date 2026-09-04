@@ -8,14 +8,14 @@ import (
 )
 
 type AgentCard struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	URL         string            `json:"url"`
-	Provider    AgentProvider     `json:"provider"`
-	Version     string            `json:"version"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name"`
+	Description  string            `json:"description"`
+	URL          string            `json:"url"`
+	Provider     AgentProvider     `json:"provider"`
+	Version      string            `json:"version"`
 	Capabilities []AgentCapability `json:"capabilities"`
-	Auth        *AuthInfo         `json:"auth,omitempty"`
+	Auth         *AuthInfo         `json:"auth,omitempty"`
 }
 
 type AgentProvider struct {
@@ -24,9 +24,9 @@ type AgentProvider struct {
 }
 
 type AgentCapability struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	URL         string `json:"url"`
+	Name        string  `json:"name"`
+	Description string  `json:"description"`
+	URL         string  `json:"url"`
 	Input       *Schema `json:"input,omitempty"`
 	Output      *Schema `json:"output,omitempty"`
 }
@@ -41,9 +41,9 @@ type AuthInfo struct {
 }
 
 type SendMessageRequest struct {
-	JSONRPC string          `json:"jsonrpc"`
-	Method  string          `json:"method"`
-	ID      string          `json:"id"`
+	JSONRPC string            `json:"jsonrpc"`
+	Method  string            `json:"method"`
+	ID      string            `json:"id"`
 	Params  SendMessageParams `json:"params"`
 }
 
@@ -52,11 +52,11 @@ type SendMessageParams struct {
 }
 
 type AgentMessage struct {
-	Role        string      `json:"role"`
-	Parts       []MessagePart `json:"parts"`
-	TaskID      string      `json:"taskId,omitempty"`
-	ContextID   string      `json:"contextId,omitempty"`
-	ReferenceTaskID string `json:"referenceTaskId,omitempty"`
+	Role            string        `json:"role"`
+	Parts           []MessagePart `json:"parts"`
+	TaskID          string        `json:"taskId,omitempty"`
+	ContextID       string        `json:"contextId,omitempty"`
+	ReferenceTaskID string        `json:"referenceTaskId,omitempty"`
 }
 
 type MessagePart struct {

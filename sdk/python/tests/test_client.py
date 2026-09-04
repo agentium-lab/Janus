@@ -159,3 +159,60 @@ class TestStartTask:
                 return_value=httpx.Response(200)
             )
             client.start_task("t1", "l1")
+
+
+class TestWorkerSignatureCompat:
+    """v1.4 compat: handlers may take (task) or (task, progress)."""
+
+    def _make_worker(self):
+        from janus_broker.client import JanusClient
+        from janus_broker.worker import JanusWorker
+
+        client = JanusClient(base_url="http://localhost:1", api_key="k", tenant_id="acme")
+        return JanusWorker(client=client, agent_id="a1", mailbox_id="mb")
+
+    @staticmethod
+    def _fake_pull(task_id):
+        from janus_broker.models import Task
+
+        task = Task(id=task_id, mailbox_id="mb", envelope={"payload": {"content": "hi"}})
+
+        class PullResult:
+            def __init__(self, t):
+                self.task = t
+                self.lease = type("L", (), {"lease_id": "lease-1", "attempt": 1})()
+
+        return PullResult(task)
+
+    def test_legacy_single_param_handler(self):
+        w = self._make_worker()
+        called = {}
+        w._client.pull_task = lambda mb, ag: self._fake_pull("t1")
+        w._client.start_task = lambda tid, lid: called.setdefault("started", tid)
+        w._client.heartbeat = lambda tid, lid: None
+        w._client.ack_task = lambda tid, req: called.setdefault("acked", True)
+        w._client.nack_task = lambda tid, req: called.setdefault("nacked", True)
+
+        def legacy_handler(t):
+            called["legacy"] = True
+            return "ref-1", None
+
+        w._process_one(legacy_handler)
+        assert called.get("legacy") is True
+        assert called.get("acked") is True
+
+    def test_progress_handler_receives_progress_fn(self):
+        w = self._make_worker()
+        called = {}
+        w._client.pull_task = lambda mb, ag: self._fake_pull("t2")
+        w._client.start_task = lambda tid, lid: None
+        w._client.heartbeat = lambda tid, lid: None
+        w._client.ack_task = lambda tid, req: None
+        w._client.nack_task = lambda tid, req: None
+
+        def modern_handler(t, progress):
+            called["progress_type"] = callable(progress)
+            return "ref-2", None
+
+        w._process_one(modern_handler)
+        assert called.get("progress_type") is True

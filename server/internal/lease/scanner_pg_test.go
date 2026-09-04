@@ -126,7 +126,9 @@ func TestExpireLeases_DeadLetterWhenMaxExceeded(t *testing.T) {
 	seedLeaseTestData(t, pool)
 
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `UPDATE tasks SET attempt_count = 3 WHERE tenant_id='acme' AND id='task-1'`)
+	// Default mailbox retry_policy is max_attempts=5, so attempt_count=5
+	// (5 >= 5) exceeds the policy and must dead-letter the task.
+	_, err := pool.Exec(ctx, `UPDATE tasks SET attempt_count = 5 WHERE tenant_id='acme' AND id='task-1'`)
 	require.NoError(t, err)
 
 	scanner := NewScanner(pool, time.Hour)

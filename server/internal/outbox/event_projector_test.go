@@ -14,9 +14,9 @@ import (
 
 // mockEventWriter records events for assertion.
 type mockEventWriter struct {
-	mu      sync.Mutex
-	events  []core.JanusEvent
-	recErr  error
+	mu     sync.Mutex
+	events []core.JanusEvent
+	recErr error
 }
 
 func (w *mockEventWriter) Record(_ context.Context, evt core.JanusEvent) error {

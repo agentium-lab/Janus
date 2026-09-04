@@ -24,7 +24,7 @@ class WorkerError(Exception):
     """Raised when the worker encounters an unrecoverable error."""
 
 
-TaskHandler = Callable[[Task, Callable], "tuple[str, Optional[dict]]"]
+TaskHandler = Callable[..., "tuple[str, Optional[dict]]"]  # (task) or (task, progress)
 
 
 ProgressFunc = Callable[[str, Optional[int], Optional[dict]], None]
@@ -113,7 +113,12 @@ class JanusWorker:
                 logger.debug("progress report failed for %s (non-fatal)", task.id)
 
         try:
-            result_ref, usage = handler(task, progress)
+            import inspect as _inspect
+            sig = _inspect.signature(handler)
+            if len(sig.parameters) >= 2:
+                result_ref, usage = handler(task, progress)
+            else:
+                result_ref, usage = handler(task)
             success = True
         except Exception as e:
             error_msg = str(e)

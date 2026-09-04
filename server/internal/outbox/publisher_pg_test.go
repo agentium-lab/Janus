@@ -224,11 +224,13 @@ func (d *recordingDriver) PublishTask(_ context.Context, msg core.TaskMessage) e
 func (d *recordingDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *recordingDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *recordingDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error { return nil }
 func (d *recordingDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
-func (d *recordingDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error { return nil }
+func (d *recordingDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
+	return nil
+}
 func (d *recordingDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	d.publishedEvent = append(d.publishedEvent, event)
 	return nil
@@ -236,10 +238,10 @@ func (d *recordingDriver) PublishEvent(_ context.Context, event core.JanusEvent)
 func (d *recordingDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
 	return nil, nil
 }
-func (d *recordingDriver) EnsureTenant(_ context.Context, _ string) error          { return nil }
-func (d *recordingDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *recordingDriver) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (d *recordingDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error   { return nil }
 func (d *recordingDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
-func (d *recordingDriver) Close() error                                              { return nil }
+func (d *recordingDriver) Close() error                                                { return nil }
 
 type errorDriver struct{}
 
@@ -249,7 +251,7 @@ func (d *errorDriver) PublishTask(_ context.Context, _ core.TaskMessage) error {
 func (d *errorDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *errorDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *errorDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error { return nil }
 func (d *errorDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
@@ -262,10 +264,10 @@ func (d *errorDriver) PublishEvent(_ context.Context, _ core.JanusEvent) error {
 func (d *errorDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
 	return nil, nil
 }
-func (d *errorDriver) EnsureTenant(_ context.Context, _ string) error          { return nil }
-func (d *errorDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *errorDriver) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (d *errorDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error   { return nil }
 func (d *errorDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
-func (d *errorDriver) Close() error                                              { return nil }
+func (d *errorDriver) Close() error                                                { return nil }
 
 func TestPublisher_PublishBatch_PublishError(t *testing.T) {
 	pool := openOutboxTestDB(t)
@@ -344,14 +346,14 @@ func TestPublisher_PublishBatch_UnknownKind_NoOp(t *testing.T) {
 
 // mockOutboxRepo allows controlling error returns for testing.
 type mockOutboxRepo struct {
-	entries            []postgres.OutboxEntry
-	fetchErr           error
-	markPublishedErr   error
-	markFailedErr      error
-	markFailedCalled   bool
-	markFailedID       string
+	entries             []postgres.OutboxEntry
+	fetchErr            error
+	markPublishedErr    error
+	markFailedErr       error
+	markFailedCalled    bool
+	markFailedID        string
 	markPublishedCalled bool
-	markPublishedID    string
+	markPublishedID     string
 }
 
 func (m *mockOutboxRepo) FetchPending(_ context.Context, _ int) ([]postgres.OutboxEntry, error) {

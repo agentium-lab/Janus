@@ -66,10 +66,10 @@ func (d *fakeDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (
 	return nil, nil
 }
 
-func (d *fakeDriver) EnsureTenant(_ context.Context, _ string) error          { return nil }
-func (d *fakeDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *fakeDriver) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (d *fakeDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error   { return nil }
 func (d *fakeDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
-func (d *fakeDriver) Close() error                                              { return nil }
+func (d *fakeDriver) Close() error                                                { return nil }
 
 func TestPublishOne_TaskPublish(t *testing.T) {
 	drv := &fakeDriver{}

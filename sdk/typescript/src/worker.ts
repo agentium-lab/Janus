@@ -4,7 +4,8 @@ import { Client } from "./client";
 import type { Task, TokenUsage } from "./types";
 
 export type ProgressFn = (message: string, percent?: number, data?: Record<string, unknown>) => void;
-export type TaskHandler = (task: Task, agentID: string, progress: ProgressFn) => Promise<{ resultRef: string; usage?: TokenUsage }>;
+// Backward compatible: progress is optional — old 2-param handlers still work.
+export type TaskHandler = (task: Task, agentID: string, progress?: ProgressFn) => Promise<{ resultRef: string; usage?: TokenUsage }>;
 
 export interface WorkerConfig {
   agentID: string;

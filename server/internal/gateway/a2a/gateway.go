@@ -64,6 +64,7 @@ type Gateway struct {
 	taskSvc      TaskCreator
 	statusSvc    TaskStatusGetter
 	taskStreamer TaskStreamer
+	subscriber   EventSubscriber
 }
 
 func NewGateway(agentSvc AgentRegistrar, taskSvc TaskCreator) *Gateway {
@@ -81,6 +82,9 @@ func NewGatewayWithStatus(agentSvc AgentRegistrar, taskSvc TaskCreator, statusSv
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if g.serveV1Routes(w, r) {
+		return
+	}
 	switch {
 	case r.URL.Path == "/a2a/agent/card" && r.Method == http.MethodPost:
 		g.handleAgentCard(w, r)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
@@ -32,6 +33,7 @@ func (m *mockAgentRegistrar) Register(_ context.Context, _ core.Agent) error {
 }
 
 type mockTaskCreator struct {
+	mu   sync.Mutex
 	task *core.Task
 	err  error
 }
@@ -44,7 +46,16 @@ func (m *mockTaskCreator) Create(_ context.Context, task core.Task) (*core.Task,
 	if m.err != nil {
 		return nil, m.err
 	}
+	m.mu.Lock()
+	m.task = &task
+	m.mu.Unlock()
 	return &task, nil
+}
+
+func (m *mockTaskCreator) captured() *core.Task {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.task
 }
 
 func TestGateway_ServeHTTP_AgentCard(t *testing.T) {
@@ -152,7 +163,7 @@ func TestMessageToTask_NoID(t *testing.T) {
 	msg := SendMessageRequest{
 		Params: SendMessageParams{
 			Message: AgentMessage{
-				Role: "user",
+				Role:  "user",
 				Parts: []MessagePart{{Type: "text", Text: "hello"}},
 			},
 		},
@@ -167,7 +178,7 @@ func TestMessageToTask_NoContextID(t *testing.T) {
 		ID: "msg-002",
 		Params: SendMessageParams{
 			Message: AgentMessage{
-				Role: "user",
+				Role:  "user",
 				Parts: []MessagePart{{Type: "text", Text: "test"}},
 			},
 		},

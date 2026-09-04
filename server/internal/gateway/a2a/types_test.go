@@ -46,8 +46,8 @@ func TestCardToCapabilities(t *testing.T) {
 
 func TestJanusStatusToA2A(t *testing.T) {
 	tests := []struct {
-		janus   core.TaskStatus
-		a2a     string
+		janus core.TaskStatus
+		a2a   string
 	}{
 		{core.TaskStatusCreated, "submitted"},
 		{core.TaskStatusQueued, "submitted"},

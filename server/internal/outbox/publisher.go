@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -14,6 +15,11 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
+
+// ErrUnknownKind marks an outbox entry whose kind this publisher version
+// does not understand (rolling-upgrade window). Callers treat it as a skip,
+// not a retriable failure.
+var ErrUnknownKind = errors.New("unknown outbox kind")
 
 // OutboxRepo defines the interface needed by Publisher for outbox operations.
 type OutboxRepo interface {
@@ -77,6 +83,14 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 	for _, e := range entries {
 		metrics.OutboxPublishTotal.Inc()
 		if err := p.publishOne(batchCtx, e); err != nil {
+			if errors.Is(err, ErrUnknownKind) {
+				// Unknown kinds appear during rolling upgrades (a newer writer
+				// emitted a kind this publisher doesn't know). Mark published:
+				// retrying would loop forever since no worker understands it.
+				log.Printf("outbox publish %s: skipping unknown kind", e.ID)
+				_ = p.repo.MarkPublished(batchCtx, e.ID)
+				continue
+			}
 			metrics.OutboxPublishFailedTotal.Inc()
 			log.Printf("outbox publish %s: %v", e.ID, err)
 			_ = p.repo.MarkFailedWithReason(batchCtx, e.ID, err.Error())
@@ -126,6 +140,6 @@ func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) erro
 		msg.DedupeKey = e.ID
 		return p.driver.PublishDLQ(ctx, msg, errPayload)
 	default:
-		return fmt.Errorf("unknown outbox kind: %q", e.Kind)
+		return fmt.Errorf("%w: %q", ErrUnknownKind, e.Kind)
 	}
 }
