@@ -256,9 +256,7 @@ class JanusClient:
             body["percent"] = percent
         if data is not None:
             body["data"] = data
-        resp = self._client.post(
-            f"/v1/tenants/{self._tenant}/tasks/{task_id}/progress", json=body
-        )
+        resp = self._client.post(self._url(f"/tasks/{task_id}/progress"), json=body)
         resp.raise_for_status()
 
     def stream_task(self, task_id: str, timeout: Optional[float] = 300.0):
@@ -269,32 +267,31 @@ class JanusClient:
                 if event["event_type"] == "task.progress":
                     print(event["payload"].get("message"))
         """
-        import requests
-        url = f"{self._client.base_url}/v1/tenants/{self._tenant}/tasks/{task_id}/stream"
-        headers = {}
-        if self._api_key:
-            headers["X-API-Key"] = self._api_key
+        url = f"{self._base_url}/v1/tenants/{self._tenant_id}/tasks/{task_id}/stream"
         terminal = {"task.completed", "task.failed", "task.cancelled",
                      "task.dead_lettered", "task.expired"}
         try:
-            with requests.get(url, headers=headers, stream=True, timeout=timeout) as resp:
+            with self._client.stream("GET", url, timeout=timeout) as resp:
                 resp.raise_for_status()
                 event_type = ""
-                for line in resp.iter_lines(decode_unicode=True):
-                    if line is None:
-                        continue
-                    if line.startswith("event: "):
-                        event_type = line[7:].strip()
-                    elif line.startswith("data: ") and event_type:
-                        import json as _json
-                        try:
-                            data = _json.loads(line[6:])
-                        except (ValueError, TypeError):
-                            data = {"raw": line[6:]}
-                        yield {"event_type": event_type, **data}
-                        if event_type in terminal:
-                            return
-        except requests.exceptions.Timeout:
+                buffer = ""
+                for chunk in resp.iter_text():
+                    buffer += chunk
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.rstrip("\r")
+                        if line.startswith("event: "):
+                            event_type = line[7:].strip()
+                        elif line.startswith("data: ") and event_type:
+                            import json as _json
+                            try:
+                                data = _json.loads(line[6:])
+                            except (ValueError, TypeError):
+                                data = {"raw": line[6:]}
+                            yield {"event_type": event_type, **data}
+                            if event_type in terminal:
+                                return
+        except (httpx.TimeoutException, httpx.ConnectError):
             return
 
     def replay_task(self, task_id: str) -> dict:

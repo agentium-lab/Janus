@@ -1,8 +1,9 @@
 package handler
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -10,16 +11,28 @@ import (
 	"github.com/agentium-lab/Janus/core"
 )
 
+// TaskStatusChecker lets the SSE handler detect already-terminal tasks before
+// subscribing, so late subscribers get an immediate close instead of a hang.
+type TaskStatusChecker interface {
+	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
+}
+
 // SSEHandler serves per-task Server-Sent Events streams. Events are fanned
 // out from the in-memory broadcaster; the stream closes when the task reaches
-// a terminal state.
+// a terminal state. Already-terminal tasks close immediately.
 type SSEHandler struct {
 	broadcaster EventBroadcaster
-	subscribe   func() (<-chan core.JanusEvent, func())
+	statusCheck TaskStatusChecker
 }
 
 func NewSSEHandler(broadcaster EventBroadcaster) *SSEHandler {
 	return &SSEHandler{broadcaster: broadcaster}
+}
+
+// WithStatusChecker injects a task status checker for terminal-state pre-check.
+func (h *SSEHandler) WithStatusChecker(tc TaskStatusChecker) *SSEHandler {
+	h.statusCheck = tc
+	return h
 }
 
 func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -34,17 +47,30 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing task id")
 		return
 	}
+	tenantID := tenantIDFromPath(r.URL.Path)
+
+	// Terminal-state pre-check: subscriber connected after task completed.
+	if h.statusCheck != nil {
+		if task, err := h.statusCheck.Get(r.Context(), tenantID, taskID); err == nil && task != nil {
+			if task.Status.IsTerminal() {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				payload, _ := json.Marshal(map[string]string{"status": string(task.Status)})
+				fmt.Fprintf(w, "event: task.%s\ndata: %s\n\n", task.Status, payload)
+				return
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	w.Header().Set("Retry", "3000")
 
-	tenantID := tenantIDFromPath(r.URL.Path)
 	ch := h.broadcaster.Subscribe(tenantID)
 	defer func() { h.broadcaster.Unsubscribe(tenantID, ch) }()
 
-	// Heartbeat comment every 30s keeps intermediaries from timing out.
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
@@ -59,17 +85,12 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// Filter: only events for this task.
 			if evt.TaskID != taskID {
 				continue
 			}
-			// Send the raw payload directly (it's already JSON); wrapping the
-			// whole event would base64-encode the []byte Payload field.
-			sseData := constructSSEData(evt)
-			fmt.Fprintf(w, "event: %s\nid: %s\ndata: %s\n\n", evt.EventType, evt.EventID, sseData)
+			fmt.Fprintf(w, "event: %s\nid: %s\ndata: %s\n\n",
+				evt.EventType, evt.EventID, constructSSEData(evt))
 			flusher.Flush()
-
-			// Auto-close on terminal states.
 			if isTerminalTaskEvent(evt.EventType) {
 				return
 			}
@@ -86,19 +107,20 @@ func isTerminalTaskEvent(t core.EventType) bool {
 	return false
 }
 
-var _ = log.Println
-
-// constructSSEData builds a flat JSON object from the event with the payload
-// embedded raw (not base64).
 func constructSSEData(evt core.JanusEvent) string {
 	var b strings.Builder
-	b.WriteString(`{"event_type":`)
-	b.WriteString(`"` + string(evt.EventType) + `"`)
+	b.WriteString(`{"event_type":"`)
+	b.WriteString(string(evt.EventType))
+	b.WriteString(`"`)
 	if evt.TaskID != "" {
-		b.WriteString(`,"task_id":"` + evt.TaskID + `"`)
+		b.WriteString(`,"task_id":"`)
+		b.WriteString(evt.TaskID)
+		b.WriteString(`"`)
 	}
 	if evt.SourceAgent != "" {
-		b.WriteString(`,"source_agent":"` + evt.SourceAgent + `"`)
+		b.WriteString(`,"source_agent":"`)
+		b.WriteString(evt.SourceAgent)
+		b.WriteString(`"`)
 	}
 	if len(evt.Payload) > 0 {
 		b.WriteString(`,"payload":`)

@@ -9,16 +9,30 @@ import (
 type FanoutBroadcaster struct {
 	mu      sync.Mutex
 	fans    map[string][]chan core.JanusEvent
-	inbound <-chan core.JanusEvent
+	inbound chan core.JanusEvent
 }
 
 func NewFanoutBroadcaster(inbound <-chan core.JanusEvent) *FanoutBroadcaster {
 	b := &FanoutBroadcaster{
 		fans:    make(map[string][]chan core.JanusEvent),
-		inbound: inbound,
+		inbound: make(chan core.JanusEvent, 256),
 	}
+	go func() {
+		for event := range inbound {
+			b.inbound <- event
+		}
+		close(b.inbound)
+	}()
 	go b.run()
 	return b
+}
+
+// Publish pushes an event into the fanout pipeline (EventPublisher impl).
+func (b *FanoutBroadcaster) Publish(evt core.JanusEvent) {
+	select {
+	case b.inbound <- evt:
+	default: // fanout channel full: drop rather than block the reporter
+	}
 }
 
 func (b *FanoutBroadcaster) run() {

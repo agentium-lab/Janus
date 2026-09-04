@@ -243,8 +243,8 @@ func main() {
 
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
-	sseH := handler.NewSSEHandler(broadcaster)
-	progressH := handler.NewProgressHandler(taskSvc, broadcaster)
+	sseH := handler.NewSSEHandler(broadcaster).WithStatusChecker(taskSvc)
+	progressH := handler.NewProgressHandler(taskSvc, broadcaster) // FanoutBroadcaster implements EventPublisher via its inbound channel
 	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH)
 
 	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)

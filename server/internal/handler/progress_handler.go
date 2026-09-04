@@ -17,18 +17,24 @@ type ProgressService interface {
 	ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) error
 }
 
+// EventPublisher pushes events into the in-memory fanout channel feeding
+// SSE/WebSocket subscribers (the fast path of ADR-0004 dual-path).
+type EventPublisher interface {
+	Publish(evt core.JanusEvent)
+}
+
 // ProgressHandler receives agent progress reports and fans them out through
 // the broadcaster + outbox (dual-path, ADR-0004).
 type ProgressHandler struct {
 	svc         ProgressService
-	broadcaster EventBroadcaster
+	publisher   EventPublisher
 	rateLimiter *progressRateLimiter
 }
 
-func NewProgressHandler(svc ProgressService, broadcaster EventBroadcaster) *ProgressHandler {
+func NewProgressHandler(svc ProgressService, publisher EventPublisher) *ProgressHandler {
 	return &ProgressHandler{
 		svc:         svc,
-		broadcaster: broadcaster,
+		publisher:   publisher,
 		rateLimiter: newProgressRateLimiter(10), // 10/sec per task
 	}
 }
@@ -93,9 +99,7 @@ func (h *ProgressHandler) Report(w http.ResponseWriter, r *http.Request) {
 		SourceAgent: req.AgentID,
 		Payload:     payload,
 	}
-	// The broadcaster is in-memory fanout; the outbox persistence happens
-	// inside ReportProgress (service layer) — dual-path per ADR-0004.
-	_ = evt
+	h.publisher.Publish(evt)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }
