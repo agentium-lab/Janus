@@ -8,10 +8,10 @@ import (
 )
 
 type AgentService struct {
-	agentRepo    AgentRepo
-	mailboxRepo  MailboxRepo
-	hbDriver     HeartbeatDriver
-	queueDriver  QueueDriver
+	agentRepo   AgentRepo
+	mailboxRepo MailboxRepo
+	hbDriver    HeartbeatDriver
+	queueDriver QueueDriver
 }
 
 func NewAgentService(
@@ -78,6 +78,9 @@ func (s *AgentService) Get(ctx context.Context, tenantID, agentID string) (*core
 func (s *AgentService) Heartbeat(ctx context.Context, tenantID, agentID string) error {
 	if tenantID == "" || agentID == "" {
 		return fmt.Errorf("tenant id and agent id are required")
+	}
+	if s.hbDriver == nil {
+		return nil
 	}
 	if err := s.hbDriver.Ping(ctx, tenantID, agentID); err != nil {
 		return fmt.Errorf("heartbeat: %w", err)

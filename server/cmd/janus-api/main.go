@@ -132,6 +132,7 @@ func main() {
 	if rerr != nil {
 		if cfg.Queue.Driver == "pg" {
 			log.Printf("WARNING: redis unavailable (%v); pg-only mode continues without heartbeat/rate-limiter", rerr)
+			redisDrv = nil // nil-safe: AgentService/Sweeper/RateLimiter guard below
 		} else {
 			log.Fatalf("redis: %v", rerr)
 		}
@@ -261,7 +262,7 @@ func main() {
 	go eventProjector.Start(context.Background())
 	defer eventProjector.Stop()
 
-	retrySched := retry.NewScheduler(pool, queueDrv)
+	retrySched := retry.NewScheduler(pool, queueDrv).WithOutbox()
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 

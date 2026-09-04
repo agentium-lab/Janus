@@ -54,6 +54,9 @@ func (s *Sweeper) Stop() {
 }
 
 func (s *Sweeper) sweep(ctx context.Context) {
+	if s.hbDriver == nil {
+		return
+	}
 	onlineAgents, err := s.agentStatus.ListAllByStatus(ctx, core.AgentStatusOnline)
 	if err != nil {
 		return

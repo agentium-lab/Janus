@@ -88,7 +88,7 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 	}
 	rows, err := d.pool.Query(ctx, `
 		WITH picked AS (
-			SELECT id, attempt_count FROM tasks
+			SELECT tenant_id, id, attempt_count FROM tasks
 			WHERE tenant_id = $1 AND mailbox_id = $2 AND status = 'queued'
 			  AND (retry_at IS NULL OR retry_at <= now())
 			  AND (queue_lease_until IS NULL OR queue_lease_until <= now())
@@ -97,7 +97,7 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 			LIMIT $3
 		)
 		UPDATE tasks t SET queue_lease_until = now() + interval '45 seconds', updated_at = now()
-		FROM picked WHERE t.id = picked.id
+		FROM picked WHERE t.tenant_id = picked.tenant_id AND t.id = picked.id
 		RETURNING t.id, t.tenant_id, t.source_agent, t.attempt_count,
 		          COALESCE(t.envelope->>'content_type',''), COALESCE(t.envelope->'payload','{}'::jsonb)`, tenantID, mailbox, limit)
 	if err != nil {

@@ -93,7 +93,10 @@ var scopeRules = []scopeRule{
 // outside the versioned data-plane API (probes, gateways, ws) as needing no
 // key scope.
 func RequiredScope(method, path string) (scope string, ok bool) {
-	if path != "/v1/tenants" && !strings.HasPrefix(path, "/v1/tenants/") &&
+	if path == "/v1/tenants" {
+		return ScopeAdmin, true // tenant management is a control-plane operation
+	}
+	if !strings.HasPrefix(path, "/v1/tenants/") &&
 		!strings.HasPrefix(path, "/a2a/") &&
 		!strings.HasPrefix(path, "/mcp") &&
 		!strings.HasPrefix(path, "/acp/") {
