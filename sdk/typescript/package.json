@@ -1,6 +1,6 @@
 {
   "name": "@agentium-lab/janus-sdk",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "TypeScript SDK for Janus \u2014 the A2A-native durable agent broker",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

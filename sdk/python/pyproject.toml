@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "janus-broker"
-version = "1.4.1"
+version = "1.5.0"
 description = "Python SDK for Janus — A2A-native Durable Agent Broker"
 requires-python = ">=3.10"
 dependencies = [
