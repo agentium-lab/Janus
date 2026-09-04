@@ -104,6 +104,21 @@ client.ack_task(result.task.id, {
 })
 ```
 
+**Report live progress** — agents call `progress()` like a log statement (the Worker injects it):
+
+```python
+def process(task, progress):
+    progress("Analyzing code...", percent=20)
+    progress("Fixing issues...", percent=60)
+    return WorkerResult(output={"status": "done"})
+
+# Subscribe from any client — real-time SSE:
+for evt in client.stream_task("task-001"):
+    print(f'[{evt["payload"].get("percent")}%] {evt["payload"]["message"]}')
+# [20%] Analyzing code...
+# [60%] Fixing issues...
+```
+
 > 📖 **Full walkthrough:** the [Smart Customer Service tutorial](https://janusa2a.com/docs/quickstart.html#example-smart-service) builds a complete multi-agent exchange workflow — intent routing, crash recovery, parallel fan-out, and data flow between agents.
 
 ## Core Capabilities
@@ -142,7 +157,7 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A Gateway** (`/a2a/agent/card`, `/a2a/task/send`) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
+**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A Gateway** (`/a2a/agent/card`, `/a2a/task/send`) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
 
 ### 📊 Observability & 🔐 Security
 
