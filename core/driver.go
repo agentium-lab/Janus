@@ -14,9 +14,9 @@ type DeliveryRef string
 type NackReason string
 
 const (
-	NackRetriable    NackReason = "retriable"
+	NackRetriable        NackReason = "retriable"
 	NackRetriableDelayed NackReason = "retriable_delayed"
-	NackNonRetriable NackReason = "non_retriable"
+	NackNonRetriable     NackReason = "non_retriable"
 )
 
 // FetchOptions controls pull behavior.
@@ -27,20 +27,20 @@ type FetchOptions struct {
 
 // TaskMessage is the driver-level representation of a task to be published.
 type TaskMessage struct {
-	TenantID string
+	TenantID  string
 	MailboxID string
-	TaskID   string
-	Attempt	  int
-	Priority Priority
-	Payload  []byte
-	DedupeKey   string
-	Headers  map[string]string
+	TaskID    string
+	Attempt   int
+	Priority  Priority
+	Payload   []byte
+	DedupeKey string
+	Headers   map[string]string
 }
 
 // TaskDelivery is a task fetched from a mailbox.
 type TaskDelivery struct {
 	TaskID          string
-	Attempt			int
+	Attempt         int
 	Payload         []byte
 	DeliveryRef     DeliveryRef
 	RedeliveryCount int
@@ -48,25 +48,25 @@ type TaskDelivery struct {
 
 // DLQMessage is the outbox payload used to publish a task to a mailbox DLQ
 type DLQMessage struct {
-	Message		TaskMessage  `json:"message"`
-	ErrorPayload 	json.RawMessage  `json:"error_payload"`
+	Message      TaskMessage     `json:"message"`
+	ErrorPayload json.RawMessage `json:"error_payload"`
 }
 
 type DLQStreamMessage struct {
-	TenantID		string		`json:"tenant_id"`
-	MailboxID		string		`json:"mailbox_id"`
-	TaskID			string		`json:"task_id"`
-	Attempt			int			`json:"attempt"`
-	AttemptCount	int			`json:"attempt_count,omitempty"`
-	Priority 		Priority	`json:"priority,omitempty"`
-	OriginalEnvelope json.RawMessage	`json:"original_envelope,omitempty"`
-	ErrorPayload	json.RawMessage 	`json:"error_payload,omitempty"`
-	FailureReason	string		`json:"failure_reason,omitempty"`
-	PolicyDecisionID	string	`json:"policy_decision_id,omitempty"`
-	FirstFailedAt	*time.Time	`json:"first_failed_at,omitempty"`
-	DeadLetteredAt	*time.Time	`json:"dead_lettered_at"`
-	DedupeKey		string		`json:"dedupe_key,omitempty"`
-	Headers			map[string]string	`json:"headers,omitempty"`
+	TenantID         string            `json:"tenant_id"`
+	MailboxID        string            `json:"mailbox_id"`
+	TaskID           string            `json:"task_id"`
+	Attempt          int               `json:"attempt"`
+	AttemptCount     int               `json:"attempt_count,omitempty"`
+	Priority         Priority          `json:"priority,omitempty"`
+	OriginalEnvelope json.RawMessage   `json:"original_envelope,omitempty"`
+	ErrorPayload     json.RawMessage   `json:"error_payload,omitempty"`
+	FailureReason    string            `json:"failure_reason,omitempty"`
+	PolicyDecisionID string            `json:"policy_decision_id,omitempty"`
+	FirstFailedAt    *time.Time        `json:"first_failed_at,omitempty"`
+	DeadLetteredAt   *time.Time        `json:"dead_lettered_at"`
+	DedupeKey        string            `json:"dedupe_key,omitempty"`
+	Headers          map[string]string `json:"headers,omitempty"`
 }
 
 // MailboxSpec defines the configuration for creating a mailbox in the driver.
@@ -82,22 +82,22 @@ type MailboxSpec struct {
 
 // ConsumerSpec defines the configuration for creating a consumer in the driver.
 type ConsumerSpec struct {
-	TenantID        string
-	MailboxID       string
-	DurableName     string
-	ACKWaitSeconds  int
-	MaxDeliver      int
-	MaxACKPending   int
+	TenantID       string
+	MailboxID      string
+	DurableName    string
+	ACKWaitSeconds int
+	MaxDeliver     int
+	MaxACKPending  int
 }
 
 // EventReplayFilter controls which events to replay.
 type EventReplayFilter struct {
-	TenantID  string
+	TenantID   string
 	EventTypes []EventType
-	StartTime *time.Time
-	EndTime   *time.Time
-	TaskID    string
-	TraceID   string
+	StartTime  *time.Time
+	EndTime    *time.Time
+	TaskID     string
+	TraceID    string
 }
 
 // EventIterator streams replayed events.

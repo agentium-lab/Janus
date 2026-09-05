@@ -20,41 +20,41 @@ const (
 
 // PolicyInput is the input to a policy evaluation.
 type PolicyInput struct {
-	TenantID string    `json:"tenant_id"`
-	Actor    PolicyActor `json:"actor"`
-	Action   string    `json:"action"`
-	Resource PolicyResource `json:"resource"`
+	TenantID string            `json:"tenant_id"`
+	Actor    PolicyActor       `json:"actor"`
+	Action   string            `json:"action"`
+	Resource PolicyResource    `json:"resource"`
 	Context  PolicyContextData `json:"context"`
 }
 
 // PolicyActor represents the entity performing an action.
 type PolicyActor struct {
-	Type string `json:"type"` // "agent", "user", "system"
-	ID   string `json:"id"`
-	TeamID	string	`json:"team_id,omitempty"`
+	Type   string `json:"type"` // "agent", "user", "system"
+	ID     string `json:"id"`
+	TeamID string `json:"team_id,omitempty"`
 }
 
 // PolicyResource represents the target of an action.
 type PolicyResource struct {
-	Type  string `json:"type"`  // "capability", "agent", "mailbox", "tool"
+	Type  string `json:"type"` // "capability", "agent", "mailbox", "tool"
 	Value string `json:"value"`
 }
 
 // PolicyContextData carries additional context for policy evaluation.
 type PolicyContextData struct {
-	DataClassification string  `json:"data_classification,omitempty"`
+	DataClassification string   `json:"data_classification,omitempty"`
 	Tools              []string `json:"tools,omitempty"`
-	CostEstimateUSD    float64 `json:"cost_estimate_usd,omitempty"`
-	TargetAgentID		string `json:"target_agent_id,omitempty"`
-	TargetTeamID		string	`json:"target_team_id,omitempty"`
+	CostEstimateUSD    float64  `json:"cost_estimate_usd,omitempty"`
+	TargetAgentID      string   `json:"target_agent_id,omitempty"`
+	TargetTeamID       string   `json:"target_team_id,omitempty"`
 }
 
 // PolicyDecision is the output of a policy evaluation.
 type PolicyDecision struct {
 	Decision     PolicyDecisionType `json:"decision"`
-	DecisionID   string            `json:"decision_id"`
-	MatchedRules []string          `json:"matched_rules,omitempty"`
-	Reason       string            `json:"reason,omitempty"`
+	DecisionID   string             `json:"decision_id"`
+	MatchedRules []string           `json:"matched_rules,omitempty"`
+	Reason       string             `json:"reason,omitempty"`
 }
 
 // PolicyEngine is the interface for policy evaluation.

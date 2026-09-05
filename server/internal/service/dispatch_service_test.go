@@ -68,7 +68,7 @@ func (m *mockDispatchQueueDriver) EnsureConsumer(_ context.Context, spec core.Co
 func (m *mockDispatchQueueDriver) Close() error { return nil }
 
 type mockDispatchAttemptRepo struct {
-	attempts []*core.TaskAttempt
+	attempts  []*core.TaskAttempt
 	createErr error
 }
 
@@ -124,7 +124,7 @@ func (m *mockDispatchAttemptRepo) UpdateFinishedWithCheck(_ context.Context, ten
 }
 
 type mockDispatchTaskRepo struct {
-	tasks    map[string]*core.Task
+	tasks     map[string]*core.Task
 	updateErr error
 }
 

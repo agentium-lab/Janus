@@ -79,7 +79,7 @@ func TestEventRepo_ListByTask(t *testing.T) {
 	})
 	insertTestAuditEvent(t, ctx, pool, "t1", core.JanusEvent{
 		EventID: "e3", EventType: core.EventTaskCreated, TenantID: "t1",
-		TaskID: "task-2", Timestamp: now.Add(2*time.Second), Payload: []byte(`{}`),
+		TaskID: "task-2", Timestamp: now.Add(2 * time.Second), Payload: []byte(`{}`),
 	})
 
 	repo := NewEventRepo(pool)
@@ -131,7 +131,7 @@ func TestEventRepo_ListByTrace(t *testing.T) {
 	})
 	insertTestAuditEvent(t, ctx, pool, "t1", core.JanusEvent{
 		EventID: "e3", EventType: core.EventTaskCreated, TenantID: "t1",
-		TaskID: "task-2", TraceID: "trace-xyz", Timestamp: now.Add(2*time.Second), Payload: []byte(`{}`),
+		TaskID: "task-2", TraceID: "trace-xyz", Timestamp: now.Add(2 * time.Second), Payload: []byte(`{}`),
 	})
 
 	repo := NewEventRepo(pool)

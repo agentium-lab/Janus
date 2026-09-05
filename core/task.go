@@ -67,7 +67,7 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 	},
 	TaskStatusFailed: {
 		TaskStatusRetryScheduled: true,
-		TaskStatusDeadLettered:    true,
+		TaskStatusDeadLettered:   true,
 	},
 	TaskStatusRetryScheduled: {
 		TaskStatusQueued: true,
@@ -112,16 +112,16 @@ type Target struct {
 
 // Budget specifies resource constraints for a task.
 type Budget struct {
-	MaxTokens   int      `json:"max_tokens,omitempty"`
-	MaxCostUSD  float64  `json:"max_cost_usd,omitempty"`
+	MaxTokens    int      `json:"max_tokens,omitempty"`
+	MaxCostUSD   float64  `json:"max_cost_usd,omitempty"`
 	ModelClasses []string `json:"model_classes,omitempty"`
 }
 
 // PolicyContext specifies policy-related context for a task.
 type PolicyContext struct {
-	DataClassification     string   `json:"data_classification,omitempty"`
+	DataClassification    string   `json:"data_classification,omitempty"`
 	RequiresHumanApproval bool     `json:"requires_human_approval,omitempty"`
-	AllowedTools           []string `json:"allowed_tools,omitempty"`
+	AllowedTools          []string `json:"allowed_tools,omitempty"`
 }
 
 // ContextRef represents a reference to external context.
@@ -159,43 +159,43 @@ type ToolInvocation struct {
 
 // TaskEnvelope is the standard message envelope for all Janus tasks.
 type TaskEnvelope struct {
-	JanusVersion    string           `json:"janus_version"`
-	TaskID          string           `json:"task_id"`
-	IdempotencyKey  string           `json:"idempotency_key,omitempty"`
-	TenantID        string           `json:"tenant_id"`
-	SourceAgent     string           `json:"source_agent"`
-	Target          Target           `json:"target"`
-	Priority        Priority         `json:"priority"`
-	Deadline        *time.Time       `json:"deadline,omitempty"`
-	TTLSeconds      int              `json:"ttl_seconds,omitempty"`
-	Budget          *Budget          `json:"budget,omitempty"`
-	Policy          *PolicyContext   `json:"policy,omitempty"`
-	ContextRefs     []ContextRef     `json:"context_refs,omitempty"`
-	Payload         Payload          `json:"payload"`
-	Trace           TraceContext     `json:"trace"`
-	ToolInvocation  *ToolInvocation  `json:"tool_invocation,omitempty"`
+	JanusVersion   string          `json:"janus_version"`
+	TaskID         string          `json:"task_id"`
+	IdempotencyKey string          `json:"idempotency_key,omitempty"`
+	TenantID       string          `json:"tenant_id"`
+	SourceAgent    string          `json:"source_agent"`
+	Target         Target          `json:"target"`
+	Priority       Priority        `json:"priority"`
+	Deadline       *time.Time      `json:"deadline,omitempty"`
+	TTLSeconds     int             `json:"ttl_seconds,omitempty"`
+	Budget         *Budget         `json:"budget,omitempty"`
+	Policy         *PolicyContext  `json:"policy,omitempty"`
+	ContextRefs    []ContextRef    `json:"context_refs,omitempty"`
+	Payload        Payload         `json:"payload"`
+	Trace          TraceContext    `json:"trace"`
+	ToolInvocation *ToolInvocation `json:"tool_invocation,omitempty"`
 }
 
 // Task represents the current state of a task in Janus.
 type Task struct {
-	TenantID       string        `json:"tenant_id"`
-	ID             string        `json:"id"`
-	IdempotencyKey string        `json:"idempotency_key,omitempty"`
-	SourceAgent    string        `json:"source_agent"`
-	TargetType     TargetType    `json:"target_type"`
-	TargetValue    string        `json:"target_value"`
-	MailboxID      string        `json:"mailbox_id"`
-	Status         TaskStatus    `json:"status"`
-	Priority       Priority      `json:"priority"`
-	Deadline       *time.Time    `json:"deadline,omitempty"`
-	TTLSeconds     int           `json:"ttl_seconds,omitempty"`
-	Envelope       TaskEnvelope  `json:"envelope"`
-	ResultRef      string        `json:"result_ref,omitempty"`
-	Error          *TaskError    `json:"error,omitempty"`
-	AttemptCount   int           `json:"attempt_count"`
-	CreatedAt      time.Time     `json:"created_at"`
-	UpdatedAt      time.Time     `json:"updated_at"`
-	CompletedAt    *time.Time    `json:"completed_at,omitempty"`
+	TenantID       string       `json:"tenant_id"`
+	ID             string       `json:"id"`
+	IdempotencyKey string       `json:"idempotency_key,omitempty"`
+	SourceAgent    string       `json:"source_agent"`
+	TargetType     TargetType   `json:"target_type"`
+	TargetValue    string       `json:"target_value"`
+	MailboxID      string       `json:"mailbox_id"`
+	Status         TaskStatus   `json:"status"`
+	Priority       Priority     `json:"priority"`
+	Deadline       *time.Time   `json:"deadline,omitempty"`
+	TTLSeconds     int          `json:"ttl_seconds,omitempty"`
+	Envelope       TaskEnvelope `json:"envelope"`
+	ResultRef      string       `json:"result_ref,omitempty"`
+	Error          *TaskError   `json:"error,omitempty"`
+	AttemptCount   int          `json:"attempt_count"`
+	CreatedAt      time.Time    `json:"created_at"`
+	UpdatedAt      time.Time    `json:"updated_at"`
+	CompletedAt    *time.Time   `json:"completed_at,omitempty"`
 }
 
 // TaskError represents error information for a failed task.

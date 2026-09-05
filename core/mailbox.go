@@ -9,17 +9,17 @@ import (
 type MailboxStatus string
 
 const (
-	MailboxStatusActive  MailboxStatus = "active"
-	MailboxStatusPaused  MailboxStatus = "paused"
+	MailboxStatusActive MailboxStatus = "active"
+	MailboxStatusPaused MailboxStatus = "paused"
 )
 
 // RetryPolicy defines the retry configuration for a mailbox.
 type RetryPolicy struct {
-	MaxAttempts     int  `json:"max_attempts"`
-	BackoffType     string `json:"backoff_type"` // "exponential"
-	InitialSeconds  int  `json:"initial_seconds"`
-	MaxSeconds      int  `json:"max_seconds"`
-	Jitter          bool `json:"jitter"`
+	MaxAttempts    int    `json:"max_attempts"`
+	BackoffType    string `json:"backoff_type"` // "exponential"
+	InitialSeconds int    `json:"initial_seconds"`
+	MaxSeconds     int    `json:"max_seconds"`
+	Jitter         bool   `json:"jitter"`
 }
 
 // DefaultRetryPolicy returns the default retry policy.
@@ -50,16 +50,16 @@ func (p RetryPolicy) ExceedsMaxAttempts(attemptCount int) bool {
 }
 
 type Mailbox struct {
-	TenantID         string       `json:"tenant_id"`
-	ID               string       `json:"id"`
-	AgentID          string       `json:"agent_id"`
+	TenantID         string        `json:"tenant_id"`
+	ID               string        `json:"id"`
+	AgentID          string        `json:"agent_id"`
 	Status           MailboxStatus `json:"status"`
-	Priority         Priority     `json:"priority"`
-	MaxConcurrency   int          `json:"max_concurrency"`
-	ACKWaitSeconds   int          `json:"ack_wait_seconds"`
-	MaxDeliver       int          `json:"max_deliver"`
-	RetentionSeconds int          `json:"retention_seconds"`
-	RetryPolicy      RetryPolicy  `json:"retry_policy"`
-	CreatedAt        time.Time    `json:"created_at"`
-	UpdatedAt        time.Time    `json:"updated_at"`
+	Priority         Priority      `json:"priority"`
+	MaxConcurrency   int           `json:"max_concurrency"`
+	ACKWaitSeconds   int           `json:"ack_wait_seconds"`
+	MaxDeliver       int           `json:"max_deliver"`
+	RetentionSeconds int           `json:"retention_seconds"`
+	RetryPolicy      RetryPolicy   `json:"retry_policy"`
+	CreatedAt        time.Time     `json:"created_at"`
+	UpdatedAt        time.Time     `json:"updated_at"`
 }

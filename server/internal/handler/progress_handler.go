@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 // ProgressService validates and records task progress reports.
 type ProgressService interface {
-	ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) error
+	ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) (*core.JanusEvent, error)
 }
 
 // EventPublisher pushes events into the in-memory fanout channel feeding
@@ -84,22 +85,23 @@ func (h *ProgressHandler) Report(w http.ResponseWriter, r *http.Request) {
 		Data:    req.Data,
 	}
 
-	// Validate: reporter must hold the latest attempt; task must be in progress.
-	if err := h.svc.ReportProgress(r.Context(), tenantID, taskID, req.AgentID, prog); err != nil {
+	// Validation + slow-lane persistence happen in the service, which stamps
+	// a stable EventID; publish THAT event on the fast lane so both lanes
+	// carry the same identity and the broadcaster can dedupe the loopback.
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		if err := principal.CheckAgentIdentity(req.AgentID); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
+	evt, err := h.svc.ReportProgress(r.Context(), tenantID, taskID, req.AgentID, prog)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-
-	// Dual-path: fan out in-memory for SSE/WebSocket subscribers.
-	payload, _ := json.Marshal(prog)
-	evt := core.JanusEvent{
-		EventType:   core.EventTaskProgress,
-		TenantID:    tenantID,
-		TaskID:      taskID,
-		SourceAgent: req.AgentID,
-		Payload:     payload,
+	if evt != nil {
+		h.publisher.Publish(*evt)
 	}
-	h.publisher.Publish(evt)
 
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "accepted"})
 }

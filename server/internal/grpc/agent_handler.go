@@ -3,8 +3,8 @@ package grpc
 import (
 	"context"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	svc "github.com/agentium-lab/Janus/server/internal/service"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )

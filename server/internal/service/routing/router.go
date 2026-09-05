@@ -52,9 +52,9 @@ type BudgetChecker interface {
 }
 
 type Router struct {
-	lookup   AgentLookup
-	policy   PolicyChecker
-	budget   BudgetChecker
+	lookup AgentLookup
+	policy PolicyChecker
+	budget BudgetChecker
 }
 
 func NewRouter(lookup AgentLookup, policy PolicyChecker, budget BudgetChecker) *Router {

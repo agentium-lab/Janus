@@ -20,7 +20,7 @@ import (
 
 func TestTenantHandler_List(t *testing.T) {
 	svc := &mockTenantService{tenants: map[string]*core.Tenant{
-		"acme": {ID: "acme", Name: "Acme"},
+		"acme":   {ID: "acme", Name: "Acme"},
 		"globex": {ID: "globex", Name: "Globex"},
 	}}
 	h := NewTenantHandler(svc)
@@ -388,10 +388,10 @@ func TestDispatchHandler_Heartbeat_BadJSON(t *testing.T) {
 // --- Audit trace edge cases + intQuery ---
 
 type limitCaptureAuditSvc struct {
-	taskLimit  int
-	traceLimit int
+	taskLimit   int
+	traceLimit  int
 	tenantLimit int
-	gotTraceID string
+	gotTraceID  string
 }
 
 func (m *limitCaptureAuditSvc) QueryByTask(_ context.Context, tenantID, taskID string, limit int) (interface{}, error) {

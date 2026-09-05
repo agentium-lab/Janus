@@ -94,7 +94,7 @@ func setupTenantAndConsumer(t *testing.T, d *Driver, tenantID, mailboxID string)
 
 func TestDriver_EnsureTenant(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 	require.NoError(t, d.EnsureTenant(ctx, tn))
@@ -109,7 +109,7 @@ func TestDriver_EnsureTenantMultiple(t *testing.T) {
 
 func TestDriver_EnsureMailbox(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -225,7 +225,7 @@ func TestDriver_AckTask(t *testing.T) {
 
 func TestDriver_NackRetriable(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
@@ -246,7 +246,7 @@ func TestDriver_NackRetriable(t *testing.T) {
 
 func TestDriver_NackNonRetriable(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	tctx := setupTenantAndConsumer(t, d, tn, "reviewer_default")
 
@@ -267,7 +267,7 @@ func TestDriver_NackNonRetriable(t *testing.T) {
 
 func TestDriver_AckNotFound(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	err := d.AckTask(context.Background(), tn, "nonexistent:0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -275,7 +275,7 @@ func TestDriver_AckNotFound(t *testing.T) {
 
 func TestDriver_NackNotFound(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	err := d.NackTask(context.Background(), tn, "nonexistent:0", core.NackRetriable)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
@@ -283,7 +283,7 @@ func TestDriver_NackNotFound(t *testing.T) {
 
 func TestDriver_PublishEvent(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -348,7 +348,7 @@ func TestDriver_ReplayEventsWithoutTenant(t *testing.T) {
 
 func TestDriver_FetchTasksWithoutConsumer(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := ContextWithTenant(context.Background(), tn)
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -360,7 +360,7 @@ func TestDriver_FetchTasksWithoutConsumer(t *testing.T) {
 
 func TestDriver_FetchEmpty(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	tctx := setupTenantAndConsumer(t, d, tn, "empty_mb")
 
 	deliveries, err := d.FetchTasks(tctx, tn, "empty_mb", core.FetchOptions{
@@ -372,7 +372,7 @@ func TestDriver_FetchEmpty(t *testing.T) {
 
 func TestDriver_EnsureConsumerDefaults(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -386,7 +386,7 @@ func TestDriver_EnsureConsumerDefaults(t *testing.T) {
 
 func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	tctx := setupTenantAndConsumer(t, d, tn, "ordered_mb")
 
@@ -480,7 +480,7 @@ func TestDriver_PublishTaskNoTenant(t *testing.T) {
 
 func TestDriver_ReplayEventsCancelled(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -514,7 +514,7 @@ func TestDriver_EnsureTenantError(t *testing.T) {
 
 func TestDriver_EnsureMailboxDuplicate(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -528,7 +528,7 @@ func TestDriver_EnsureMailboxDuplicate(t *testing.T) {
 
 func TestDriver_SubscribeEvents(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 
@@ -589,7 +589,7 @@ func TestDriver_SubscribeEvents_MultiTenant(t *testing.T) {
 
 func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 	d := openDriver(t)
- tn := genTenant(t)
+	tn := genTenant(t)
 	ctx := context.Background()
 	require.NoError(t, d.EnsureTenant(ctx, tn))
 

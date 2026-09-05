@@ -7,10 +7,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/source"
 	_ "github.com/golang-migrate/migrate/v4/source/file"
+	"github.com/jackc/pgx/v5"
 )
 
 func main() {

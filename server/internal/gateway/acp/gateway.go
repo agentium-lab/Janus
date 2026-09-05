@@ -58,8 +58,8 @@ type TaskStatusGetter interface {
 }
 
 type Gateway struct {
-	agentSvc AgentRegistrar
-	taskSvc  TaskCreator
+	agentSvc  AgentRegistrar
+	taskSvc   TaskCreator
 	statusSvc TaskStatusGetter
 }
 
@@ -87,9 +87,9 @@ func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		AgentID   string `json:"agent_id"`
-		Name      string `json:"name"`
-		Skills    []struct {
+		AgentID string `json:"agent_id"`
+		Name    string `json:"name"`
+		Skills  []struct {
 			Name        string `json:"name"`
 			Description string `json:"description"`
 		} `json:"skills"`
@@ -162,12 +162,12 @@ func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
 	}
 
 	task := core.Task{
-		ID:         taskID,
-		TenantID:   tenantID,
+		ID:          taskID,
+		TenantID:    tenantID,
 		SourceAgent: sourceAgent,
-		TargetType: targetType,
+		TargetType:  targetType,
 		TargetValue: req.Target,
-		Status:     core.TaskStatusCreated,
+		Status:      core.TaskStatusCreated,
 		Envelope: core.TaskEnvelope{
 			JanusVersion: "0.3",
 			TaskID:       taskID,
@@ -210,9 +210,9 @@ func (g *Gateway) handleListRuns(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"run_id":       task.ID,
-		"status":       string(task.Status),
-		"result_ref":   task.ResultRef,
+		"run_id":     task.ID,
+		"status":     string(task.Status),
+		"result_ref": task.ResultRef,
 	})
 }
 

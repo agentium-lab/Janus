@@ -49,7 +49,14 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := tenantIDFromPath(r.URL.Path)
 
-	// Terminal-state pre-check: subscriber connected after task completed.
+	// Subscribe BEFORE reading status: if the task transitions to terminal
+	// between our status read and the subscribe, the terminal event would be
+	// missed and the client would hang. With this ordering a terminal read
+	// may duplicate an event already queued on ch — harmless, the stream is
+	// about to close.
+	ch := h.broadcaster.Subscribe(tenantID)
+	defer func() { h.broadcaster.Unsubscribe(tenantID, ch) }()
+
 	if h.statusCheck != nil {
 		if task, err := h.statusCheck.Get(r.Context(), tenantID, taskID); err == nil && task != nil {
 			if task.Status.IsTerminal() {
@@ -67,9 +74,6 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.Header().Set("Retry", "3000")
-
-	ch := h.broadcaster.Subscribe(tenantID)
-	defer func() { h.broadcaster.Unsubscribe(tenantID, ch) }()
 
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()

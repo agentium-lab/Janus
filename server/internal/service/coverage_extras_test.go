@@ -905,5 +905,3 @@ func TestExtra_LifecycleService_ApplyTx_CommitError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "commit lifecycle tx")
 }
-
-

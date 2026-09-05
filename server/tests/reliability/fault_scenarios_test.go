@@ -126,8 +126,8 @@ func (d *faultQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent
 func (d *faultQueueDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
 	return nil, nil
 }
-func (d *faultQueueDriver) EnsureTenant(_ context.Context, _ string) error           { return nil }
-func (d *faultQueueDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *faultQueueDriver) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (d *faultQueueDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error   { return nil }
 func (d *faultQueueDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
 
 func (d *faultQueueDriver) PublishDLQ(_ context.Context, msg core.TaskMessage, _ []byte) error {

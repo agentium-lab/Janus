@@ -17,7 +17,7 @@ type fakeAPIKeyRepo struct {
 	lastScope     []string
 }
 
-func (f *fakeAPIKeyRepo) CreateAPIKey(_ context.Context, tenantID, keyHash, name, prefix string, scopes []string) (core.APIKey, error) {
+func (f *fakeAPIKeyRepo) CreateAPIKey(_ context.Context, tenantID, keyHash, name, prefix string, scopes []string, _ string) (core.APIKey, error) {
 	f.createdHashes = append(f.createdHashes, keyHash)
 	f.lastScope = scopes
 	return core.APIKey{TenantID: tenantID, Name: name, Prefix: prefix, Scopes: scopes}, nil
@@ -34,14 +34,14 @@ func (f *fakeAPIKeyRepo) RevokeAPIKey(_ context.Context, _, keyID string) (*core
 
 func TestAPIKeyService_CreateRequiresName(t *testing.T) {
 	s := NewAPIKeyService(&fakeAPIKeyRepo{})
-	if _, _, err := s.Create(context.Background(), "acme", "", nil); err == nil {
+	if _, _, err := s.Create(context.Background(), "acme", "", nil, ""); err == nil {
 		t.Fatal("empty name must be rejected")
 	}
 }
 
 func TestAPIKeyService_CreateRejectsUnknownScope(t *testing.T) {
 	s := NewAPIKeyService(&fakeAPIKeyRepo{})
-	if _, _, err := s.Create(context.Background(), "acme", "n", []string{"task:read", "galaxy:destroy"}); err == nil {
+	if _, _, err := s.Create(context.Background(), "acme", "n", []string{"task:read", "galaxy:destroy"}, ""); err == nil {
 		t.Fatal("unknown scope must be rejected")
 	}
 }
@@ -49,7 +49,7 @@ func TestAPIKeyService_CreateRejectsUnknownScope(t *testing.T) {
 func TestAPIKeyService_CreateDedupesAndReturnsRawOnce(t *testing.T) {
 	repo := &fakeAPIKeyRepo{}
 	s := NewAPIKeyService(repo)
-	k, raw, err := s.Create(context.Background(), "acme", "n", []string{"task:read", auth.ScopeAdmin, "task:read"})
+	k, raw, err := s.Create(context.Background(), "acme", "n", []string{"task:read", auth.ScopeAdmin, "task:read"}, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestAPIKeyService_RevokeNotFound(t *testing.T) {
 func TestAPIKeyService_EmptyScopesStayFullAccess(t *testing.T) {
 	repo := &fakeAPIKeyRepo{}
 	s := NewAPIKeyService(repo)
-	k, _, err := s.Create(context.Background(), "acme", "legacy-style", nil)
+	k, _, err := s.Create(context.Background(), "acme", "legacy-style", nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

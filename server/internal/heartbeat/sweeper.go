@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
 type Sweeper struct {
@@ -26,7 +27,7 @@ type AgentStatusUpdater interface {
 
 func NewSweeper(hbDriver HeartbeatScanner, agentStatus AgentStatusUpdater, interval time.Duration) *Sweeper {
 	return &Sweeper{
-		hbDriver:    hbDriver,
+		hbDriver:    nilguard.Interface(hbDriver),
 		agentStatus: agentStatus,
 		interval:    interval,
 		stopCh:      make(chan struct{}),

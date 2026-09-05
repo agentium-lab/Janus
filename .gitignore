@@ -33,7 +33,11 @@ dist/
 *.whl
 
 # Local-only directories (not tracked)
-docs/
 demo/
 .codegraph/
 server/janus-api
+
+# Internal working documents stay local; published docs (ADR, release notes,
+# capability matrix, runbooks) are tracked so clones pass scripts/check_ga_readiness.py
+docs/plans/
+docs/superpowers/

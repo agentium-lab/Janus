@@ -35,9 +35,24 @@ const (
 )
 
 type Principal struct {
-	TenantID  string
-	Scopes    []string
-	KeyPrefix string
+	TenantID     string
+	Scopes       []string
+	KeyPrefix    string
+	BoundAgentID string
+}
+
+// CheckAgentIdentity enforces that a request claiming to act as claimedAgent
+// matches the key's bound agent. Keys without a bound agent are unrestricted
+// (backward compatible); bound keys may only act as themselves, so a leaked
+// scoped key cannot impersonate other agents for attribution or progress.
+func (p Principal) CheckAgentIdentity(claimedAgent string) error {
+	if p.BoundAgentID == "" || claimedAgent == "" {
+		return nil
+	}
+	if p.BoundAgentID != claimedAgent {
+		return fmt.Errorf("api key is bound to agent %q and cannot act as %q", p.BoundAgentID, claimedAgent)
+	}
+	return nil
 }
 
 func (p Principal) HasScope(scope string) bool {
@@ -165,9 +180,9 @@ func (v *APIKeyValidator) ValidatePrincipal(ctx context.Context, apiKey string) 
 		scopesRaw string
 	)
 	err := v.db.QueryRowContext(ctx,
-		`SELECT tenant_id, array_to_string(scopes, ',') FROM api_keys WHERE prefix = $1 AND key_hash = $2 AND revoked_at IS NULL`,
+		`SELECT tenant_id, array_to_string(scopes, ','), bound_agent_id FROM api_keys WHERE prefix = $1 AND key_hash = $2 AND revoked_at IS NULL`,
 		apiKey[:8], hashKey(apiKey),
-	).Scan(&p.TenantID, &scopesRaw)
+	).Scan(&p.TenantID, &scopesRaw, &p.BoundAgentID)
 	if err == sql.ErrNoRows {
 		return Principal{}, fmt.Errorf("invalid api key")
 	}

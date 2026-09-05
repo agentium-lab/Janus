@@ -22,12 +22,14 @@ func withAuthCtx(r *http.Request) *http.Request {
 }
 
 type mockAgentRegistrar struct{ err error }
+
 func (m *mockAgentRegistrar) Register(_ context.Context, _ core.Agent) error { return m.err }
 
 type mockTaskCreator struct {
 	createdTask *core.Task
 	err         error
 }
+
 func (m *mockTaskCreator) Create(_ context.Context, task core.Task) (*core.Task, error) {
 	if m.err != nil {
 		return nil, m.err
@@ -40,8 +42,10 @@ type mockStatusGetter struct {
 	task *core.Task
 	err  error
 }
+
 func (m *mockStatusGetter) Get(_ context.Context, _, _ string) (*core.Task, error) {
-	return m.task, m.err }
+	return m.task, m.err
+}
 
 func TestACP_Manifest(t *testing.T) {
 	agentSvc := &mockAgentRegistrar{}

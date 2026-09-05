@@ -10,7 +10,31 @@ permissions:
   packages: write
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.work
+          cache-dependency-path: '**/go.sum'
+
+      - name: Build + vet
+        run: |
+          go build ./core/... ./server/... ./cli/... ./sdk/go/...
+          go vet ./core/... ./server/... ./cli/... ./sdk/go/...
+
+      - name: Core test suites (unit, scenario, e2e harness)
+        run: |
+          go test -count=1 -timeout=120s ./core/... ./sdk/go/... ./cli/...
+          go test -count=1 -timeout=120s ./server/internal/...
+          go test -count=1 -timeout=120s ./server/tests/simulation/... ./server/tests/scenario/...
+
   release:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
@@ -41,6 +65,7 @@ jobs:
             --generate-notes
 
   docker:
+    needs: verify
     # Publishes the container image the Helm chart references
     # (ghcr.io/agentium-lab/janus-core). Without this job every helm install
     # fails on ImagePullBackOff.

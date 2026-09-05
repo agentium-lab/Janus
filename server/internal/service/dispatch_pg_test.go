@@ -24,19 +24,19 @@ import (
 // lifecycle integration tests. Each test gets a fresh database (cleaned via
 // migrations up/down).
 type serviceTestEnv struct {
-	pool         *pgxpool.Pool
-	taskRepo     *postgres.TaskRepository
-	attemptRepo  *postgres.TaskAttemptRepository
-	mailboxRepo  *postgres.MailboxRepository
-	outboxRepo   *postgres.OutboxRepo
-	eventRepo    *postgres.EventRepo
-	budgetUsage  *postgres.BudgetUsageRepo
-	tenantRepo   *postgres.TenantRepository
-	agentRepo    *postgres.AgentRepository
-	dispatch     *DispatchService
-	taskSvc      *TaskService
-	lifecycle    *LifecycleService
-	driver       *mockDispatchQueueDriver
+	pool        *pgxpool.Pool
+	taskRepo    *postgres.TaskRepository
+	attemptRepo *postgres.TaskAttemptRepository
+	mailboxRepo *postgres.MailboxRepository
+	outboxRepo  *postgres.OutboxRepo
+	eventRepo   *postgres.EventRepo
+	budgetUsage *postgres.BudgetUsageRepo
+	tenantRepo  *postgres.TenantRepository
+	agentRepo   *postgres.AgentRepository
+	dispatch    *DispatchService
+	taskSvc     *TaskService
+	lifecycle   *LifecycleService
+	driver      *mockDispatchQueueDriver
 }
 
 func openServiceTestDB(t *testing.T) *pgxpool.Pool {
@@ -523,7 +523,7 @@ func TestTaskService_Create_WithPolicy(t *testing.T) {
 		Status: core.TaskStatusCreated, Priority: core.PriorityNormal,
 		Envelope: core.TaskEnvelope{
 			JanusVersion: "1", TaskID: "task-create-1", TenantID: "acme", SourceAgent: "agent-1",
-			Target: core.Target{Type: "mailbox", Value: "mb-1"},
+			Target:  core.Target{Type: "mailbox", Value: "mb-1"},
 			Payload: core.Payload{Type: "json", Content: "{}"},
 			Trace:   core.TraceContext{TraceID: "trace-create-1"},
 		},
@@ -543,10 +543,10 @@ func TestTaskService_Create_IdempotentDedup(t *testing.T) {
 		ID: "task-dedup-1", TenantID: "acme", MailboxID: "mb-1", SourceAgent: "agent-1",
 		TargetType: core.TargetTypeMailbox, TargetValue: "mb-1",
 		IdempotencyKey: "dedup-key-1",
-		Status: core.TaskStatusCreated, Priority: core.PriorityNormal,
+		Status:         core.TaskStatusCreated, Priority: core.PriorityNormal,
 		Envelope: core.TaskEnvelope{
 			JanusVersion: "1", TaskID: "task-dedup-1", TenantID: "acme", SourceAgent: "agent-1",
-			Target: core.Target{Type: "mailbox", Value: "mb-1"},
+			Target:  core.Target{Type: "mailbox", Value: "mb-1"},
 			Payload: core.Payload{Type: "json", Content: "{}"},
 			Trace:   core.TraceContext{TraceID: "trace-dedup-1"},
 		},
@@ -570,9 +570,9 @@ func toolTask(id string) core.Task {
 		Status: core.TaskStatusCreated, Priority: core.PriorityNormal,
 		Envelope: core.TaskEnvelope{
 			JanusVersion: "1", TaskID: id, TenantID: "acme", SourceAgent: "agent-1",
-			Target: core.Target{Type: "mailbox", Value: "mb-1"},
-			Payload: core.Payload{Type: "json", Content: "{}"},
-			Trace:   core.TraceContext{TraceID: "trace-" + id},
+			Target:         core.Target{Type: "mailbox", Value: "mb-1"},
+			Payload:        core.Payload{Type: "json", Content: "{}"},
+			Trace:          core.TraceContext{TraceID: "trace-" + id},
 			ToolInvocation: &core.ToolInvocation{ID: id, Name: "search", Namespace: "mcp", SourceProtocol: "mcp"},
 		},
 	}

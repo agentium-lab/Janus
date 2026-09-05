@@ -25,10 +25,10 @@ type BudgetSpec struct {
 	// Self-reported observability only (ADR-0002): values come from agent ACKs
 	// and are never verified or enforced. Aggregation/display is fine; any
 	// rejection logic reading these fields is a design error.
-	DailyCostUSD   float64         `json:"daily_cost_usd,omitempty"`
-	MonthlyCostUSD float64         `json:"monthly_cost_usd,omitempty"`
-	CreatedAt      time.Time       `json:"created_at,omitempty"`
-	UpdatedAt      time.Time       `json:"updated_at,omitempty"`
+	DailyCostUSD   float64   `json:"daily_cost_usd,omitempty"`
+	MonthlyCostUSD float64   `json:"monthly_cost_usd,omitempty"`
+	CreatedAt      time.Time `json:"created_at,omitempty"`
+	UpdatedAt      time.Time `json:"updated_at,omitempty"`
 }
 
 // BackpressureReason represents why a task cannot be dispatched.

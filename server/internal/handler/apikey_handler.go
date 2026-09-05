@@ -9,7 +9,7 @@ import (
 )
 
 type APIKeyService interface {
-	Create(ctx context.Context, tenantID, name string, scopes []string) (core.APIKey, string, error)
+	Create(ctx context.Context, tenantID, name string, scopes []string, boundAgentID string) (core.APIKey, string, error)
 	List(ctx context.Context, tenantID string) ([]core.APIKey, error)
 	Revoke(ctx context.Context, tenantID, keyID string) (*core.APIKey, error)
 }
@@ -23,8 +23,9 @@ func NewAPIKeyHandler(svc APIKeyService) *APIKeyHandler {
 }
 
 type createAPIKeyReq struct {
-	Name   string   `json:"name"`
-	Scopes []string `json:"scopes,omitempty"`
+	Name         string   `json:"name"`
+	Scopes       []string `json:"scopes,omitempty"`
+	BoundAgentID string   `json:"bound_agent_id,omitempty"`
 }
 
 type createdAPIKeyResp struct {
@@ -39,7 +40,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	k, raw, err := h.svc.Create(r.Context(), tenantID, req.Name, req.Scopes)
+	k, raw, err := h.svc.Create(r.Context(), tenantID, req.Name, req.Scopes, req.BoundAgentID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

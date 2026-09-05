@@ -212,11 +212,11 @@ func (m *mockHeartbeatDriver) Remove(_ context.Context, tenantID, agentID string
 func (m *mockHeartbeatDriver) Close() error { return nil }
 
 type mockQueueDriver struct {
-	publishedTasks []core.TaskMessage
+	publishedTasks  []core.TaskMessage
 	publishedEvents []core.JanusEvent
-	mailboxes      map[string]bool
-	consumers      map[string]bool
-	err            error
+	mailboxes       map[string]bool
+	consumers       map[string]bool
+	err             error
 }
 
 func (m *mockQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) error {
@@ -613,7 +613,7 @@ func TestTaskService_Idempotency(t *testing.T) {
 		TenantID: "acme", ID: "task-2", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		IdempotencyKey: "key-1",
-		Envelope: makeTestEnvelope("task-2", "acme"),
+		Envelope:       makeTestEnvelope("task-2", "acme"),
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "task-1", result.ID)
@@ -732,7 +732,7 @@ func TestTaskService_Replay_NotTerminal(t *testing.T) {
 
 func TestTaskService_Replay_Validation(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
-	_, err := svc.Replay(context.Background(), "", "t1", )
+	_, err := svc.Replay(context.Background(), "", "t1")
 	assert.EqualError(t, err, "tenant id and task id are required")
 }
 
@@ -901,7 +901,7 @@ func TestTaskService_TransitionValidation(t *testing.T) {
 
 func TestTaskService_CreateRepoError(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{err: fmt.Errorf("db down")}, &mockQueueDriver{}, nil, nil)
-_, err := svc.Create(context.Background(), core.Task{
+	_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		Envelope: makeTestEnvelope("t1", "acme"),
@@ -914,7 +914,7 @@ func TestTaskService_CreateQueueError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("nats down")}
 	svc := NewTaskService(taskRepo, qd, nil, nil)
-_, err := svc.Create(context.Background(), core.Task{
+	_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
@@ -970,8 +970,8 @@ func TestAgentService_RegisterRepoError(t *testing.T) {
 }
 
 type mockAgentRepoFailOn struct {
-	agents    map[string]*core.Agent
-	failOn    string // "register", "updateStatus", "heartbeat", "get", "list", "listByStatus"
+	agents map[string]*core.Agent
+	failOn string // "register", "updateStatus", "heartbeat", "get", "list", "listByStatus"
 }
 
 func (m *mockAgentRepoFailOn) Register(_ context.Context, a core.Agent) error {
@@ -1080,7 +1080,7 @@ func TestTaskService_CreateEventError(t *testing.T) {
 	taskRepo := &mockTaskRepo{}
 	qd := &mockQueueDriver{err: fmt.Errorf("event fail")}
 	svc := NewTaskService(taskRepo, qd, nil, nil)
-_, err := svc.Create(context.Background(), core.Task{
+	_, err := svc.Create(context.Background(), core.Task{
 		TenantID: "acme", ID: "t1", SourceAgent: "a",
 		TargetType: core.TargetTypeCapability, TargetValue: "r",
 		Envelope: makeTestEnvelope("t1", "acme"),
@@ -1112,21 +1112,29 @@ func (m *mockQueueDriverFailPublish) PublishTask(_ context.Context, _ core.TaskM
 func (m *mockQueueDriverFailPublish) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (m *mockQueueDriverFailPublish) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error        { return nil }
+func (m *mockQueueDriverFailPublish) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error {
+	return nil
+}
 func (m *mockQueueDriverFailPublish) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
 func (m *mockQueueDriverFailPublish) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
 	return nil
 }
-func (m *mockQueueDriverFailPublish) PublishEvent(_ context.Context, _ core.JanusEvent) error     { return nil }
+func (m *mockQueueDriverFailPublish) PublishEvent(_ context.Context, _ core.JanusEvent) error {
+	return nil
+}
 func (m *mockQueueDriverFailPublish) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
 	return nil, nil
 }
-func (m *mockQueueDriverFailPublish) EnsureTenant(_ context.Context, _ string) error              { return nil }
-func (m *mockQueueDriverFailPublish) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error    { return nil }
-func (m *mockQueueDriverFailPublish) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
-func (m *mockQueueDriverFailPublish) Close() error                                                { return nil }
+func (m *mockQueueDriverFailPublish) EnsureTenant(_ context.Context, _ string) error { return nil }
+func (m *mockQueueDriverFailPublish) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error {
+	return nil
+}
+func (m *mockQueueDriverFailPublish) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error {
+	return nil
+}
+func (m *mockQueueDriverFailPublish) Close() error { return nil }
 
 func TestTaskService_CreateUpdateQueuedError(t *testing.T) {
 	taskRepo := &mockTaskRepoFailUpdate{}
@@ -1168,7 +1176,9 @@ func (m *mockTaskRepoFailUpdate) UpdateStatus(_ context.Context, _, _ string, _ 
 func (m *mockTaskRepoFailUpdate) UpdateStatusWithCheck(_ context.Context, _, _ string, _, _ core.TaskStatus, _ int) (bool, error) {
 	return false, fmt.Errorf("update fail")
 }
-func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error { return nil }
+func (m *mockTaskRepoFailUpdate) UpdateRetryAt(_ context.Context, _, _ string, _ time.Time) error {
+	return nil
+}
 func (m *mockTaskRepoFailUpdate) SetResultRef(_ context.Context, _, _, _ string) error { return nil }
 func (m *mockTaskRepoFailUpdate) CountByStatus(_ context.Context, _ string, _ core.TaskStatus) (int, error) {
 	return 0, nil

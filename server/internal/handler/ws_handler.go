@@ -77,10 +77,10 @@ type WebSocketHandler struct {
 }
 
 type wsConn struct {
-	conn     *websocket.Conn
-	tenantID string
-	events   <-chan core.JanusEvent
-	closed   chan struct{}
+	conn      *websocket.Conn
+	tenantID  string
+	events    <-chan core.JanusEvent
+	closed    chan struct{}
 	closeOnce sync.Once
 }
 

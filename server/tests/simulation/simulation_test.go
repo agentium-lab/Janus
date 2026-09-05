@@ -73,7 +73,9 @@ func (d *simQueueDriver) FetchTasks(_ context.Context, _, mailbox string, opts c
 }
 
 func (d *simQueueDriver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error { return nil }
-func (d *simQueueDriver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error { return nil }
+func (d *simQueueDriver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error {
+	return nil
+}
 
 func (d *simQueueDriver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	d.mu.Lock()
@@ -425,11 +427,15 @@ func (r *simBudgetRepo) ListByTenant(_ context.Context, tenantID string) ([]*cor
 
 type simBudgetUsageRepo struct{}
 
-func (r *simBudgetUsageRepo) ReserveTask(_ context.Context, tenantID, scopeType, scopeID string) error { return nil }
+func (r *simBudgetUsageRepo) ReserveTask(_ context.Context, tenantID, scopeType, scopeID string) error {
+	return nil
+}
 func (r *simBudgetUsageRepo) SettleUsage(_ context.Context, tenantID, scopeType, scopeID string, tokens int, costUSD float64) error {
 	return nil
 }
-func (r *simBudgetUsageRepo) ReleaseTask(_ context.Context, tenantID, scopeType, scopeID string) error { return nil }
+func (r *simBudgetUsageRepo) ReleaseTask(_ context.Context, tenantID, scopeType, scopeID string) error {
+	return nil
+}
 func (r *simBudgetUsageRepo) GetDailyUsage(_ context.Context, tenantID, scopeType, scopeID string) (int, float64, int, error) {
 	return 0, 0, 0, nil
 }
@@ -439,14 +445,14 @@ func (r *simBudgetUsageRepo) GetDailyUsage(_ context.Context, tenantID, scopeTyp
 // and on completion, send a new task to the next agent's mailbox.
 
 type simAgent struct {
-	id         string
-	mailboxID  string
-	dispatcher *service.DispatchService
-	taskSvc    *service.TaskService
-	taskRepo   *simTaskRepo
+	id          string
+	mailboxID   string
+	dispatcher  *service.DispatchService
+	taskSvc     *service.TaskService
+	taskRepo    *simTaskRepo
 	attemptRepo *simAttemptRepo
-	tenantID   string
-	onComplete func(ctx context.Context, agent *simAgent, originalTask core.Task)
+	tenantID    string
+	onComplete  func(ctx context.Context, agent *simAgent, originalTask core.Task)
 }
 
 func (a *simAgent) pullAndProcess(ctx context.Context) (*core.Task, error) {
@@ -1031,8 +1037,8 @@ func (a *dispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, nil
 	}
 	return &handler.ServicePullResult{
-		Task:     res.Task,
-		LeaseID:  res.LeaseID,
+		Task:      res.Task,
+		LeaseID:   res.LeaseID,
 		ExpiresAt: res.ExpiresAt,
 	}, nil
 }

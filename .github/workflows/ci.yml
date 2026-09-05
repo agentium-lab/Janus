@@ -19,6 +19,31 @@ jobs:
       - name: Build all modules
         run: go build ./core/... ./server/... ./cli/... ./sdk/go/... ./proto/...
 
+  sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+
+      - name: Python SDK tests
+        run: |
+          pip install httpx pydantic pytest
+          cd sdk/python && python3 -m pytest tests/ -q
+
+      - name: TypeScript SDK build + tests
+        run: |
+          cd sdk/typescript
+          npm ci || npm install
+          npx tsc --noEmit
+          npm test --if-present
+
   vet:
     runs-on: ubuntu-latest
     steps:
@@ -117,28 +142,44 @@ jobs:
           go test -count=1 -timeout=60s -cover ./sdk/go/...
           go test -count=1 -timeout=60s -cover ./cli/...
           go test -count=1 -timeout=60s -cover ./server/tests/simulation/...
+          go test -count=1 -timeout=120s -cover ./server/tests/scenario/...
 
       - name: E2E + integration tests (with infra)
         run: |
           go test -count=1 -timeout=300s ./server/tests/e2e/...
 
+      - name: PG-only without Redis (typed-nil regression guard)
+        run: |
+          go test -count=1 -timeout=180s -v -run TestPGOnlyNoRedis ./server/tests/pgonly/...
+
       - name: Postgres driver tests
         run: go test -count=1 -timeout=60s -cover ./server/internal/driver/postgres/...
 
-      - name: PostgreSQL-only integration (no NATS)
+      - name: PostgreSQL-only boot, agent registration WITHOUT Redis
         run: |
           go build -o /tmp/janus-api-pg ./server/cmd/janus-api
+          # Redis points at a dead port on purpose: this is the regression
+          # guard for the typed-nil panic found in the v1.5.0 review.
           JANUS_QUEUE_DRIVER=pg \
             JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
             JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
-            JANUS_REDIS_ADDR=localhost:6379 JANUS_MIGRATION_AUTO=true \
-            JANUS_MIGRATION_PATH=migrations JANUS_AUTH_ENABLED=true JANUS_HTTP_PORT=18099 \
-            /tmp/janus-api-pg &
+            JANUS_REDIS_ADDR=localhost:59999 JANUS_MIGRATION_AUTO=true \
+            JANUS_MIGRATION_PATH=migrations JANUS_AUTH_ENABLED=false \
+            JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=18099 \
+            /tmp/janus-api-pg 2>/tmp/pgonly.log &
           API_PID=$!
           for i in $(seq 1 30); do curl -sf http://localhost:18099/healthz >/dev/null 2>&1 && break; sleep 1; done
-          curl -sf http://localhost:18099/readyz || { kill $API_PID; echo "::error::PG-only readyz failed"; exit 1; }
+          curl -sf http://localhost:18099/readyz || { kill $API_PID; cat /tmp/pgonly.log; echo "::error::PG-only readyz failed"; exit 1; }
+          curl -sf -X POST http://localhost:18099/v1/tenants/acme/agents \
+            -H 'Content-Type: application/json' \
+            -d '{"id":"ci-agent","display_name":"CI Agent","protocol":"http","endpoint":"http://localhost:9"}' \
+            || { kill $API_PID; cat /tmp/pgonly.log; echo "::error::agent registration panicked without Redis"; exit 1; }
           kill $API_PID
-          echo "PG-only boot verified (no NATS container started)"
+          grep -i panic /tmp/pgonly.log && { echo "::error::panic in PG-only log"; exit 1; } || true
+          echo "PG-only (no NATS, no Redis) boot + agent registration verified"
+
+      - name: Coverage gate
+        run: COVERAGE_THRESHOLD=85 make coverage
 
       - name: Helm chart lint
         run: |

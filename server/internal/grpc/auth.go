@@ -1,9 +1,9 @@
 package grpc
 
 import (
-	"fmt"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/agentium-lab/Janus/server/internal/auth"
@@ -85,7 +85,6 @@ func apiKeyFromMetadata(ctx context.Context) (string, error) {
 	}
 	return "", errors.New("missing api key")
 }
-
 
 // ScopedValidator is implemented by validators that carry scope information.
 type ScopedValidator interface {

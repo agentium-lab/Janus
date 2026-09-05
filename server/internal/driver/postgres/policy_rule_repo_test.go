@@ -19,13 +19,13 @@ func TestPolicyRuleRepo_CreateAndListActive(t *testing.T) {
 	ctx := context.Background()
 
 	rule := core.PolicyRule{
-		TenantID: "acme",
-		ID:       "rule-001",
-		Name:     "Deny External Access",
-		Status:   "active",
-		Priority: 100,
+		TenantID:  "acme",
+		ID:        "rule-001",
+		Name:      "Deny External Access",
+		Status:    "active",
+		Priority:  100,
 		Condition: json.RawMessage(`{"actor.type":"external"}`),
-		Action:   json.RawMessage(`{"decision":"deny"}`),
+		Action:    json.RawMessage(`{"decision":"deny"}`),
 	}
 	require.NoError(t, repo.Create(ctx, rule))
 

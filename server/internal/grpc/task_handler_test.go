@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,16 +64,16 @@ func (m *mockTaskService) Replay(_ context.Context, tenantID, taskID string) (*c
 
 func makeTestTask(tenantID, id string) *core.Task {
 	return &core.Task{
-		TenantID:   tenantID,
-		ID:         id,
+		TenantID:    tenantID,
+		ID:          id,
 		SourceAgent: "agent-1",
-		TargetType: core.TargetTypeAgent,
+		TargetType:  core.TargetTypeAgent,
 		TargetValue: "agent-2",
-		MailboxID:  "mb-1",
-		Status:     core.TaskStatusQueued,
-		Priority:   core.PriorityNormal,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
+		MailboxID:   "mb-1",
+		Status:      core.TaskStatusQueued,
+		Priority:    core.PriorityNormal,
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
 		Envelope: core.TaskEnvelope{
 			JanusVersion: "0.4.0",
 			TaskID:       id,

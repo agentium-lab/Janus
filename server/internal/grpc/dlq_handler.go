@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 )
 

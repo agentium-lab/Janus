@@ -10,15 +10,15 @@ import (
 )
 
 type mockDriver struct {
-	publishedTasks []TaskMessage
+	publishedTasks  []TaskMessage
 	publishedEvents []JanusEvent
-	mailboxes      map[string]MailboxSpec
-	consumers      map[string]ConsumerSpec
-	tenants        map[string]bool
-	deliveries     map[string][]TaskDelivery
-	acked          []DeliveryRef
-	nacked         []DeliveryRef
-	closed         bool
+	mailboxes       map[string]MailboxSpec
+	consumers       map[string]ConsumerSpec
+	tenants         map[string]bool
+	deliveries      map[string][]TaskDelivery
+	acked           []DeliveryRef
+	nacked          []DeliveryRef
+	closed          bool
 }
 
 func newMockDriver() *mockDriver {
@@ -183,11 +183,11 @@ func TestMockDriver_EnsureConsumer(t *testing.T) {
 	ctx := context.Background()
 
 	spec := ConsumerSpec{
-		TenantID:      "acme",
-		MailboxID:     "reviewer.default",
-		DurableName:   "consumer.acme.reviewer.default",
+		TenantID:       "acme",
+		MailboxID:      "reviewer.default",
+		DurableName:    "consumer.acme.reviewer.default",
 		ACKWaitSeconds: 300,
-		MaxDeliver:    5,
+		MaxDeliver:     5,
 	}
 
 	err := d.EnsureConsumer(ctx, spec)

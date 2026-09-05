@@ -57,7 +57,7 @@ func TestBuildPolicyRule_RequireApprovalTool(t *testing.T) {
 func TestBuildPolicyRule_AgentDataClassification(t *testing.T) {
 	req := PolicyRuleTemplateRequest{
 		Template: PolicyTemplateAllowAgentDataClassification,
-		AgentID: "agent-1", DataClassification: "confidential",
+		AgentID:  "agent-1", DataClassification: "confidential",
 	}
 	rule, err := req.BuildPolicyRule("acme")
 	require.NoError(t, err)
@@ -68,7 +68,7 @@ func TestBuildPolicyRule_AgentDataClassification(t *testing.T) {
 func TestBuildPolicyRule_TeamDataClassification(t *testing.T) {
 	req := PolicyRuleTemplateRequest{
 		Template: PolicyTemplateDenyTeamDataClassification,
-		TeamID: "team-a", DataClassification: "restricted",
+		TeamID:   "team-a", DataClassification: "restricted",
 	}
 	rule, err := req.BuildPolicyRule("acme")
 	require.NoError(t, err)
@@ -79,7 +79,7 @@ func TestBuildPolicyRule_TeamDataClassification(t *testing.T) {
 func TestBuildPolicyRule_AgentTool(t *testing.T) {
 	req := PolicyRuleTemplateRequest{
 		Template: PolicyTemplateAllowAgentTool,
-		AgentID: "agent-1", Tool: "git.commit",
+		AgentID:  "agent-1", Tool: "git.commit",
 	}
 	rule, err := req.BuildPolicyRule("acme")
 	require.NoError(t, err)
@@ -90,7 +90,7 @@ func TestBuildPolicyRule_AgentTool(t *testing.T) {
 func TestBuildPolicyRule_TeamTool(t *testing.T) {
 	req := PolicyRuleTemplateRequest{
 		Template: PolicyTemplateDenyTeamTool,
-		TeamID: "team-a", Tool: "destructive_op",
+		TeamID:   "team-a", Tool: "destructive_op",
 	}
 	rule, err := req.BuildPolicyRule("acme")
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestBuildPolicyRule_TeamTool(t *testing.T) {
 func TestBuildPolicyRule_CustomNameAndStatus(t *testing.T) {
 	req := PolicyRuleTemplateRequest{
 		Template: PolicyTemplateAllowAgentCapability,
-		AgentID: "a1", Capability: "x", Name: "my-rule", Status: "paused", Priority: 50,
+		AgentID:  "a1", Capability: "x", Name: "my-rule", Status: "paused", Priority: 50,
 	}
 	rule, err := req.BuildPolicyRule("acme")
 	require.NoError(t, err)

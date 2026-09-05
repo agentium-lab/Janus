@@ -498,25 +498,28 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 // ReportProgress validates that the reporting agent holds the latest attempt
 // on the task, persists the progress event through the outbox (audit trail),
 // and returns the event for in-memory fanout.
-func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) error {
+func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) (*core.JanusEvent, error) {
 	task, err := s.taskRepo.Get(ctx, tenantID, taskID)
 	if err != nil {
-		return fmt.Errorf("task not found: %w", err)
+		return nil, fmt.Errorf("task not found: %w", err)
 	}
 	// Task must be actively executing.
 	if task.Status != core.TaskStatusClaimed && task.Status != core.TaskStatusRunning {
-		return fmt.Errorf("task %s is %s, progress only accepted while claimed or running", taskID, task.Status)
+		return nil, fmt.Errorf("task %s is %s, progress only accepted while claimed or running", taskID, task.Status)
 	}
 	// Reporter must be the agent processing this task (latest attempt).
 	if s.attemptRepo != nil {
 		attempt, err := s.attemptRepo.GetLatest(ctx, tenantID, taskID)
 		if err != nil || attempt.AgentID != agentID {
-			return fmt.Errorf("agent %s does not hold the latest attempt on task %s", agentID, taskID)
+			return nil, fmt.Errorf("agent %s does not hold the latest attempt on task %s", agentID, taskID)
 		}
 	}
-	// Persist through outbox (dual-path: slow path for audit/replay).
+	// One event, one identity: the SAME EventID travels the fast lane
+	// (broadcaster) and the slow lane (outbox → queue → broadcaster loopback);
+	// the broadcaster dedupes by EventID so subscribers see it exactly once.
 	payload, _ := json.Marshal(prog)
 	evt := core.JanusEvent{
+		EventID:     ulid(),
 		EventType:   core.EventTaskProgress,
 		TenantID:    tenantID,
 		TaskID:      taskID,
@@ -530,7 +533,7 @@ func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agen
 			log.Printf("task %s progress: outbox write failed: %v", taskID, err)
 		}
 	}
-	return nil
+	return &evt, nil
 }
 
 func (s *TaskService) ListByStatus(ctx context.Context, tenantID string, status core.TaskStatus, limit int) ([]*core.Task, error) {

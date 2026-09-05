@@ -146,15 +146,14 @@ func TestErrorCodeForStatus_AllMappings(t *testing.T) {
 
 // --- Context ref handler: skipped (NewContextRefHandler takes concrete *service.ContextRefService, not interface) ---
 
-
 // --- DLQServiceAdapter tests ---
 
 type mockDLQTaskRepo struct {
-	tasks        map[string]*core.Task
-	listResult   []*core.Task
-	updateErr    error
-	getErr       error
-	listErr      error
+	tasks          map[string]*core.Task
+	listResult     []*core.Task
+	updateErr      error
+	getErr         error
+	listErr        error
 	updatedCancels int
 }
 
@@ -406,7 +405,9 @@ func (m *mockDispatchServiceErr) StartTask(_ context.Context, _, _, _ string) er
 func (m *mockDispatchServiceErr) TaskHeartbeat(_ context.Context, _, _, _ string) error {
 	return fmt.Errorf("heartbeat error")
 }
-func (m *mockDispatchServiceErr) AckTask(_ context.Context, _ string, _, _, _ string) error { return nil }
+func (m *mockDispatchServiceErr) AckTask(_ context.Context, _ string, _, _, _ string) error {
+	return nil
+}
 func (m *mockDispatchServiceErr) NackTask(_ context.Context, _ string, _, _, _ string, _ bool, _ string) error {
 	return nil
 }

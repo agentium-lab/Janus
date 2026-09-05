@@ -161,9 +161,18 @@ func main() {
 	apiKeyRepo := pgdriver.NewAPIKeyRepo(pool)
 
 	tenantSvc := service.NewTenantService(tenantRepo)
-	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, queueDrv)
+	// A nil *redisdriver.Driver stored in an interface is NOT nil (Go typed
+	// nil); downstream `if driver == nil` guards would never fire. Inject
+	// explicit nil interfaces so PG-only mode truly runs without Redis.
+	var agentHb service.HeartbeatDriver
+	var budgetRL service.RateLimiter
+	if redisDrv != nil {
+		agentHb = redisDrv
+		budgetRL = redisDrv
+	}
+	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, agentHb, queueDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
-	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(redisDrv)
+	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(budgetRL)
 
 	var llmClient *llm.Client
 	if cfg.LLM.Enabled && cfg.LLM.APIKey != "" {
@@ -275,7 +284,11 @@ func main() {
 		}
 	}
 
-	hbSweeper := heartbeat.NewSweeper(redisDrv, agentRepo, scannerInterval)
+	var hbScan heartbeat.HeartbeatScanner
+	if redisDrv != nil {
+		hbScan = redisDrv
+	}
+	hbSweeper := heartbeat.NewSweeper(hbScan, agentRepo, scannerInterval)
 	go hbSweeper.Start(context.Background())
 	defer hbSweeper.Stop()
 

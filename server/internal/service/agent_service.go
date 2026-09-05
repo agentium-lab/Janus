@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
 type AgentService struct {
@@ -23,7 +24,7 @@ func NewAgentService(
 	return &AgentService{
 		agentRepo:   agentRepo,
 		mailboxRepo: mailboxRepo,
-		hbDriver:    hbDriver,
+		hbDriver:    nilguard.Interface(hbDriver),
 		queueDriver: queueDriver,
 	}
 }
@@ -53,8 +54,13 @@ func (s *AgentService) Register(ctx context.Context, agent core.Agent) error {
 		}
 	}
 
-	if err := s.hbDriver.Ping(ctx, agent.TenantID, agent.ID); err != nil {
-		return fmt.Errorf("initial heartbeat: %w", err)
+	// Defensive nil check: a typed-nil HeartbeatDriver (nil concrete pointer
+	// inside a non-nil interface) must not panic here. Registration proceeds
+	// without a heartbeat backend in degraded (PG-only) mode.
+	if s.hbDriver != nil {
+		if err := s.hbDriver.Ping(ctx, agent.TenantID, agent.ID); err != nil {
+			return fmt.Errorf("initial heartbeat: %w", err)
+		}
 	}
 
 	if err := s.agentRepo.UpdateStatus(ctx, agent.TenantID, agent.ID, core.AgentStatusOnline); err != nil {

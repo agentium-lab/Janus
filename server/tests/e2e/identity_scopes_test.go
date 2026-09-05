@@ -114,9 +114,9 @@ func newIdentityStack(t *testing.T) *identityStack {
 	protected := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extract)(mux)))
 	server := httptest.NewServer(protected)
 
-	_, fullRaw, err := apiKeySvc.Create(ctx, scopeTenant, "full-access", nil)
+	_, fullRaw, err := apiKeySvc.Create(ctx, scopeTenant, "full-access", nil, "")
 	require.NoError(t, err)
-	_, readerRaw, err := apiKeySvc.Create(ctx, scopeTenant, "reader", []string{auth.ScopeTaskRead})
+	_, readerRaw, err := apiKeySvc.Create(ctx, scopeTenant, "reader", []string{auth.ScopeTaskRead}, "")
 	require.NoError(t, err)
 
 	st := &identityStack{server: server, fullRaw: fullRaw, readerRaw: readerRaw}
@@ -233,7 +233,7 @@ func TestE2E_IdentityScopes(t *testing.T) {
 
 func mustCreateScopedKey(t *testing.T, svc *service.APIKeyService, name string, scopes []string) string {
 	t.Helper()
-	_, raw, err := svc.Create(context.Background(), scopeTenant, name, scopes)
+	_, raw, err := svc.Create(context.Background(), scopeTenant, name, scopes, "")
 	require.NoError(t, err)
 	return raw
 }

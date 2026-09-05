@@ -31,7 +31,7 @@ type fakeAPIKeySvc struct {
 	gotScopes []string
 }
 
-func (f *fakeAPIKeySvc) Create(_ context.Context, tenantID, name string, scopes []string) (core.APIKey, string, error) {
+func (f *fakeAPIKeySvc) Create(_ context.Context, tenantID, name string, scopes []string, _ string) (core.APIKey, string, error) {
 	if f.createErr != nil {
 		return core.APIKey{}, "", f.createErr
 	}
@@ -351,9 +351,9 @@ func TestBudgetHandler_List_Error(t *testing.T) {
 
 func TestBudgetScopeFromPath(t *testing.T) {
 	cases := []struct {
-		path       string
-		scopeType  string
-		scopeID    string
+		path      string
+		scopeType string
+		scopeID   string
 	}{
 		{"/v1/tenants/acme/budgets/mailbox/mb-1", "mailbox", "mb-1"},
 		{"/v1/tenants/acme/budgets/tenant", "tenant", ""},
@@ -373,8 +373,8 @@ func TestBudgetScopeFromPath(t *testing.T) {
 // --- Catalog handler ---
 
 type fakeCatalogStore struct {
-	err    error
-	agents []*core.Agent
+	err       error
+	agents    []*core.Agent
 	gotTenant string
 }
 
@@ -426,8 +426,8 @@ type fakePolicyRuleSvc struct {
 	createErr error
 	listErr   error
 
-	rules  []*core.PolicyRule
-	created core.PolicyRule
+	rules     []*core.PolicyRule
+	created   core.PolicyRule
 	gotTenant string
 	gotRule   core.PolicyRule
 }

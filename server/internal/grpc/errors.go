@@ -11,13 +11,14 @@ import (
 // gRPC status code per docs/Janus-api-contract.md §2.
 //
 // Mapping:
-//   validation → InvalidArgument (400)
-//   not found  → NotFound (404)
-//   policy denied → PermissionDenied (403)
-//   budget/quota/concurrency → ResourceExhausted (429)
-//   conflict/duplicate → AlreadyExists (409)
-//   queue/Redis/NATS unavailable → Unavailable (503)
-//   DB/transaction → Internal (500)
+//
+//	validation → InvalidArgument (400)
+//	not found  → NotFound (404)
+//	policy denied → PermissionDenied (403)
+//	budget/quota/concurrency → ResourceExhausted (429)
+//	conflict/duplicate → AlreadyExists (409)
+//	queue/Redis/NATS unavailable → Unavailable (503)
+//	DB/transaction → Internal (500)
 func toGRPCError(err error) error {
 	if err == nil {
 		return nil

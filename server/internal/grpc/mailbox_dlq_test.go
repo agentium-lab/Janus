@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 )
 
 // --- Mailbox gRPC handler tests using mock service ---
@@ -175,15 +175,21 @@ func (e errNotFound) Error() string { return string(e) }
 
 type mockMailboxSvcErr struct{}
 
-func (m *mockMailboxSvcErr) Create(_ context.Context, mb core.Mailbox) error  { return fmt.Errorf("create error") }
+func (m *mockMailboxSvcErr) Create(_ context.Context, mb core.Mailbox) error {
+	return fmt.Errorf("create error")
+}
 func (m *mockMailboxSvcErr) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
 	return nil, fmt.Errorf("get error")
 }
 func (m *mockMailboxSvcErr) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
 	return fmt.Errorf("update error")
 }
-func (m *mockMailboxSvcErr) Pause(_ context.Context, _, _ string) error  { return fmt.Errorf("pause error") }
-func (m *mockMailboxSvcErr) Resume(_ context.Context, _, _ string) error { return fmt.Errorf("resume error") }
+func (m *mockMailboxSvcErr) Pause(_ context.Context, _, _ string) error {
+	return fmt.Errorf("pause error")
+}
+func (m *mockMailboxSvcErr) Resume(_ context.Context, _, _ string) error {
+	return fmt.Errorf("resume error")
+}
 
 func TestMailboxGRPC_CreateMailbox_Error(t *testing.T) {
 	srv := &MailboxServiceServer{svc: &mockMailboxSvcErr{}}
@@ -208,8 +214,10 @@ func (m *mockMailboxSvcCreateSuccessGetError) Get(_ context.Context, _, _ string
 func (m *mockMailboxSvcCreateSuccessGetError) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
 	return nil
 }
-func (m *mockMailboxSvcCreateSuccessGetError) Pause(_ context.Context, _, _ string) error  { return nil }
-func (m *mockMailboxSvcCreateSuccessGetError) Resume(_ context.Context, _, _ string) error { return nil }
+func (m *mockMailboxSvcCreateSuccessGetError) Pause(_ context.Context, _, _ string) error { return nil }
+func (m *mockMailboxSvcCreateSuccessGetError) Resume(_ context.Context, _, _ string) error {
+	return nil
+}
 
 func TestMailboxGRPC_CreateMailbox_GetAfterCreateError(t *testing.T) {
 	srv := &MailboxServiceServer{svc: &mockMailboxSvcCreateSuccessGetError{}}
@@ -219,15 +227,19 @@ func TestMailboxGRPC_CreateMailbox_GetAfterCreateError(t *testing.T) {
 
 type mockMailboxSvcUpdateSuccessGetError struct{}
 
-func (m *mockMailboxSvcUpdateSuccessGetError) Create(_ context.Context, mb core.Mailbox) error  { return nil }
+func (m *mockMailboxSvcUpdateSuccessGetError) Create(_ context.Context, mb core.Mailbox) error {
+	return nil
+}
 func (m *mockMailboxSvcUpdateSuccessGetError) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
 	return nil, fmt.Errorf("get after update failed")
 }
 func (m *mockMailboxSvcUpdateSuccessGetError) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
 	return nil
 }
-func (m *mockMailboxSvcUpdateSuccessGetError) Pause(_ context.Context, _, _ string) error  { return nil }
-func (m *mockMailboxSvcUpdateSuccessGetError) Resume(_ context.Context, _, _ string) error { return nil }
+func (m *mockMailboxSvcUpdateSuccessGetError) Pause(_ context.Context, _, _ string) error { return nil }
+func (m *mockMailboxSvcUpdateSuccessGetError) Resume(_ context.Context, _, _ string) error {
+	return nil
+}
 
 func TestMailboxGRPC_UpdateMailbox_GetAfterUpdateError(t *testing.T) {
 	srv := &MailboxServiceServer{svc: &mockMailboxSvcUpdateSuccessGetError{}}

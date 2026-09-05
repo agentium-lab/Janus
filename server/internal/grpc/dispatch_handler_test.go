@@ -5,19 +5,19 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	svc "github.com/agentium-lab/Janus/server/internal/service"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 type mockDispatchService struct {
-	pullResult *svc.PullResult
-	err        error
-	started    bool
-	acked      bool
-	nacked     bool
+	pullResult  *svc.PullResult
+	err         error
+	started     bool
+	acked       bool
+	nacked      bool
 	heartbeated bool
 }
 
@@ -66,8 +66,8 @@ func TestDispatchServiceServer_PullTask_WithTask(t *testing.T) {
 	task.Status = core.TaskStatusClaimed
 	mock := &mockDispatchService{
 		pullResult: &svc.PullResult{
-			Task:     task,
-			LeaseID:  "lease-1",
+			Task:      task,
+			LeaseID:   "lease-1",
 			ExpiresAt: time.Now().Add(30 * time.Second),
 		},
 	}
@@ -140,11 +140,11 @@ func TestDispatchServiceServer_NackTask(t *testing.T) {
 	s := &DispatchServiceServer{svc: mock}
 
 	_, err := s.NackTask(context.Background(), &pb.NackTaskRequest{
-		TenantId: "acme",
-		TaskId:   "task-1",
-		LeaseId:  "lease-1",
+		TenantId:  "acme",
+		TaskId:    "task-1",
+		LeaseId:   "lease-1",
 		Retriable: true,
-		Error:    &pb.TaskError{Code: "TIMEOUT", Message: "agent timed out"},
+		Error:     &pb.TaskError{Code: "TIMEOUT", Message: "agent timed out"},
 	})
 	require.NoError(t, err)
 	assert.True(t, mock.nacked)

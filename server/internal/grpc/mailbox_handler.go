@@ -6,8 +6,8 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	svc "github.com/agentium-lab/Janus/server/internal/service"
 )
 
@@ -33,11 +33,11 @@ func (s *MailboxServiceServer) CreateMailbox(ctx context.Context, req *pb.Create
 		return nil, status.Error(codes.InvalidArgument, "tenant_id is required")
 	}
 	mb := core.Mailbox{
-		TenantID:        req.TenantId,
-		ID:              req.Id,
-		AgentID:         req.AgentId,
-		Status:          "active",
-		MaxConcurrency:  int(req.MaxConcurrency),
+		TenantID:       req.TenantId,
+		ID:             req.Id,
+		AgentID:        req.AgentId,
+		Status:         "active",
+		MaxConcurrency: int(req.MaxConcurrency),
 	}
 	if err := s.svc.Create(ctx, mb); err != nil {
 		return nil, err

@@ -23,17 +23,33 @@ func withAuthCtx(r *http.Request) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
 }
 
-type mockTaskCreator struct{ created *core.Task; err error }
+type mockTaskCreator struct {
+	created *core.Task
+	err     error
+}
+
 func (m *mockTaskCreator) Create(_ context.Context, task core.Task) (*core.Task, error) {
-	if m.err != nil { return nil, m.err }
+	if m.err != nil {
+		return nil, m.err
+	}
 	m.created = &task
 	return &task, nil
 }
 
-type mockStatusGetter struct{ task *core.Task; err error }
-func (m *mockStatusGetter) Get(_ context.Context, _, _ string) (*core.Task, error) { return m.task, m.err }
+type mockStatusGetter struct {
+	task *core.Task
+	err  error
+}
 
-type mockResourceRegistrar struct{ ref *core.ContextRef; err error }
+func (m *mockStatusGetter) Get(_ context.Context, _, _ string) (*core.Task, error) {
+	return m.task, m.err
+}
+
+type mockResourceRegistrar struct {
+	ref *core.ContextRef
+	err error
+}
+
 func (m *mockResourceRegistrar) Attach(_ context.Context, _, _, _, _, _ string, _ []string) (*core.ContextRef, error) {
 	return m.ref, m.err
 }

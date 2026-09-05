@@ -1,9 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"

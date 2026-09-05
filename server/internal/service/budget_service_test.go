@@ -133,7 +133,7 @@ func TestBudgetService_CheckConcurrency_EmptyTenantID(t *testing.T) {
 func TestBudgetService_GetLimits(t *testing.T) {
 	repo := &mockBudgetRepo{
 		budgets: map[string]*core.BudgetSpec{
-			"acme:tenant:acme":    {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", MaxConcurrency: 20, RPM: 100},
+			"acme:tenant:acme":   {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", MaxConcurrency: 20, RPM: 100},
 			"acme:agent:agent-1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", MaxConcurrency: 5, TPM: 50000},
 		},
 	}

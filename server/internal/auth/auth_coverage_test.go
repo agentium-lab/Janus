@@ -91,10 +91,14 @@ func newFakeAuthDB(t *testing.T, q fakeAuthQueryFn) *sql.DB {
 }
 
 func singleRowQuery(tenantID, scopes string) fakeAuthQueryFn {
+	return boundAgentRowQuery(tenantID, scopes, "")
+}
+
+func boundAgentRowQuery(tenantID, scopes, boundAgent string) fakeAuthQueryFn {
 	return func(query string, args []driver.NamedValue) (driver.Rows, error) {
 		return &fakeAuthRows{
-			cols: []string{"tenant_id", "scopes"},
-			vals: [][]driver.Value{{tenantID, scopes}},
+			cols: []string{"tenant_id", "scopes", "bound_agent_id"},
+			vals: [][]driver.Value{{tenantID, scopes, boundAgent}},
 		}, nil
 	}
 }
@@ -153,8 +157,8 @@ func TestValidatePrincipal_QueryArgs(t *testing.T) {
 			gotArgs = append(gotArgs, a.Value)
 		}
 		return &fakeAuthRows{
-			cols: []string{"tenant_id", "scopes"},
-			vals: [][]driver.Value{{"acme", ""}},
+			cols: []string{"tenant_id", "scopes", "bound_agent_id"},
+			vals: [][]driver.Value{{"acme", "", ""}},
 		}, nil
 	})
 	v := NewAPIKeyValidator(db)
@@ -219,11 +223,11 @@ func TestMiddleware_ValidKey_InjectsFullContext(t *testing.T) {
 	v := NewAPIKeyValidator(db)
 
 	var (
-		gotTenant  string
-		gotPrefix  string
-		gotActor   string
-		gotScopes  []string
-		reached    bool
+		gotTenant string
+		gotPrefix string
+		gotActor  string
+		gotScopes []string
+		reached   bool
 	)
 	handler := Middleware(v)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		reached = true

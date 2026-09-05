@@ -11,11 +11,11 @@ import (
 )
 
 type mockLookup struct {
-	candidates    []AgentCandidate
-	mailboxes     map[string]bool
-	agentMailbox  map[string]string
-	groupMap      map[string][]string
-	humanMap      map[string][]string
+	candidates   []AgentCandidate
+	mailboxes    map[string]bool
+	agentMailbox map[string]string
+	groupMap     map[string][]string
+	humanMap     map[string][]string
 }
 
 func (m *mockLookup) ListOnlineByCapability(_ context.Context, _, _ string) ([]AgentCandidate, error) {

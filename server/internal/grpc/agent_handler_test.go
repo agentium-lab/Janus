@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/agentium-lab/Janus/core"
+	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -190,8 +190,8 @@ func TestAgentServiceServer_GetAgent_NotFound(t *testing.T) {
 
 func TestAgentServiceServer_ListAgents(t *testing.T) {
 	mock := &mockAgentService{agents: map[string]*core.Agent{
-		"acme:a1": makeTestAgent("acme", "a1"),
-		"acme:a2": makeTestAgent("acme", "a2"),
+		"acme:a1":  makeTestAgent("acme", "a1"),
+		"acme:a2":  makeTestAgent("acme", "a2"),
 		"other:a3": makeTestAgent("other", "a3"),
 	}}
 	s := &AgentServiceServer{svc: mock}
@@ -264,6 +264,5 @@ func TestAgentServiceServer_ListAgents_Error(t *testing.T) {
 	s := &AgentServiceServer{svc: mock}
 
 	_, err := s.ListAgents(context.Background(), &pb.ListAgentsRequest{TenantId: "acme"})
- 	assert.Error(t, err)
- }
-
+	assert.Error(t, err)
+}

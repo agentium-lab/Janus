@@ -130,7 +130,7 @@ func TestDLQHandler_Query(t *testing.T) {
 
 func TestDLQHandler_Replay(t *testing.T) {
 	svc := &mockDLQService{
-		tasks: []*core.Task{{ID: "task-dlq-1", TenantID: "acme", Status: core.TaskStatusDeadLettered}},
+		tasks:    []*core.Task{{ID: "task-dlq-1", TenantID: "acme", Status: core.TaskStatusDeadLettered}},
 		replayed: &core.Task{ID: "task-dlq-1", TenantID: "acme", Status: core.TaskStatusCreated},
 	}
 	h := NewDLQHandler(svc)

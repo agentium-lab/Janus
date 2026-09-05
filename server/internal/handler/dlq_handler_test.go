@@ -15,15 +15,15 @@ import (
 )
 
 type dlqHandlerSvcMock struct {
-	queryResult []*core.Task
-	queryErr    error
+	queryResult  []*core.Task
+	queryErr     error
 	replayResult *core.Task
-	replayErr   error
-	discardErr  error
+	replayErr    error
+	discardErr   error
 
-	lastMailbox  string
-	lastLimit    int
-	lastTaskID   string
+	lastMailbox string
+	lastLimit   int
+	lastTaskID  string
 }
 
 func (m *dlqHandlerSvcMock) QueryDLQ(_ context.Context, _ string, mailbox string, limit int) ([]*core.Task, error) {

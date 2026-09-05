@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type DispatchService interface {
@@ -42,6 +43,12 @@ func (h *DispatchHandler) Pull(w http.ResponseWriter, r *http.Request) {
 	_ = readJSON(r, &req)
 	if req.AgentID == "" {
 		req.AgentID = "default"
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		if err := principal.CheckAgentIdentity(req.AgentID); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 	}
 
 	result, err := h.svc.PullTask(r.Context(), tenantID, mailboxID, req.AgentID)
@@ -97,8 +104,8 @@ func (h *DispatchHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 func (h *DispatchHandler) Ack(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	var req struct {
-		LeaseID   string `json:"lease_id"`
-		ResultRef string `json:"result_ref"`
+		LeaseID    string `json:"lease_id"`
+		ResultRef  string `json:"result_ref"`
 		TokenUsage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
 			CompletionTokens int `json:"completion_tokens"`

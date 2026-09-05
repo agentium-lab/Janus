@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
 type BudgetUsageRepo interface {
@@ -34,7 +35,7 @@ func NewBudgetServiceWithUsage(repo BudgetRepo, usageRepo BudgetUsageRepo) *Budg
 }
 
 func (s *BudgetService) WithRateLimiter(rl RateLimiter) *BudgetService {
-	s.rateLimiter = rl
+	s.rateLimiter = nilguard.Interface(rl)
 	return s
 }
 

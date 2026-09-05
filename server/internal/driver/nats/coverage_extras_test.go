@@ -451,8 +451,8 @@ func TestDriver_EnsureConsumerWithMaxDeliver(t *testing.T) {
 	}))
 
 	require.NoError(t, d.EnsureConsumer(ctx, core.ConsumerSpec{
-		TenantID:  tn,
-		MailboxID: "maxdeliver_mb",
+		TenantID:   tn,
+		MailboxID:  "maxdeliver_mb",
 		MaxDeliver: 10, // Custom max deliver
 	}))
 }

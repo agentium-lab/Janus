@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type TaskService interface {
@@ -33,15 +34,15 @@ func NewTaskHandler(svc TaskService) *TaskHandler {
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	var req struct {
-		ID             string `json:"id"`
-		SourceAgent    string `json:"source_agent"`
-		TargetType     string `json:"target_type"`
-		TargetValue    string `json:"target_value"`
-		MailboxID      string `json:"mailbox_id"`
-		IdempotencyKey string `json:"idempotency_key"`
-		Priority       string `json:"priority"`
-		TTLSeconds     int    `json:"ttl_seconds"`
-		Deadline       string `json:"deadline"`
+		ID             string               `json:"id"`
+		SourceAgent    string               `json:"source_agent"`
+		TargetType     string               `json:"target_type"`
+		TargetValue    string               `json:"target_value"`
+		MailboxID      string               `json:"mailbox_id"`
+		IdempotencyKey string               `json:"idempotency_key"`
+		Priority       string               `json:"priority"`
+		TTLSeconds     int                  `json:"ttl_seconds"`
+		Deadline       string               `json:"deadline"`
 		ToolInvocation *core.ToolInvocation `json:"tool_invocation"`
 		Envelope       struct {
 			JanusVersion   string `json:"janus_version"`
@@ -66,14 +67,14 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				SpanID       string `json:"span_id"`
 			} `json:"trace"`
 			Budget *struct {
-				MaxTokens   int      `json:"max_tokens"`
-				MaxCostUSD  float64  `json:"max_cost_usd"`
+				MaxTokens    int      `json:"max_tokens"`
+				MaxCostUSD   float64  `json:"max_cost_usd"`
 				ModelClasses []string `json:"model_classes"`
 			} `json:"budget"`
 			Policy *struct {
-				DataClassification     string   `json:"data_classification"`
+				DataClassification    string   `json:"data_classification"`
 				RequiresHumanApproval bool     `json:"requires_human_approval"`
-				AllowedTools           []string `json:"allowed_tools"`
+				AllowedTools          []string `json:"allowed_tools"`
 			} `json:"policy"`
 			ContextRefs []struct {
 				Type           string   `json:"type"`
@@ -96,6 +97,19 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Envelope.TenantID != "" && req.Envelope.TenantID != tenantID {
 		writeError(w, http.StatusBadRequest, "envelope tenant_id does not match path tenant")
 		return
+	}
+
+	// Agent identity binding: a key bound to an agent cannot publish tasks
+	// attributed to a different source agent.
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		claimed := req.SourceAgent
+		if claimed == "" {
+			claimed = req.Envelope.SourceAgent
+		}
+		if err := principal.CheckAgentIdentity(claimed); err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 	}
 
 	priority := core.Priority(req.Priority)
@@ -142,9 +156,9 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var policy *core.PolicyContext
 	if req.Envelope.Policy != nil {
 		policy = &core.PolicyContext{
-			DataClassification:     req.Envelope.Policy.DataClassification,
+			DataClassification:    req.Envelope.Policy.DataClassification,
 			RequiresHumanApproval: req.Envelope.Policy.RequiresHumanApproval,
-			AllowedTools:           req.Envelope.Policy.AllowedTools,
+			AllowedTools:          req.Envelope.Policy.AllowedTools,
 		}
 	}
 
@@ -215,7 +229,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// the returned task's CreatedAt against a timestamp captured before Create;
 	// if they differ, the task pre-existed.
 	status := http.StatusCreated
-	if idempotencyKey != "" && result.CreatedAt.Before(createStart.Add(-1 * time.Millisecond)) {
+	if idempotencyKey != "" && result.CreatedAt.Before(createStart.Add(-1*time.Millisecond)) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, struct {

@@ -6,9 +6,9 @@ import "time"
 type AgentStatus string
 
 const (
-	AgentStatusOnline    AgentStatus = "online"
-	AgentStatusOffline   AgentStatus = "offline"
-	AgentStatusDegraded  AgentStatus = "degraded"
+	AgentStatusOnline   AgentStatus = "online"
+	AgentStatusOffline  AgentStatus = "offline"
+	AgentStatusDegraded AgentStatus = "degraded"
 )
 
 // AgentProtocol represents the communication protocol an agent supports.
@@ -31,19 +31,19 @@ type AgentCapability struct {
 
 // Agent represents a registered agent in Janus.
 type Agent struct {
-	ID              string         `json:"id"`
-	TenantID        string         `json:"tenant_id"`
-	TeamID          string         `json:"team_id,omitempty"`
-	DisplayName     string         `json:"display_name"`
-	Protocol        AgentProtocol  `json:"protocol"`
-	Endpoint        string         `json:"endpoint"`
-	Status          AgentStatus    `json:"status"`
-	Description     string         `json:"description"`
+	ID              string            `json:"id"`
+	TenantID        string            `json:"tenant_id"`
+	TeamID          string            `json:"team_id,omitempty"`
+	DisplayName     string            `json:"display_name"`
+	Protocol        AgentProtocol     `json:"protocol"`
+	Endpoint        string            `json:"endpoint"`
+	Status          AgentStatus       `json:"status"`
+	Description     string            `json:"description"`
 	Capabilities    []AgentCapability `json:"capabilities"`
-	MaxConcurrency  int            `json:"max_concurrency"`
-	RPM             int            `json:"rpm"`
-	TPM             int            `json:"tpm"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
-	LastHeartbeatAt *time.Time     `json:"last_heartbeat_at"`
+	MaxConcurrency  int               `json:"max_concurrency"`
+	RPM             int               `json:"rpm"`
+	TPM             int               `json:"tpm"`
+	CreatedAt       time.Time         `json:"created_at"`
+	UpdatedAt       time.Time         `json:"updated_at"`
+	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at"`
 }

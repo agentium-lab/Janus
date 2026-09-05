@@ -10,8 +10,8 @@ import (
 )
 
 type OutboxRepo struct {
-	pool         *pgxpool.Pool
-	workerID     string
+	pool          *pgxpool.Pool
+	workerID      string
 	leaseDuration time.Duration
 }
 

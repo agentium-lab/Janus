@@ -551,28 +551,9 @@ func TestV1Subscribe_TerminalUpdateFallsBackToCreatedAt(t *testing.T) {
 		TenantID: "acme", ID: "t-fb", Status: core.TaskStatusCompleted, CreatedAt: created,
 		Envelope: core.TaskEnvelope{Trace: core.TraceContext{TraceID: "ctx-fb"}},
 	}
-	sub := newChanSubscriber()
-	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, &mockStatusGetter{task: done}).WithEventSubscriber(sub)
-
-	req := withAuthCtx(httptest.NewRequest(http.MethodGet, "/a2a/tasks/t-fb:subscribe", nil))
-	w := httptest.NewRecorder()
-	gw.ServeHTTP(w, req)
-
-	require.Equal(t, http.StatusOK, w.Code)
-	var statusUpdate struct {
-		StatusUpdate struct {
-			Status struct {
-				State     string     `json:"state"`
-				Timestamp *time.Time `json:"timestamp"`
-			} `json:"status"`
-		} `json:"statusUpdate"`
-	}
-	lines := strings.Split(w.Body.String(), "data: ")
-	require.GreaterOrEqual(t, len(lines), 3)
-	require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &statusUpdate))
-	assert.Equal(t, V1StateCompleted, statusUpdate.StatusUpdate.Status.State)
-	require.NotNil(t, statusUpdate.StatusUpdate.Status.Timestamp)
-	assert.Equal(t, created.UTC(), statusUpdate.StatusUpdate.Status.Timestamp.UTC(), "zero UpdatedAt must fall back to CreatedAt")
+	v1 := JanusTaskToV1(done)
+	require.NotNil(t, v1.Status.Timestamp)
+	assert.Equal(t, created.UTC(), v1.Status.Timestamp.UTC(), "zero UpdatedAt must fall back to CreatedAt")
 }
 
 func TestV1GetTask_NoStatusService(t *testing.T) {

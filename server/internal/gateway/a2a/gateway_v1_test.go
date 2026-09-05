@@ -327,6 +327,8 @@ func TestGatewayV1_MessageStream_NotConfigured(t *testing.T) {
 }
 
 func TestGatewayV1_Subscribe_TerminalTaskImmediateClose(t *testing.T) {
+	// Spec (proto + 3.1.6/9.4.6/10.4.6): subscribing to a terminal task
+	// returns UnsupportedOperationError (HTTP 400), not a snapshot stream.
 	sub := newMockSubscriber()
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, &mockStatusGetter{task: completedTask("t-done")}).WithEventSubscriber(sub)
 
@@ -334,12 +336,8 @@ func TestGatewayV1_Subscribe_TerminalTaskImmediateClose(t *testing.T) {
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 
-	assert.Equal(t, http.StatusOK, w.Code)
-	out := w.Body.String()
-	assert.Contains(t, out, `"task":`)
-	assert.Contains(t, out, V1StateCompleted)
-	assert.Contains(t, out, "s3://results/1")
-	assert.Contains(t, out, `"statusUpdate":`)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "UNSUPPORTED_OPERATION")
 }
 
 func TestGatewayV1_Subscribe_NotFound(t *testing.T) {

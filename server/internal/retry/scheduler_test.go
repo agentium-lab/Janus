@@ -115,17 +115,17 @@ func TestGenerateULID_Unique(t *testing.T) {
 
 type mockRowsScanError struct{}
 
-func (r *mockRowsScanError) Next() bool { return true }
+func (r *mockRowsScanError) Next() bool             { return true }
 func (r *mockRowsScanError) Scan(dest ...any) error { return fmt.Errorf("scan error") }
-func (r *mockRowsScanError) Err() error { return nil }
-func (r *mockRowsScanError) Close()    {}
+func (r *mockRowsScanError) Err() error             { return nil }
+func (r *mockRowsScanError) Close()                 {}
 
 type mockRowsErr struct{ closed bool }
 
-func (r *mockRowsErr) Next() bool                            { return false }
-func (r *mockRowsErr) Scan(dest ...any) error                { return nil }
-func (r *mockRowsErr) Err() error                             { return fmt.Errorf("rows error") }
-func (r *mockRowsErr) Close()                                { r.closed = true }
+func (r *mockRowsErr) Next() bool             { return false }
+func (r *mockRowsErr) Scan(dest ...any) error { return nil }
+func (r *mockRowsErr) Err() error             { return fmt.Errorf("rows error") }
+func (r *mockRowsErr) Close()                 { r.closed = true }
 
 func TestScheduler_Start_TickerFires(t *testing.T) {
 	if testing.Short() {

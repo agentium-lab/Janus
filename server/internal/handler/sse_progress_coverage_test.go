@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
@@ -89,7 +89,9 @@ func TestSSEHandler_TerminalPreCheckClosesImmediately(t *testing.T) {
 	assert.Equal(t, "task-9", checker.gotTask)
 	assert.Contains(t, w.Body.String(), "event: task.completed")
 	assert.Contains(t, w.Body.String(), `"status":"completed"`)
-	assert.EqualValues(t, 0, bc.subscribed.Load(), "should not subscribe when task is already terminal")
+	// Subscribe happens BEFORE the terminal check (race fix): the stream
+	// still closes immediately; the subscription is cleaned up on return.
+	assert.EqualValues(t, 1, bc.subscribed.Load())
 }
 
 func TestSSEHandler_StatusCheckerError_FallsThroughToStream(t *testing.T) {
@@ -170,19 +172,29 @@ func TestSSEHandler_ClosedSubscriberChannelReturns(t *testing.T) {
 // --- Progress handler ---
 
 type fakeProgressSvc struct {
-	err      error
-	calls    int
-	tenant   string
-	task     string
-	agent    string
-	prog     core.TaskProgress
+	err    error
+	calls  int
+	tenant string
+	task   string
+	agent  string
+	prog   core.TaskProgress
 }
 
-func (f *fakeProgressSvc) ReportProgress(_ context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) error {
+func (f *fakeProgressSvc) ReportProgress(_ context.Context, tenantID, taskID, agentID string, prog core.TaskProgress) (*core.JanusEvent, error) {
 	f.calls++
 	f.tenant, f.task, f.agent = tenantID, taskID, agentID
 	f.prog = prog
-	return f.err
+	if f.err != nil {
+		return nil, f.err
+	}
+	evt := core.JanusEvent{
+		EventID:     "evt-fixed-1",
+		EventType:   core.EventTaskProgress,
+		TenantID:    tenantID,
+		TaskID:      taskID,
+		SourceAgent: agentID,
+	}
+	return &evt, nil
 }
 
 type recordingPublisher struct {
@@ -278,7 +290,6 @@ func TestProgressHandler_Report_PercentOutOfRange(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "percent must be 0-100")
 	}
 }
-
 
 func TestProgressHandler_Report_MissingAgentID(t *testing.T) {
 	handlerFunc := newProgressTestServer(&fakeProgressSvc{}, &recordingPublisher{})

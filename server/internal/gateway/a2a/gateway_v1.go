@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 const serverVersion = "1.5.0"
@@ -23,6 +24,24 @@ type EventSubscriber interface {
 func (g *Gateway) WithEventSubscriber(sub EventSubscriber) *Gateway {
 	g.subscriber = sub
 	return g
+}
+
+func resolveSourceAgent(r *http.Request, req V1SendMessageRequest) (string, error) {
+	sourceAgent := r.URL.Query().Get("source_agent")
+	if sourceAgent == "" {
+		if sa, ok := req.Metadata["source_agent"].(string); ok {
+			sourceAgent = sa
+		}
+	}
+	if sourceAgent == "" {
+		sourceAgent = "unknown"
+	}
+	if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+		if err := principal.CheckAgentIdentity(sourceAgent); err != nil {
+			return "", err
+		}
+	}
+	return sourceAgent, nil
 }
 
 func writeV1Error(w http.ResponseWriter, status int, code, msg string) {
@@ -65,14 +84,10 @@ func (g *Gateway) handleV1Send(w http.ResponseWriter, r *http.Request) {
 		writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
-	sourceAgent := r.URL.Query().Get("source_agent")
-	if sourceAgent == "" {
-		if sa, ok := req.Metadata["source_agent"].(string); ok {
-			sourceAgent = sa
-		}
-	}
-	if sourceAgent == "" {
-		sourceAgent = "unknown"
+	sourceAgent, err := resolveSourceAgent(r, req)
+	if err != nil {
+		writeV1Error(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
 	}
 	mailboxID := mailboxFromRequest(r, req)
 
@@ -126,14 +141,10 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 		writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
 	}
-	sourceAgent := r.URL.Query().Get("source_agent")
-	if sourceAgent == "" {
-		if sa, ok := req.Metadata["source_agent"].(string); ok {
-			sourceAgent = sa
-		}
-	}
-	if sourceAgent == "" {
-		sourceAgent = "unknown"
+	sourceAgent, err := resolveSourceAgent(r, req)
+	if err != nil {
+		writeV1Error(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
 	}
 
 	task := V1MessageToTask(req, tenantID, sourceAgent, mailboxFromRequest(r, req))
@@ -143,18 +154,30 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if req.Message.TaskID != "" && g.statusSvc != nil {
+		if existing, err := g.statusSvc.Get(r.Context(), tenantID, req.Message.TaskID); err == nil &&
+			existing != nil && existing.Status.IsTerminal() {
+			writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
+				"task is in a terminal state and cannot accept further messages")
+			return
+		}
+	}
+
 	flusher, canFlush := w.(http.Flusher)
 	if !canFlush {
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", "streaming unsupported")
 		return
 	}
+	ch := g.subscriber.Subscribe(tenantID)
+	defer func() { g.subscriber.Unsubscribe(tenantID, ch) }()
+
 	sseHeaders(w)
 	writeSSEData(w, flusher, V1StreamResponse{Task: JanusTaskToV1(created)})
 	if created.Status.IsTerminal() {
 		writeSSEData(w, flusher, V1StreamResponse{StatusUpdate: terminalUpdate(created)})
 		return
 	}
-	g.streamTaskEvents(w, r, flusher, tenantID, created.ID, created.Envelope.Trace.TraceID)
+	g.streamTaskEvents(w, r, flusher, tenantID, created.ID, created.Envelope.Trace.TraceID, ch)
 }
 
 // handleV1Subscribe implements GET /a2a/tasks/{id}:subscribe.
@@ -171,9 +194,17 @@ func (g *Gateway) handleV1Subscribe(w http.ResponseWriter, r *http.Request, task
 		writeV1Error(w, http.StatusServiceUnavailable, "UNAVAILABLE", "status service not configured")
 		return
 	}
+	ch := g.subscriber.Subscribe(tenantID)
+	defer func() { g.subscriber.Unsubscribe(tenantID, ch) }()
+
 	task, err := g.statusSvc.Get(r.Context(), tenantID, taskID)
 	if err != nil || task == nil {
 		writeV1Error(w, http.StatusNotFound, "NOT_FOUND", "task not found")
+		return
+	}
+	if task.Status.IsTerminal() {
+		writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
+			"task is in a terminal state and cannot be subscribed to")
 		return
 	}
 	flusher, canFlush := w.(http.Flusher)
@@ -183,19 +214,12 @@ func (g *Gateway) handleV1Subscribe(w http.ResponseWriter, r *http.Request, task
 	}
 	sseHeaders(w)
 	writeSSEData(w, flusher, V1StreamResponse{Task: JanusTaskToV1(task)})
-	if task.Status.IsTerminal() {
-		writeSSEData(w, flusher, V1StreamResponse{StatusUpdate: terminalUpdate(task)})
-		return
-	}
-	g.streamTaskEvents(w, r, flusher, tenantID, task.ID, task.Envelope.Trace.TraceID)
+	g.streamTaskEvents(w, r, flusher, tenantID, task.ID, task.Envelope.Trace.TraceID, ch)
 }
 
 // streamTaskEvents is the shared SSE pump: subscribe → translate → close on
 // terminal state, client disconnect, or heartbeat timeout.
-func (g *Gateway) streamTaskEvents(w http.ResponseWriter, r *http.Request, flusher http.Flusher, tenantID, taskID, contextID string) {
-	ch := g.subscriber.Subscribe(tenantID)
-	defer func() { g.subscriber.Unsubscribe(tenantID, ch) }()
-
+func (g *Gateway) streamTaskEvents(w http.ResponseWriter, r *http.Request, flusher http.Flusher, tenantID, taskID, contextID string, ch <-chan core.JanusEvent) {
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
@@ -310,11 +334,18 @@ func (g *Gateway) serveV1Routes(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	case strings.HasPrefix(path, "/a2a/tasks/") && r.Method == http.MethodPost:
 		taskID, action, ok := parseV1TaskAction(path)
-		if ok && action == "cancel" {
-			g.handleV1Cancel(w, r, taskID)
+		if !ok {
+			http.NotFound(w, r)
 			return true
 		}
-		http.NotFound(w, r)
+		switch action {
+		case "cancel":
+			g.handleV1Cancel(w, r, taskID)
+		case "subscribe":
+			g.handleV1Subscribe(w, r, taskID)
+		default:
+			http.NotFound(w, r)
+		}
 		return true
 	}
 	return false

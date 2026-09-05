@@ -359,7 +359,7 @@ func TestCovPG_ReportProgress_OutboxPersisted(t *testing.T) {
 	_, err := env.taskRepo.UpdateStatusWithCheck(ctx, "acme", task.ID, core.TaskStatusQueued, core.TaskStatusClaimed, 1)
 	require.NoError(t, err)
 
-	err = env.taskSvc.ReportProgress(ctx, "acme", task.ID, "agent-1", core.TaskProgress{Message: "halfway"})
+	_, err = env.taskSvc.ReportProgress(ctx, "acme", task.ID, "agent-1", core.TaskProgress{Message: "halfway"})
 	require.NoError(t, err)
 
 	outbox, _ := env.outboxRepo.FetchPending(ctx, 100)

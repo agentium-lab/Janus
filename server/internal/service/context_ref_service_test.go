@@ -9,8 +9,8 @@ import (
 )
 
 type mockContextRefRepo struct {
-	refs   map[string]*core.ContextRef
-	binds  []string
+	refs  map[string]*core.ContextRef
+	binds []string
 }
 
 func newMockContextRefRepo() *mockContextRefRepo {

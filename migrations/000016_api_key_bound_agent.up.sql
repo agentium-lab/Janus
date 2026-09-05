@@ -1,0 +1,1 @@
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS bound_agent_id text NOT NULL DEFAULT '';

@@ -61,8 +61,8 @@ func (rc *ReadyChecker) Handler() http.HandlerFunc {
 			status = "degraded"
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"status":   status,
-			"checks":   results,
+			"status": status,
+			"checks": results,
 		})
 	}
 }

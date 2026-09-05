@@ -32,10 +32,10 @@ type MailboxRepo interface {
 }
 
 type Options struct {
-	Pool            *pgxpool.Pool
-	TenantLister    TenantLister
-	QueueEnsurer    QueueEnsurer
-	MailboxEnsurer  MailboxEnsurer
+	Pool           *pgxpool.Pool
+	TenantLister   TenantLister
+	QueueEnsurer   QueueEnsurer
+	MailboxEnsurer MailboxEnsurer
 }
 
 type Result struct {

@@ -35,11 +35,11 @@ func main() {
 	}
 
 	_, err = js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:     streamName,
-		Subjects: []string{probeSubject},
+		Name:      streamName,
+		Subjects:  []string{probeSubject},
 		Retention: jetstream.LimitsPolicy,
-		MaxAge:   1 * time.Hour,
-		Storage:  jetstream.FileStorage,
+		MaxAge:    1 * time.Hour,
+		Storage:   jetstream.FileStorage,
 	})
 	if err != nil {
 		log.Fatalf("failed to create probe stream: %v", err)

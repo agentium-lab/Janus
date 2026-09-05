@@ -10,7 +10,7 @@ import (
 )
 
 type APIKeyRepo interface {
-	CreateAPIKey(ctx context.Context, tenantID, keyHash, name, prefix string, scopes []string) (core.APIKey, error)
+	CreateAPIKey(ctx context.Context, tenantID, keyHash, name, prefix string, scopes []string, boundAgentID string) (core.APIKey, error)
 	ListAPIKeys(ctx context.Context, tenantID string) ([]core.APIKey, error)
 	RevokeAPIKey(ctx context.Context, tenantID, keyID string) (*core.APIKey, error)
 }
@@ -31,7 +31,7 @@ func validScope(s string) bool {
 	return false
 }
 
-func (s *APIKeyService) Create(ctx context.Context, tenantID, name string, scopes []string) (core.APIKey, string, error) {
+func (s *APIKeyService) Create(ctx context.Context, tenantID, name string, scopes []string, boundAgentID string) (core.APIKey, string, error) {
 	if name == "" {
 		return core.APIKey{}, "", fmt.Errorf("name is required")
 	}
@@ -57,7 +57,7 @@ func (s *APIKeyService) Create(ctx context.Context, tenantID, name string, scope
 	if err != nil {
 		return core.APIKey{}, "", fmt.Errorf("generate key: %w", err)
 	}
-	k, err := s.repo.CreateAPIKey(ctx, tenantID, keyHash, name, prefix, cleaned)
+	k, err := s.repo.CreateAPIKey(ctx, tenantID, keyHash, name, prefix, cleaned, boundAgentID)
 	if err != nil {
 		return core.APIKey{}, "", err
 	}

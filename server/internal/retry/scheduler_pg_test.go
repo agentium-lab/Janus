@@ -311,16 +311,18 @@ func (d *fakeQueueDriver) PublishTask(_ context.Context, msg core.TaskMessage) e
 func (d *fakeQueueDriver) FetchTasks(_ context.Context, _, _ string, _ core.FetchOptions) ([]core.TaskDelivery, error) {
 	return nil, nil
 }
-func (d *fakeQueueDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error  { return nil }
+func (d *fakeQueueDriver) AckTask(_ context.Context, _ string, _ core.DeliveryRef) error { return nil }
 func (d *fakeQueueDriver) NackTask(_ context.Context, _ string, _ core.DeliveryRef, _ core.NackReason) error {
 	return nil
 }
-func (d *fakeQueueDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error { return nil }
-func (d *fakeQueueDriver) PublishEvent(_ context.Context, _ core.JanusEvent) error          { return nil }
+func (d *fakeQueueDriver) PublishDLQ(_ context.Context, _ core.TaskMessage, _ []byte) error {
+	return nil
+}
+func (d *fakeQueueDriver) PublishEvent(_ context.Context, _ core.JanusEvent) error { return nil }
 func (d *fakeQueueDriver) ReplayEvents(_ context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
 	return nil, nil
 }
-func (d *fakeQueueDriver) EnsureTenant(_ context.Context, _ string) error          { return nil }
-func (d *fakeQueueDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error { return nil }
+func (d *fakeQueueDriver) EnsureTenant(_ context.Context, _ string) error              { return nil }
+func (d *fakeQueueDriver) EnsureMailbox(_ context.Context, _ core.MailboxSpec) error   { return nil }
 func (d *fakeQueueDriver) EnsureConsumer(_ context.Context, _ core.ConsumerSpec) error { return nil }
-func (d *fakeQueueDriver) Close() error                                              { return nil }
+func (d *fakeQueueDriver) Close() error                                                { return nil }

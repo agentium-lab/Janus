@@ -360,7 +360,7 @@ type cbAPIKeyRepo struct {
 	createErr error
 }
 
-func (m *cbAPIKeyRepo) CreateAPIKey(_ context.Context, _, _, _, _ string, _ []string) (core.APIKey, error) {
+func (m *cbAPIKeyRepo) CreateAPIKey(_ context.Context, _, _, _, _ string, _ []string, _ string) (core.APIKey, error) {
 	return core.APIKey{}, m.createErr
 }
 func (m *cbAPIKeyRepo) ListAPIKeys(_ context.Context, _ string) ([]core.APIKey, error) {
@@ -414,7 +414,7 @@ func TestCov_APIKeyService_List(t *testing.T) {
 
 func TestCov_APIKeyService_CreateRepoError(t *testing.T) {
 	svc := NewAPIKeyService(&cbAPIKeyRepo{createErr: errors.New("db down")})
-	_, _, err := svc.Create(context.Background(), "acme", "k", []string{"task:write"})
+	_, _, err := svc.Create(context.Background(), "acme", "k", []string{"task:write"}, "")
 	require.Error(t, err)
 }
 
@@ -1166,7 +1166,7 @@ func TestCov_TaskService_ReportProgress(t *testing.T) {
 
 	t.Run("task not found", func(t *testing.T) {
 		svc := NewTaskService(&mockTaskRepo{err: errors.New("db down")}, &mockQueueDriver{}, nil, nil)
-		err := svc.ReportProgress(ctx, "acme", "missing", "a1", core.TaskProgress{Message: "working"})
+		_, err := svc.ReportProgress(ctx, "acme", "missing", "a1", core.TaskProgress{Message: "working"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "task not found")
 	})
@@ -1176,7 +1176,7 @@ func TestCov_TaskService_ReportProgress(t *testing.T) {
 			"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
 		}}
 		svc := NewTaskService(repo, &mockQueueDriver{}, nil, nil)
-		err := svc.ReportProgress(ctx, "acme", "t1", "a1", core.TaskProgress{Message: "working"})
+		_, err := svc.ReportProgress(ctx, "acme", "t1", "a1", core.TaskProgress{Message: "working"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "progress only accepted while claimed or running")
 	})
@@ -1189,7 +1189,7 @@ func TestCov_TaskService_ReportProgress(t *testing.T) {
 			TenantID: "acme", TaskID: "t1", Attempt: 1, AgentID: "agent-owner", LeaseID: "l",
 		}}}
 		svc := NewTaskService(repo, &mockQueueDriver{}, nil, nil).WithAttemptRepo(aRepo)
-		err := svc.ReportProgress(ctx, "acme", "t1", "agent-impostor", core.TaskProgress{Message: "working"})
+		_, err := svc.ReportProgress(ctx, "acme", "t1", "agent-impostor", core.TaskProgress{Message: "working"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not hold the latest attempt")
 	})
@@ -1199,7 +1199,7 @@ func TestCov_TaskService_ReportProgress(t *testing.T) {
 			"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning},
 		}}
 		svc := NewTaskService(repo, &mockQueueDriver{}, nil, nil).WithAttemptRepo(&mockDispatchAttemptRepo{})
-		err := svc.ReportProgress(ctx, "acme", "t1", "a1", core.TaskProgress{Message: "working"})
+		_, err := svc.ReportProgress(ctx, "acme", "t1", "a1", core.TaskProgress{Message: "working"})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "does not hold the latest attempt")
 	})
@@ -1209,7 +1209,7 @@ func TestCov_TaskService_ReportProgress(t *testing.T) {
 			"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusClaimed},
 		}}
 		svc := NewTaskService(repo, &mockQueueDriver{}, nil, nil)
-		err := svc.ReportProgress(ctx, "acme", "t1", "any-agent", core.TaskProgress{Message: "working"})
+		_, err := svc.ReportProgress(ctx, "acme", "t1", "any-agent", core.TaskProgress{Message: "working"})
 		require.NoError(t, err)
 	})
 }

@@ -18,18 +18,19 @@ func NewAPIKeyRepo(pool *pgxpool.Pool) *APIKeyRepo {
 	return &APIKeyRepo{pool: pool}
 }
 
-func (r *APIKeyRepo) CreateAPIKey(ctx context.Context, tenantID, keyHash, name, prefix string, scopes []string) (core.APIKey, error) {
+func (r *APIKeyRepo) CreateAPIKey(ctx context.Context, tenantID, keyHash, name, prefix string, scopes []string, boundAgentID string) (core.APIKey, error) {
 	k := core.APIKey{
-		TenantID: tenantID,
-		Name:     name,
-		Prefix:   prefix,
-		Scopes:   scopes,
+		TenantID:     tenantID,
+		Name:         name,
+		Prefix:       prefix,
+		Scopes:       scopes,
+		BoundAgentID: boundAgentID,
 	}
 	err := r.pool.QueryRow(ctx,
-		`INSERT INTO api_keys (tenant_id, key_hash, name, prefix, scopes)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO api_keys (tenant_id, key_hash, name, prefix, scopes, bound_agent_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, created_at`,
-		tenantID, keyHash, name, prefix, scopes,
+		tenantID, keyHash, name, prefix, scopes, boundAgentID,
 	).Scan(&k.ID, &k.CreatedAt)
 	return k, err
 }
