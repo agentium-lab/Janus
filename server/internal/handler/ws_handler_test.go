@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,6 +92,29 @@ func TestFanoutBroadcaster_DifferentTenants(t *testing.T) {
 	b.Unsubscribe("tenant-b", chB)
 }
 
+// wsWaitSubscribed blocks until the handler has actually subscribed: the WS
+// upgrade completes BEFORE ServeHTTP subscribes, so an event sent right after
+// Dial can be fanned out to zero subscribers and lost. Spin warm-up events
+// (unique EventIDs, so the dedupe window never eats them) until one
+// round-trips — bounded, because slow CI runners widen the race window.
+func wsWaitSubscribed(t *testing.T, ws *websocket.Conn, inbound chan core.JanusEvent, tenantID string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		inbound <- core.JanusEvent{
+			TenantID:  tenantID,
+			EventType: core.EventTaskCreated,
+			TaskID:    "warmup",
+			EventID:   fmt.Sprintf("warmup-%d", i),
+		}
+		ws.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		if _, _, err := ws.ReadMessage(); err == nil {
+			return
+		}
+	}
+	t.Fatal("websocket subscription never became ready")
+}
+
 func TestWebSocketHandler_BasicConnection(t *testing.T) {
 	inbound := make(chan core.JanusEvent, 16)
 	b := NewFanoutBroadcaster(inbound)
@@ -109,6 +133,7 @@ func TestWebSocketHandler_BasicConnection(t *testing.T) {
 		resp.Body.Close()
 	}
 
+	wsWaitSubscribed(t, ws, inbound, "test")
 	inbound <- core.JanusEvent{
 		TenantID:  "test",
 		EventType: core.EventTaskCreated,
@@ -143,6 +168,7 @@ func TestWebSocketHandler_NoTenant(t *testing.T) {
 		resp.Body.Close()
 	}
 
+	wsWaitSubscribed(t, ws, inbound, "default")
 	inbound <- core.JanusEvent{
 		TenantID:  "default",
 		EventType: core.EventTaskCompleted,

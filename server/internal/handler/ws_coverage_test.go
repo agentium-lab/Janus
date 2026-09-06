@@ -36,6 +36,7 @@ func TestWebSocketHandler_PongAndClientMessageKeepConnectionAlive(t *testing.T) 
 	require.NoError(t, ws.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)))
 	require.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`)))
 
+	wsWaitSubscribed(t, ws, inbound, "test")
 	inbound <- core.JanusEvent{TenantID: "test", TaskID: "still-alive"}
 	ws.SetReadDeadline(time.Now().Add(2 * time.Second))
 	_, msg, err := ws.ReadMessage()
