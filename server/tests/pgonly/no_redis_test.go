@@ -51,8 +51,12 @@ func TestPGOnlyNoRedis_AgentRegister(t *testing.T) {
 
 	bin := buildJanusAPI(t)
 	port2 := freePort(t)
+	root := repoRoot(t)
 
 	cmd := exec.Command(bin)
+	// The server resolves JANUS_MIGRATION_PATH relative to its CWD; run it
+	// from the repo root (the test's CWD is server/tests/pgonly).
+	cmd.Dir = root
 	cmd.Env = append(os.Environ(),
 		"JANUS_QUEUE_DRIVER=pg",
 		fmt.Sprintf("JANUS_PG_HOST=%s", host),
@@ -62,7 +66,7 @@ func TestPGOnlyNoRedis_AgentRegister(t *testing.T) {
 		fmt.Sprintf("JANUS_PG_DATABASE=%s", dbName),
 		"JANUS_PG_SSLMODE=disable",
 		"JANUS_MIGRATION_AUTO=true",
-		"JANUS_MIGRATION_PATH=migrations",
+		fmt.Sprintf("JANUS_MIGRATION_PATH=%s/migrations", root),
 		"JANUS_REDIS_ADDR=localhost:59999",
 		"JANUS_AUTH_ENABLED=false",
 		"JANUS_HTTP_HOST=localhost",
@@ -74,21 +78,38 @@ func TestPGOnlyNoRedis_AgentRegister(t *testing.T) {
 	cmd.Stderr = &bootLog
 	require.NoError(t, cmd.Start(), "start janus-api")
 	dead := make(chan struct{})
+	go func() { cmd.Wait(); close(dead) }()
 	t.Cleanup(func() {
 		cmd.Process.Kill()
-		cmd.Wait()
-		<-dead
+		select {
+		case <-dead:
+		case <-time.After(10 * time.Second):
+			t.Logf("server process did not exit within 10s after kill")
+		}
 	})
-	go func() { cmd.Wait(); close(dead) }()
 
 	base := fmt.Sprintf("http://localhost:%d", port2)
-	waitHealthy(t, base)
+	waitHealthy(t, base, &bootLog)
+
+	// agents reference tenants via FK — create the tenant first.
+	resp, err := httpPost(base+"/v1/tenants", `{"id":"acme","name":"ACME"}`)
+	require.NoError(t, err, "create tenant; log:\n%s", bootLog.String())
+	require.Contains(t, []int{http.StatusCreated, http.StatusConflict}, resp.statusCode,
+		"tenant create: %s; log:\n%s", resp.body, bootLog.String())
+
+	// task routing validates that the target mailbox exists — create it.
+	mbResp, err := httpPost(base+"/v1/tenants/acme/mailboxes", `{"id":"cs-mb","agent_id":"cs-agent-1"}`)
+	require.NoError(t, err, "create mailbox; log:\n%s", bootLog.String())
+	require.Contains(t, []int{http.StatusCreated, http.StatusConflict}, mbResp.statusCode,
+		"mailbox create: %s; log:\n%s", mbResp.body, bootLog.String())
 
 	t.Run("agent_register_does_not_panic", func(t *testing.T) {
 		body := `{"id":"cs-agent-1","display_name":"Customer Service","protocol":"http","endpoint":"http://localhost:9"}`
-		resp, err := httpPost(base+"/v1/tenants/acme/agents", body)
+		agentResp, err := httpPost(base+"/v1/tenants/acme/agents", body)
 		require.NoError(t, err, "server log:\n%s", bootLog.String())
-		assert.Equal(t, http.StatusOK, resp.statusCode, "body=%s log=\n%s", resp.body, bootLog.String())
+		assert.Contains(t, []int{http.StatusOK, http.StatusCreated}, agentResp.statusCode,
+			"body=%s log=\n%s", agentResp.body, bootLog.String())
+		assert.Contains(t, agentResp.body, "online", "agent must register online without Redis")
 	})
 
 	t.Run("task_create_budget_nil_ratelimiter", func(t *testing.T) {
@@ -136,7 +157,7 @@ func freePort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
-func waitHealthy(t *testing.T, base string) {
+func waitHealthy(t *testing.T, base string, bootLog *strings.Builder) {
 	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
@@ -150,7 +171,7 @@ func waitHealthy(t *testing.T, base string) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("server did not become healthy in 60s")
+	t.Fatalf("server did not become healthy in 60s; boot log:\n%s", bootLog.String())
 }
 
 type httpResp struct {
