@@ -35,7 +35,11 @@ func startRedisServer(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.ExpandEnv("$HOME/.local/bin/redis-server"),
+	bin := os.ExpandEnv("$HOME/.local/bin/redis-server")
+	if _, err := exec.LookPath(bin); err != nil {
+		t.Skipf("no redis-server at %s and JANUS_REDIS_ADDR unset; skipping integration test", bin)
+	}
+	cmd := exec.Command(bin,
 		"--port", fmt.Sprintf("%d", port), "--save", "", "--appendonly", "no",
 		"--dir", t.TempDir())
 	require.NoError(t, cmd.Start())

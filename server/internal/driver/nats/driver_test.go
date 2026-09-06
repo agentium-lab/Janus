@@ -32,7 +32,11 @@ func startNATSServer(t *testing.T) {
 		return
 	}
 
-	cmd := exec.Command(os.ExpandEnv("$HOME/go/bin/nats-server"),
+	bin := os.ExpandEnv("$HOME/go/bin/nats-server")
+	if _, err := exec.LookPath(bin); err != nil {
+		t.Skipf("no nats-server at %s and JANUS_NATS_URL unset; skipping integration test", bin)
+	}
+	cmd := exec.Command(bin,
 		"-p", "0", "-js", "--store_dir", t.TempDir())
 	stderr, err := cmd.StderrPipe()
 	require.NoError(t, err)
