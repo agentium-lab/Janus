@@ -34,8 +34,8 @@ jobs:
 
       - name: Python SDK tests
         run: |
-          pip install httpx pydantic pytest
-          cd sdk/python && python3 -m pytest tests/ -q
+          cd sdk/python && pip install -e ".[dev]"
+          python3 -m pytest tests/ -q
 
       - name: TypeScript SDK build + tests
         run: |
