@@ -157,7 +157,7 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A v1.0 Gateway** (`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
+**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A v1 subset Gateway** (`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`; multi-turn task continuation not yet supported) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
 
 ### 📊 Observability & 🔐 Security
 

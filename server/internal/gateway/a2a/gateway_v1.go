@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ const serverVersion = "1.5.2"
 type EventSubscriber interface {
 	Subscribe(tenantID string) <-chan core.JanusEvent
 	Unsubscribe(tenantID string, ch <-chan core.JanusEvent)
+}
+
+// WithTaskLister injects the pagination source for ListTasks.
+func (g *Gateway) WithTaskLister(l TaskLister) *Gateway {
+	g.lister = l
+	return g
 }
 
 // WithEventSubscriber injects the broadcaster for v1.0 streaming support.
@@ -155,12 +162,27 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if req.Message.TaskID != "" && g.statusSvc != nil {
-		if existing, err := g.statusSvc.Get(r.Context(), tenantID, req.Message.TaskID); err == nil &&
-			existing != nil && existing.Status.IsTerminal() {
+		existing, err := g.statusSvc.Get(r.Context(), tenantID, req.Message.TaskID)
+		if err != nil || existing == nil {
+			writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT",
+				"referenced taskId does not exist under this tenant")
+			return
+		}
+		if existing.Status.IsTerminal() {
 			writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
 				"task is in a terminal state and cannot accept further messages")
 			return
 		}
+		reqCtx := req.Message.ContextID
+		existingCtx := existing.Envelope.Trace.TraceID
+		if reqCtx != "" && existingCtx != "" && reqCtx != existingCtx {
+			writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT",
+				"contextId does not match the referenced task")
+			return
+		}
+		writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
+			"multi-turn task continuation is not yet supported; send without taskId to create a new task")
+		return
 	}
 
 	flusher, canFlush := w.(http.Flusher)
@@ -170,6 +192,18 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 	}
 	ch := g.subscriber.Subscribe(tenantID)
 	defer func() { g.subscriber.Unsubscribe(tenantID, ch) }()
+
+	// Authoritative recheck after subscribing: if the task completed between
+	// Create returning and the subscription being established, its terminal
+	// event was published to zero subscribers and the stream would hang.
+	if g.statusSvc != nil {
+		if fresh, err := g.statusSvc.Get(r.Context(), tenantID, created.ID); err == nil && fresh != nil && fresh.Status.IsTerminal() {
+			sseHeaders(w)
+			writeSSEData(w, flusher, V1StreamResponse{Task: JanusTaskToV1(fresh)})
+			writeSSEData(w, flusher, V1StreamResponse{StatusUpdate: terminalUpdate(fresh)})
+			return
+		}
+	}
 
 	sseHeaders(w)
 	writeSSEData(w, flusher, V1StreamResponse{Task: JanusTaskToV1(created)})
@@ -296,22 +330,80 @@ func (g *Gateway) handleV1Cancel(w http.ResponseWriter, r *http.Request, taskID 
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(V1StreamResponse{StatusUpdate: &V1TaskStatusUpdateEvent{
+	// Spec (proto): CancelTask returns the updated Task object.
+	resp := V1StreamResponse{StatusUpdate: &V1TaskStatusUpdateEvent{
 		TaskID: taskID,
 		Status: V1TaskStatus{State: V1StateCanceled, Timestamp: timePtr(time.Now().UTC())},
-	}})
+	}}
+	if g.statusSvc != nil {
+		if fresh, err := g.statusSvc.Get(r.Context(), tenantID, taskID); err == nil && fresh != nil {
+			resp = V1StreamResponse{Task: JanusTaskToV1(fresh)}
+		}
+	}
+	w.Header().Set("Content-Type", "application/a2a+json")
+	json.NewEncoder(w).Encode(resp)
+}
+
+// handleV1ListTasks implements GET /a2a/tasks (cursor pagination, spec 3.1.4).
+func (g *Gateway) handleV1ListTasks(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantFromContextOrReject(w, r)
+	if !ok {
+		return
+	}
+	if g.lister == nil {
+		writeV1Error(w, http.StatusServiceUnavailable, "UNAVAILABLE", "task listing not configured")
+		return
+	}
+	pageSize := 50
+	if v := r.URL.Query().Get("pageSize"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 100 {
+			pageSize = n
+		}
+	}
+	tasks, nextToken, err := g.lister.ListPage(r.Context(), tenantID, pageSize, r.URL.Query().Get("pageToken"))
+	if err != nil {
+		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
+		return
+	}
+	v1Tasks := make([]*V1Task, 0, len(tasks))
+	for _, t := range tasks {
+		v1Tasks = append(v1Tasks, JanusTaskToV1(t))
+	}
+	w.Header().Set("Content-Type", "application/a2a+json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"tasks":         v1Tasks,
+		"nextPageToken": nextToken,
+		"pageSize":      pageSize,
+	})
 }
 
 func timePtr(t time.Time) *time.Time { return &t }
 
 // serveV1Routes dispatches the v1.0 REST binding surface. Legacy v0.x routes
 // (task/send, task/{id}/status, jsonrpc, agent/card) remain for compat.
+// checkA2AVersion enforces the spec's version negotiation (3.6.2): accept
+// "1.0" and empty; anything else gets VersionNotSupportedError (HTTP 400).
+func checkA2AVersion(w http.ResponseWriter, r *http.Request) bool {
+	v := r.Header.Get("A2A-Version")
+	if v == "" || v == "1.0" || v == "1" {
+		return true
+	}
+	writeV1Error(w, http.StatusBadRequest, "VERSION_NOT_SUPPORTED",
+		"unsupported A2A-Version: "+v+" (this agent speaks 1.0)")
+	return false
+}
+
 func (g *Gateway) serveV1Routes(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
+	if strings.HasPrefix(path, "/a2a/") && !checkA2AVersion(w, r) {
+		return true
+	}
 	switch {
 	case path == "/a2a/message:stream" && r.Method == http.MethodPost:
 		g.handleV1StreamMessage(w, r)
+		return true
+	case path == "/a2a/tasks" && r.Method == http.MethodGet:
+		g.handleV1ListTasks(w, r)
 		return true
 	case path == "/a2a/message:send" && r.Method == http.MethodPost:
 		g.handleV1Send(w, r)

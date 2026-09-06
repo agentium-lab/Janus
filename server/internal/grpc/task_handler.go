@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"github.com/agentium-lab/Janus/server/internal/auth"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/agentium-lab/Janus/core"
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
@@ -28,6 +31,9 @@ func (s *TaskServiceServer) CreateTask(ctx context.Context, req *pb.CreateTaskRe
 	task, err := createTaskReqToCore(req)
 	if err != nil {
 		return nil, err
+	}
+	if err := auth.GuardAgentIdentity(ctx, task.SourceAgent); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
 	}
 	result, err := s.svc.Create(ctx, task)
 	if err != nil {

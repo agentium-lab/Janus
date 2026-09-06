@@ -103,3 +103,22 @@ func (r *stubBudgetRepo) Get(_ context.Context, _ string, _ core.BudgetScopeType
 func (r *stubBudgetRepo) ListByTenant(_ context.Context, _ string) ([]*core.BudgetSpec, error) {
 	return nil, nil
 }
+
+func TestAgentService_Heartbeat_NilDriver_StillWritesPG(t *testing.T) {
+	// PG-only regression (sixth review, §5): Heartbeat used to return early
+	// when the Redis driver was nil, skipping the durable PG record entirely.
+	repo := &heartbeatRecordingRepo{}
+	svc := NewAgentService(repo, &stubMailboxRepo{}, nil, nil)
+	require.NoError(t, svc.Heartbeat(context.Background(), "acme", "agent-1"))
+	assert.Equal(t, 1, repo.calls, "PG UpdateHeartbeat must run even without a heartbeat driver")
+}
+
+type heartbeatRecordingRepo struct {
+	stubAgentRepo
+	calls int
+}
+
+func (r *heartbeatRecordingRepo) UpdateHeartbeat(_ context.Context, _, _ string) error {
+	r.calls++
+	return nil
+}

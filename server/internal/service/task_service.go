@@ -515,8 +515,10 @@ func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agen
 		}
 	}
 	// One event, one identity: the SAME EventID travels the fast lane
-	// (broadcaster) and the slow lane (outbox → queue → broadcaster loopback);
-	// the broadcaster dedupes by EventID so subscribers see it exactly once.
+	// (broadcaster) and the slow lane (outbox → queue → broadcaster loopback).
+	// The broadcaster dedupes by EventID within a bounded window, giving
+	// at-least-once delivery with near-duplicate suppression — a loopback
+	// delayed beyond the window may redeliver.
 	payload, _ := json.Marshal(prog)
 	evt := core.JanusEvent{
 		EventID:     ulid(),

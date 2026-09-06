@@ -435,3 +435,37 @@ func (r *TaskRepository) CountRunningByAgent(ctx context.Context, tenantID, agen
 	).Scan(&count)
 	return count, err
 }
+
+// ListPage returns tasks newest-first with keyset pagination. pageToken is
+// the id of the last task of the previous page (opaque to callers).
+func (r *TaskRepository) ListPage(ctx context.Context, tenantID string, pageSize int, pageToken string) ([]*core.Task, string, error) {
+	if pageSize <= 0 || pageSize > 100 {
+		pageSize = 50
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
+		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
+		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		 FROM tasks
+		 WHERE tenant_id = $1
+		   AND ($2 = '' OR (updated_at, id) < (
+		       SELECT updated_at, id FROM tasks WHERE tenant_id = $1 AND id = $2))
+		 ORDER BY updated_at DESC, id DESC
+		 LIMIT $3`,
+		tenantID, pageToken, pageSize+1,
+	)
+	if err != nil {
+		return nil, "", err
+	}
+	defer rows.Close()
+	out, err := scanTasks(rows)
+	if err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > pageSize {
+		out = out[:pageSize]
+		next = out[pageSize-1].ID
+	}
+	return out, next, nil
+}

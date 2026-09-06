@@ -6,7 +6,7 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --test dist/**/*.test.js"
+    "test": "npm run build && node --test dist/*.test.js"
   },
   "license": "Apache-2.0",
   "devDependencies": {

@@ -89,3 +89,27 @@ type fakeTaskSvcIdentity struct{ mockTaskService }
 func (f *fakeTaskSvcIdentity) Create(_ context.Context, _ core.Task) (*core.Task, error) {
 	return &core.Task{TenantID: "acme", ID: "t1", Status: core.TaskStatusQueued}, nil
 }
+
+func TestAgentHandler_Register_ImpersonationRejected(t *testing.T) {
+	h := NewAgentHandler(&stubAgentSvcIdentity{})
+	body := `{"id":"victim-agent","display_name":"Victim","protocol":"http"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/agents", strings.NewReader(body))
+	req = principalCtx(req, auth.Principal{TenantID: "acme", BoundAgentID: "real-agent"})
+	w := httptest.NewRecorder()
+	h.Register(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestAgentHandler_Heartbeat_ImpersonationRejected(t *testing.T) {
+	h := NewAgentHandler(&stubAgentSvcIdentity{})
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/agents/victim-agent/heartbeat", nil)
+	req = principalCtx(req, auth.Principal{TenantID: "acme", BoundAgentID: "real-agent"})
+	w := httptest.NewRecorder()
+	h.Heartbeat(w, req)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+type stubAgentSvcIdentity struct{ mockAgentService }
+
+func (s *stubAgentSvcIdentity) Register(_ context.Context, _ core.Agent) error { return nil }
+func (s *stubAgentSvcIdentity) Heartbeat(_ context.Context, _, _ string) error { return nil }

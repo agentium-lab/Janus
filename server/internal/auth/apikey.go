@@ -67,6 +67,19 @@ func (p Principal) HasScope(scope string) bool {
 	return false
 }
 
+// GuardAgentIdentity enforces the caller's bound identity against a claimed
+// agent. No principal in context (auth disabled / internal call) passes; an
+// unbound principal passes (backward compatible); a bound principal may only
+// act as the agent it is bound to. Every entrypoint that accepts an
+// agent identity from the caller MUST call this.
+func GuardAgentIdentity(ctx context.Context, claimedAgent string) error {
+	p, ok := PrincipalFromContext(ctx)
+	if !ok {
+		return nil
+	}
+	return p.CheckAgentIdentity(claimedAgent)
+}
+
 func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	p, ok := ctx.Value(PrincipalCtxKey).(Principal)
 	return p, ok

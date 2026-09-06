@@ -254,7 +254,8 @@ func main() {
 	wsH := handler.NewWebSocketHandler(broadcaster)
 	sseH := handler.NewSSEHandler(broadcaster).WithStatusChecker(taskSvc)
 	progressH := handler.NewProgressHandler(taskSvc, broadcaster) // FanoutBroadcaster implements EventPublisher via its inbound channel
-	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH).WithEventSubscriber(broadcaster)
+	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH).
+		WithEventSubscriber(broadcaster).WithTaskLister(pgTaskLister{repo: taskRepo})
 
 	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
 	host, _ := os.Hostname()
@@ -781,4 +782,12 @@ func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 	}
 	return cfg, nil
+}
+
+type pgTaskLister struct {
+	repo *pgdriver.TaskRepository
+}
+
+func (l pgTaskLister) ListPage(ctx context.Context, tenantID string, pageSize int, pageToken string) ([]*core.Task, string, error) {
+	return l.repo.ListPage(ctx, tenantID, pageSize, pageToken)
 }

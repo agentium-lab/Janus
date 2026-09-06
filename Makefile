@@ -48,7 +48,7 @@ COVERAGE_PKGS := \
 # Coverage gate threshold (percent). The hard 90% floor is a Milestone 1
 # (Core Reliability Alpha) exit criterion; the Phase 0 default is 0
 # (report-only). Override at the command line: make coverage COVERAGE_THRESHOLD=90
-COVERAGE_THRESHOLD ?= 0
+COVERAGE_THRESHOLD ?= 85
 
 # Proto generation uses a pinned buf + plugin toolchain.
 PROTO_PLUGINS := protoc-gen-go protoc-gen-go-grpc protoc-gen-grpc-gateway
@@ -84,21 +84,21 @@ test:
 ## coverage: Run unit tests with coverage and enforce a floor.
 ## coverage: Run unit tests with coverage and report. The hard 90% floor is a
 # Core Reliability Alpha (Milestone 1) exit criterion, not a Phase 0 gate, so
-# the default threshold is 0 (report-only). Override via COVERAGE_THRESHOLD=90.
+# the threshold comes from COVERAGE_THRESHOLD above (default 85).
 coverage:
 	@mkdir -p .cover
 	go test -count=1 -timeout=120s -race -coverprofile=.cover/core.out $(COVERAGE_PKGS)
 	@cov=$$(go tool cover -func=.cover/core.out | awk '/^total:/ {print $$3}' | tr -d '%'); \
 	cov_int=$${cov%.*}; \
-	thresh_int=$${COVERAGE_THRESHOLD:-0}; \
+	thresh_int=${COVERAGE_THRESHOLD}; \
 	thresh_int=$${thresh_int%.*}; \
-	echo "Coverage: $$cov% (threshold: $${COVERAGE_THRESHOLD:-0}%)"; \
+	echo "Coverage: $$cov% (threshold: ${COVERAGE_THRESHOLD}%)"; \
 	if [ "$$cov_int" -lt "$$thresh_int" ]; then \
-		echo "FAIL: coverage $$cov% < $${COVERAGE_THRESHOLD:-0}%"; \
+		echo "FAIL: coverage $$cov% < ${COVERAGE_THRESHOLD}%"; \
 		rm -f .cover/core.out; \
 		exit 1; \
 	fi; \
-	echo "OK: coverage $$cov% >= $${COVERAGE_THRESHOLD:-0}%"
+	echo "OK: coverage $$cov% >= ${COVERAGE_THRESHOLD}%"
 
 ## python-compile: Syntax-check the Python SDK.
 python-compile:

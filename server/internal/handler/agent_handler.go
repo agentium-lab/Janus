@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
 type AgentService interface {
@@ -45,6 +46,11 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if err := auth.GuardAgentIdentity(r.Context(), req.ID); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
 		return
 	}
 
@@ -93,6 +99,10 @@ func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *AgentHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	agentID := agentIDFromHeartbeatPath(r.URL.Path)
+	if err := auth.GuardAgentIdentity(r.Context(), agentID); err != nil {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
 
 	if err := h.svc.Heartbeat(r.Context(), tenantID, agentID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

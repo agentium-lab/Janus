@@ -85,13 +85,19 @@ func (s *AgentService) Heartbeat(ctx context.Context, tenantID, agentID string) 
 	if tenantID == "" || agentID == "" {
 		return fmt.Errorf("tenant id and agent id are required")
 	}
+	// PG is the durable record and must be updated even when the Redis
+	// heartbeat driver is absent (PG-only mode) — otherwise offline detection
+	// has no data at all. Redis TTL marking is best-effort on top.
+	if err := s.agentRepo.UpdateHeartbeat(ctx, tenantID, agentID); err != nil {
+		return fmt.Errorf("update heartbeat: %w", err)
+	}
 	if s.hbDriver == nil {
 		return nil
 	}
 	if err := s.hbDriver.Ping(ctx, tenantID, agentID); err != nil {
 		return fmt.Errorf("heartbeat: %w", err)
 	}
-	return s.agentRepo.UpdateHeartbeat(ctx, tenantID, agentID)
+	return nil
 }
 
 func (s *AgentService) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {

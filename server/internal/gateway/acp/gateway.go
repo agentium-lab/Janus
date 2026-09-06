@@ -100,6 +100,11 @@ func (g *Gateway) handleManifest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := auth.GuardAgentIdentity(r.Context(), req.AgentID); err != nil {
+		writeACPError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
+	}
+
 	var caps []core.AgentCapability
 	for _, s := range req.Skills {
 		caps = append(caps, core.AgentCapability{Capability: s.Name, Description: s.Description})
@@ -131,6 +136,10 @@ func (g *Gateway) handleRun(w http.ResponseWriter, r *http.Request) {
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
 		sourceAgent = "unknown"
+	}
+	if err := auth.GuardAgentIdentity(r.Context(), sourceAgent); err != nil {
+		writeACPError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
 	}
 
 	var req struct {

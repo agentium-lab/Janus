@@ -2,6 +2,9 @@ package grpc
 
 import (
 	"context"
+	"github.com/agentium-lab/Janus/server/internal/auth"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/agentium-lab/Janus/core"
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
@@ -27,6 +30,9 @@ func NewAgentServiceServer(s *svc.AgentService) *AgentServiceServer {
 }
 
 func (s *AgentServiceServer) RegisterAgent(ctx context.Context, req *pb.RegisterAgentRequest) (*pb.Agent, error) {
+	if err := auth.GuardAgentIdentity(ctx, req.Id); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	}
 	agent := registerReqToAgent(req)
 	if err := s.svc.Register(ctx, agent); err != nil {
 		return nil, err
@@ -52,6 +58,9 @@ func (s *AgentServiceServer) UpdateAgent(ctx context.Context, req *pb.UpdateAgen
 }
 
 func (s *AgentServiceServer) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error) {
+	if err := auth.GuardAgentIdentity(ctx, req.AgentId); err != nil {
+		return nil, status.Error(codes.PermissionDenied, err.Error())
+	}
 	if err := s.svc.Heartbeat(ctx, req.TenantId, req.AgentId); err != nil {
 		return nil, err
 	}

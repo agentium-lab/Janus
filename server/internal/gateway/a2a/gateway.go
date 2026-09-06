@@ -59,10 +59,17 @@ type TaskStatusGetter interface {
 	Get(ctx context.Context, tenantID, taskID string) (*core.Task, error)
 }
 
+// TaskLister serves the A2A v1.0 ListTasks operation: cursor-paginated,
+// newest-first. nextToken=="" marks the end.
+type TaskLister interface {
+	ListPage(ctx context.Context, tenantID string, pageSize int, pageToken string) (tasks []*core.Task, nextToken string, err error)
+}
+
 type Gateway struct {
 	agentSvc     AgentRegistrar
 	taskSvc      TaskCreator
 	statusSvc    TaskStatusGetter
+	lister       TaskLister
 	taskStreamer TaskStreamer
 	subscriber   EventSubscriber
 }
@@ -134,6 +141,10 @@ func (g *Gateway) handleTaskSend(w http.ResponseWriter, r *http.Request) {
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
 		sourceAgent = "unknown"
+	}
+	if err := auth.GuardAgentIdentity(r.Context(), sourceAgent); err != nil {
+		writeA2AError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
 	}
 	mailboxID := r.URL.Query().Get("mailbox_id")
 	if mailboxID == "" {
@@ -219,6 +230,10 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	sourceAgent := r.URL.Query().Get("source_agent")
 	if sourceAgent == "" {
 		sourceAgent = "unknown"
+	}
+	if err := auth.GuardAgentIdentity(r.Context(), sourceAgent); err != nil {
+		writeA2AError(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
+		return
 	}
 
 	var req jsonRPCRequest

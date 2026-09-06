@@ -110,8 +110,31 @@ func (b *FanoutBroadcaster) run() {
 			select {
 			case ch <- event:
 			case <-time.After(terminalDeliveryWindow):
-				log.Printf("broadcaster: subscriber too slow, dropped terminal event for task %s", event.TaskID)
+				// A subscriber that cannot accept a terminal event within the
+				// window is closed and evicted: the SSE handler exits on the
+				// closed channel and the client recovers via GetTask. Waiting
+				// repeatedly would let slow clients block the pipeline.
+				b.evict(event.TenantID, ch)
+				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", event.TaskID)
 			}
+		}
+	}
+}
+
+// evict removes and closes a fan channel. Closing wakes blocked readers so
+// their streams terminate instead of hanging.
+func (b *FanoutBroadcaster) evict(tenantID string, target chan core.JanusEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	subs := b.fans[tenantID]
+	for i, ch := range subs {
+		if ch == target {
+			b.fans[tenantID] = append(subs[:i], subs[i+1:]...)
+			if len(b.fans[tenantID]) == 0 {
+				delete(b.fans, tenantID)
+			}
+			close(ch)
+			return
 		}
 	}
 }
