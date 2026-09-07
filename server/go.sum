@@ -2,6 +2,8 @@ github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161 h1:L/gRVlceqvL25
 github.com/Azure/go-ansiterm v0.0.0-20230124172434-306776ec8161/go.mod h1:xomTg63KZ2rFqZQzSB4Vz2SUXa1BpHTVz9L5PTmPC4E=
 github.com/Microsoft/go-winio v0.6.2 h1:F2VQgta7ecxGYO8k3ZZz3RS8fVIXVxONVUPlNERoyfY=
 github.com/Microsoft/go-winio v0.6.2/go.mod h1:yd8OoFMLzJbo9gZq8j5qaps8bJ9aShtEA8Ipt1oGCvU=
+github.com/a2aproject/a2a-go/v2 v2.0.0 h1:yF9vOm5aU6p7lAmFPdW70tMEwQhLXTAXLEB3rMJcQZE=
+github.com/a2aproject/a2a-go/v2 v2.0.0/go.mod h1:zxrqbi85M0ufPMqgYIn91upId0vYRZAbqt+6o6UWIV8=
 github.com/agentium-lab/Janus/core v0.0.0-20260610150813-e6f9edcbc267 h1:P/ZwHKZawvhnLtdUwfIYma4cH3L3GUEF9WxQ7lkBZtc=
 github.com/agentium-lab/Janus/core v0.0.0-20260610150813-e6f9edcbc267/go.mod h1:UumKUmFlO2zQxxnuHAZMUXtcaw/Vt2FFvKKj77hDprQ=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=

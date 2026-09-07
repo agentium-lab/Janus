@@ -102,10 +102,10 @@ func TestGatewayV1_Cancel_ReturnsTaskObject(t *testing.T) {
 	gw.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
 
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	taskObj, ok := resp["task"].(map[string]interface{})
-	require.True(t, ok, "CancelTask must return the Task object per proto, got: %v", resp)
+	var taskObj map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &taskObj))
+	_, hasTaskWrapper := taskObj["task"]
+	require.False(t, hasTaskWrapper, "CancelTask must return the bare Task object, got: %v", taskObj)
 	assert.Equal(t, "t-x", taskObj["id"])
 }
 

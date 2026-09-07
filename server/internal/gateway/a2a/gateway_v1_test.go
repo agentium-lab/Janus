@@ -363,9 +363,8 @@ func TestGatewayV1_GetTask(t *testing.T) {
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	task := resp["task"].(map[string]interface{})
+	var task map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &task))
 	assert.Equal(t, "t-1", task["id"])
 }
 
@@ -383,10 +382,9 @@ func TestGatewayV1_Cancel(t *testing.T) {
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	require.Equal(t, http.StatusOK, w.Code)
-	var resp map[string]interface{}
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	upd := resp["statusUpdate"].(map[string]interface{})
-	assert.Equal(t, V1StateCanceled, upd["status"].(map[string]interface{})["state"])
+	var task map[string]interface{}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &task))
+	assert.Equal(t, V1StateCanceled, task["status"].(map[string]interface{})["state"])
 }
 
 func TestGatewayV1_Cancel_Error(t *testing.T) {

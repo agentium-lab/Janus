@@ -316,8 +316,10 @@ func (g *Gateway) handleV1GetTask(w http.ResponseWriter, r *http.Request, taskID
 		writeV1Error(w, http.StatusNotFound, "NOT_FOUND", "task not found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(V1StreamResponse{Task: JanusTaskToV1(task)})
+	// HTTP+JSON binding: GetTask returns the bare Task object (verified
+	// against the official a2a-go transport, which decodes into a2a.Task).
+	w.Header().Set("Content-Type", "application/a2a+json")
+	json.NewEncoder(w).Encode(JanusTaskToV1(task))
 }
 
 // handleV1Cancel implements POST /a2a/tasks/{id}:cancel.
@@ -330,14 +332,17 @@ func (g *Gateway) handleV1Cancel(w http.ResponseWriter, r *http.Request, taskID 
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
-	// Spec (proto): CancelTask returns the updated Task object.
-	resp := V1StreamResponse{StatusUpdate: &V1TaskStatusUpdateEvent{
-		TaskID: taskID,
-		Status: V1TaskStatus{State: V1StateCanceled, Timestamp: timePtr(time.Now().UTC())},
-	}}
+	// Spec (proto): CancelTask returns the updated Task object, bare.
+	resp := &V1Task{
+		ID: taskID,
+		Status: V1TaskStatus{
+			State:     V1StateCanceled,
+			Timestamp: timePtr(time.Now().UTC()),
+		},
+	}
 	if g.statusSvc != nil {
 		if fresh, err := g.statusSvc.Get(r.Context(), tenantID, taskID); err == nil && fresh != nil {
-			resp = V1StreamResponse{Task: JanusTaskToV1(fresh)}
+			resp = JanusTaskToV1(fresh)
 		}
 	}
 	w.Header().Set("Content-Type", "application/a2a+json")
@@ -473,14 +478,19 @@ func AgentCardV1Handler() http.Handler {
 				"name":        "Durable Task Broker",
 				"description": "Route, govern and audit agent-to-agent task handoffs.",
 			}},
+			// Wire format verified against the official a2a-go v2.0.0 card
+			// parser by the interop suite (tests/interop).
 			"securitySchemes": map[string]interface{}{
-				"apiKey": map[string]string{
-					"type": "apiKey",
-					"in":   "header",
-					"name": "X-API-Key",
+				"apiKey": map[string]interface{}{
+					"apiKey": map[string]string{
+						"location": "header",
+						"name":     "X-API-Key",
+					},
 				},
 			},
-			"securityRequirements": []map[string][]string{{"apiKey": {}}},
+			"securityRequirements": []map[string]interface{}{
+				{"schemes": map[string][]string{"apiKey": {}}},
+			},
 		})
 	})
 }
