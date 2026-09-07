@@ -54,6 +54,11 @@ func AuthInterceptor(validator APIKeyValidator) grpc.UnaryServerInterceptor {
 		if inj, ok := validator.(PrincipalInjector); ok {
 			ctx = inj.InjectPrincipal(ctx, apiKey)
 		}
+		if info != nil {
+			if err := auth.CheckGRPCAgentIdentity(ctx, info.FullMethod, req); err != nil {
+				return nil, err
+			}
+		}
 		if scp, ok := validator.(ScopedValidator); ok {
 			if !scp.HasScope(ctx, scopeForMethod(info.FullMethod)) {
 				return nil, status.Error(codes.PermissionDenied,

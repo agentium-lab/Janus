@@ -376,7 +376,8 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", cfg.HTTPHost, cfg.HTTPPort)
 	var core http.Handler = protected
 	if cfg.Auth.Enabled {
-		core = auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(core)))
+		guarded := auth.AgentIdentityMiddleware(core)
+		core = auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(guarded)))
 		log.Println("api key authentication enabled")
 	} else if !isLoopbackAddr(addr) {
 		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true, or bind a loopback address via JANUS_HTTP_HOST=localhost for local development", addr)
