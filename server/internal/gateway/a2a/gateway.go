@@ -63,6 +63,7 @@ type TaskStatusGetter interface {
 // newest-first. nextToken=="" marks the end.
 type TaskLister interface {
 	ListPage(ctx context.Context, tenantID string, pageSize int, pageToken string) (tasks []*core.Task, nextToken string, err error)
+	Total(ctx context.Context, tenantID string) int
 }
 
 type Gateway struct {

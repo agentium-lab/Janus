@@ -92,7 +92,8 @@ test("publishTask: POSTs to /tasks with auto-constructed envelope and parses the
     status: "queued",
     attempt_count: 0,
   };
-  responder = jsonResponder(task);
+  // Real TaskHandler.Create returns {id, status, task} — the SDK unwraps .task.
+  responder = jsonResponder({ id: task.id, status: task.status, task });
   const client = makeClient("secret");
 
   const out = await client.publishTask({
@@ -129,7 +130,7 @@ test("publishTask: POSTs to /tasks with auto-constructed envelope and parses the
 });
 
 test("publishTask: explicit id is used for body.id and envelope.task_id", async () => {
-  responder = jsonResponder({ id: "fixed-1", status: "queued" });
+  responder = jsonResponder({ id: "fixed-1", status: "queued", task: { id: "fixed-1", status: "queued" } });
   const client = makeClient();
 
   await client.publishTask({
@@ -146,7 +147,7 @@ test("publishTask: explicit id is used for body.id and envelope.task_id", async 
 });
 
 test("publishTask: explicit envelope passes through untouched", async () => {
-  responder = jsonResponder({ id: "e-1", status: "queued" });
+  responder = jsonResponder({ id: "e-1", status: "queued", task: { id: "e-1", status: "queued" } });
   const envelope: TaskEnvelope = {
     janus_version: "0.9",
     task_id: "e-1",
@@ -169,7 +170,7 @@ test("publishTask: explicit envelope passes through untouched", async () => {
 });
 
 test("publishTask: optional routing fields land in the envelope when provided", async () => {
-  responder = jsonResponder({ id: "o-1", status: "queued" });
+  responder = jsonResponder({ id: "o-1", status: "queued", task: { id: "o-1", status: "queued" } });
   const client = makeClient();
 
   await client.publishTask({

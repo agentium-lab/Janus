@@ -107,19 +107,25 @@ func (b *FanoutBroadcaster) run() {
 				}
 				continue
 			}
+			// Terminal events never block the global loop: a subscriber
+			// whose queue is full is closed and evicted immediately (the SSE
+			// handler exits on the closed channel; the client recovers via
+			// GetTask). This bounds fan-out time independently of the number
+			// of slow subscribers — waiting per-subscriber multiplied the
+			// delay by N (seventh review).
 			select {
 			case ch <- event:
-			case <-time.After(terminalDeliveryWindow):
-				// A subscriber that cannot accept a terminal event within the
-				// window is closed and evicted: the SSE handler exits on the
-				// closed channel and the client recovers via GetTask. Waiting
-				// repeatedly would let slow clients block the pipeline.
+			default:
 				b.evict(event.TenantID, ch)
 				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", event.TaskID)
 			}
 		}
 	}
 }
+
+// pendingInbound reports the backlog of the internal pipeline; tests use it
+// to know when the pump has drained pre-loaded events.
+func (b *FanoutBroadcaster) pendingInbound() int { return len(b.inbound) }
 
 // evict removes and closes a fan channel. Closing wakes blocked readers so
 // their streams terminate instead of hanging.

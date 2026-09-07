@@ -106,6 +106,18 @@ func (r *memTaskRepo) ListByStatus(_ context.Context, tenantID string, status co
 	}
 	return out, nil
 }
+func (r *memTaskRepo) Total(_ context.Context, tenantID string) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, t := range r.tasks {
+		if t.TenantID == tenantID {
+			n++
+		}
+	}
+	return n
+}
+
 func (r *memTaskRepo) ListPage(_ context.Context, tenantID string, pageSize int, pageToken string) ([]*core.Task, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

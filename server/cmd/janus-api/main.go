@@ -792,3 +792,15 @@ type pgTaskLister struct {
 func (l pgTaskLister) ListPage(ctx context.Context, tenantID string, pageSize int, pageToken string) ([]*core.Task, string, error) {
 	return l.repo.ListPage(ctx, tenantID, pageSize, pageToken)
 }
+
+func (l pgTaskLister) Total(ctx context.Context, tenantID string) int {
+	total := 0
+	for _, st := range []core.TaskStatus{core.TaskStatusCreated, core.TaskStatusQueued, core.TaskStatusApprovalPending,
+		core.TaskStatusClaimed, core.TaskStatusRunning, core.TaskStatusBlocked, core.TaskStatusRetryScheduled,
+		core.TaskStatusCompleted, core.TaskStatusFailed, core.TaskStatusDeadLettered, core.TaskStatusExpired, core.TaskStatusCancelled} {
+		if n, err := l.repo.CountByStatus(ctx, tenantID, st); err == nil {
+			total += n
+		}
+	}
+	return total
+}

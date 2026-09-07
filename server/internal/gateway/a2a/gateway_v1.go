@@ -1,6 +1,7 @@
 package a2a
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -31,6 +32,41 @@ func (g *Gateway) WithTaskLister(l TaskLister) *Gateway {
 func (g *Gateway) WithEventSubscriber(sub EventSubscriber) *Gateway {
 	g.subscriber = sub
 	return g
+}
+
+// validateContinuation enforces the validation-before-side-effects
+// invariant: a message referencing a taskId is fully validated (existence,
+// terminal state, contextId consistency, continuation support) BEFORE any
+// Create/outbox/queue side effect. Shared by message:send and message:stream.
+func (g *Gateway) validateContinuation(ctx context.Context, tenantID string, msg V1Message) *v1Error {
+	if msg.TaskID == "" || g.statusSvc == nil {
+		return nil
+	}
+	existing, err := g.statusSvc.Get(ctx, tenantID, msg.TaskID)
+	if err != nil || existing == nil {
+		return &v1Error{http.StatusBadRequest, "INVALID_ARGUMENT",
+			"referenced taskId does not exist under this tenant"}
+	}
+	if existing.Status.IsTerminal() {
+		return &v1Error{http.StatusBadRequest, "UNSUPPORTED_OPERATION",
+			"task is in a terminal state and cannot accept further messages"}
+	}
+	if msg.ContextID != "" && existing.Envelope.Trace.TraceID != "" && msg.ContextID != existing.Envelope.Trace.TraceID {
+		return &v1Error{http.StatusBadRequest, "INVALID_ARGUMENT",
+			"contextId does not match the referenced task"}
+	}
+	return &v1Error{http.StatusBadRequest, "UNSUPPORTED_OPERATION",
+		"multi-turn task continuation is not yet supported; send without taskId to create a new task"}
+}
+
+type v1Error struct {
+	status int
+	code   string
+	msg    string
+}
+
+func (e *v1Error) write(w http.ResponseWriter) {
+	writeV1Error(w, e.status, e.code, e.msg)
 }
 
 func resolveSourceAgent(r *http.Request, req V1SendMessageRequest) (string, error) {
@@ -96,6 +132,10 @@ func (g *Gateway) handleV1Send(w http.ResponseWriter, r *http.Request) {
 		writeV1Error(w, http.StatusForbidden, "PERMISSION_DENIED", err.Error())
 		return
 	}
+	if verr := g.validateContinuation(r.Context(), tenantID, req.Message); verr != nil {
+		verr.write(w)
+		return
+	}
 	mailboxID := mailboxFromRequest(r, req)
 
 	task := V1MessageToTask(req, tenantID, sourceAgent, mailboxID)
@@ -154,34 +194,15 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if verr := g.validateContinuation(r.Context(), tenantID, req.Message); verr != nil {
+		verr.write(w)
+		return
+	}
+
 	task := V1MessageToTask(req, tenantID, sourceAgent, mailboxFromRequest(r, req))
 	created, err := g.taskSvc.Create(r.Context(), task)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
-		return
-	}
-
-	if req.Message.TaskID != "" && g.statusSvc != nil {
-		existing, err := g.statusSvc.Get(r.Context(), tenantID, req.Message.TaskID)
-		if err != nil || existing == nil {
-			writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT",
-				"referenced taskId does not exist under this tenant")
-			return
-		}
-		if existing.Status.IsTerminal() {
-			writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
-				"task is in a terminal state and cannot accept further messages")
-			return
-		}
-		reqCtx := req.Message.ContextID
-		existingCtx := existing.Envelope.Trace.TraceID
-		if reqCtx != "" && existingCtx != "" && reqCtx != existingCtx {
-			writeV1Error(w, http.StatusBadRequest, "INVALID_ARGUMENT",
-				"contextId does not match the referenced task")
-			return
-		}
-		writeV1Error(w, http.StatusBadRequest, "UNSUPPORTED_OPERATION",
-			"multi-turn task continuation is not yet supported; send without taskId to create a new task")
 		return
 	}
 
@@ -378,7 +399,8 @@ func (g *Gateway) handleV1ListTasks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"tasks":         v1Tasks,
 		"nextPageToken": nextToken,
-		"pageSize":      pageSize,
+		"pageSize":      len(v1Tasks),
+		"totalSize":     g.lister.Total(r.Context(), tenantID),
 	})
 }
 
@@ -473,10 +495,11 @@ func AgentCardV1Handler() http.Handler {
 			},
 			"defaultInputModes":  []string{"application/json"},
 			"defaultOutputModes": []string{"application/json"},
-			"skills": []map[string]string{{
+			"skills": []map[string]interface{}{{
 				"id":          "task-broker",
 				"name":        "Durable Task Broker",
 				"description": "Route, govern and audit agent-to-agent task handoffs.",
+				"tags":        []string{"task-broker", "durable-execution", "governance"},
 			}},
 			// Wire format verified against the official a2a-go v2.0.0 card
 			// parser by the interop suite (tests/interop).

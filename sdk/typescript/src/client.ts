@@ -150,7 +150,10 @@ export class Client {
         ...(req.idempotency_key && { idempotency_key: req.idempotency_key }),
       };
     }
-    return this.json("POST", "/tasks", body);
+    // Server returns the CreateTaskResponse envelope {id, status, task};
+    // the Task itself is nested. (Contract verified against TaskHandler.)
+    const resp = await this.json<{ id: string; status: string; task: Task }>("POST", "/tasks", body);
+    return resp.task;
   }
 
   async getTask(taskID: string): Promise<Task> {

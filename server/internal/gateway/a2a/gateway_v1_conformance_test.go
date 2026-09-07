@@ -21,6 +21,8 @@ type mockLister struct {
 	calls   int
 }
 
+func (m *mockLister) Total(_ context.Context, _ string) int { return len(m.tasks) }
+
 func (m *mockLister) ListPage(_ context.Context, _ string, pageSize int, pageToken string) ([]*core.Task, string, error) {
 	m.calls++
 	if pageToken == "end" {

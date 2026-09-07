@@ -42,7 +42,7 @@ GA 判定规则：
 
 | 验证入口 | 覆盖范围 | 当前用途 |
 | --- | --- | --- |
-| `make verify` | Go 全量测试、Python syntax/unit、TypeScript unit、contract drift、Core 覆盖率 90.0% | 本地合并基线。 |
+| `make verify` | Go vet/staticcheck/全量测试、Python 语法检查（`python-compile`）、Core 覆盖率 ≥85%；Python unit / TypeScript unit / interop / invariants 由 CI 执行（`ci.yml`） | 本地合并基线；CI 是发布门槛的真值源。 |
 | `make contract-check` | proto HTTP annotation、SDK conformance fixture、HTTP-only allowlist | API/SDK 漂移门禁。 |
 | `make beta-fast` | 内存驱动并发、agent crash、lease expiry、slow consumer、p95 预算 | Production Beta 前置语义验证。 |
 | `make smoke-prod` | API/PostgreSQL/NATS/Redis、metrics、OTLP 端口、Prometheus、Grafana、Tempo readiness、task lifecycle metrics、Audit trace query、Tempo trace-id query、结构化异常日志 | 真实依赖 happy path 和基础观测验证。 |

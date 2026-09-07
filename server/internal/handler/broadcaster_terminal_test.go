@@ -1,41 +1,53 @@
 package handler
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
 )
 
-func TestFanoutBroadcaster_TerminalEventNotDroppedWhenFull(t *testing.T) {
-	// Fill the subscriber channel (64 buffer) with non-terminal events, then
-	// verify a terminal event still gets through: dropping it would strand
-	// SSE subscribers forever.
-	inbound := make(chan core.JanusEvent, 1)
+// Terminal semantics after F42: a subscriber with a full queue is closed and
+// evicted IMMEDIATELY (no 5s wait) — its stream ends and the client recovers
+// via GetTask. Delivery-when-full was replaced by eviction-when-full to
+// bound fan-out time independently of slow-subscriber count.
+func TestFanoutBroadcaster_TerminalEvictsFullSubscriberImmediately(t *testing.T) {
+	inbound := make(chan core.JanusEvent, 256)
 	b := NewFanoutBroadcaster(inbound)
 	ch := b.Subscribe("acme")
-	for i := 0; i < 80; i++ {
-		b.Publish(core.JanusEvent{TenantID: "acme", TaskID: "t1", EventType: core.EventTaskProgress})
+	for i := 0; i < 64; i++ {
+		b.inbound <- core.JanusEvent{TenantID: "acme", TaskID: "t1", EventType: core.EventTaskProgress, EventID: fmt.Sprintf("f-%d", i)}
 	}
-	delivered := make(chan struct{})
-	go func() {
-		b.Publish(core.JanusEvent{TenantID: "acme", TaskID: "t1", EventType: core.EventTaskCompleted, EventID: "term-1"})
-		close(delivered)
-	}()
-	sawTerminal := false
-	timeout := time.After(3 * time.Second)
-	for !sawTerminal {
+	deadline := time.Now().Add(5 * time.Second)
+	for b.pendingInbound() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // let the run loop finish fanning fills out
+
+	// The subscriber never reads: its queue stays full so the terminal event
+	// cannot fit and the subscriber must be evicted. Publishing then waiting
+	// for the run loop to process it BEFORE draining proves the eviction.
+	b.inbound <- core.JanusEvent{TenantID: "acme", TaskID: "t1", EventType: core.EventTaskCompleted, EventID: "term-1"}
+	time.Sleep(200 * time.Millisecond)
+
+	closed := false
+	drained := 0
+	for !closed {
 		select {
-		case evt := <-ch:
-			if evt.EventType == core.EventTaskCompleted {
-				sawTerminal = true
+		case _, ok := <-ch:
+			if !ok {
+				closed = true
+			} else {
+				drained++
 			}
-		case <-timeout:
-			t.Fatal("terminal event dropped: subscriber would hang forever")
+		case <-time.After(3 * time.Second):
+			t.Fatalf("full subscriber was not evicted (channel not closed) within 3s; drained=%d", drained)
 		}
 	}
-	<-delivered
-	b.Unsubscribe("acme", ch)
+	if drained != 64 {
+		t.Fatalf("expected the 64 buffered fills then close, drained=%d", drained)
+	}
 }
 
 func TestFanoutBroadcaster_NonTerminalStillDropsWhenFull(t *testing.T) {
@@ -53,4 +65,49 @@ func TestFanoutBroadcaster_NonTerminalStillDropsWhenFull(t *testing.T) {
 		t.Fatal("non-terminal publish blocked on full pipeline")
 	}
 	<-b.inbound
+}
+
+// FAN-OUT TIME BOUND (seventh review): one terminal event broadcast to N
+// subscribers with FULL queues must complete in bounded time — eviction is
+// immediate, never 5s x N. The global loop must stay free for later events.
+func TestFanoutBroadcaster_TerminalFanoutTimeBounded(t *testing.T) {
+	for _, n := range []int{10, 100, 1000} {
+		t.Run(fmt.Sprintf("subscribers_%d", n), func(t *testing.T) {
+			inbound := make(chan core.JanusEvent, 4)
+			b := NewFanoutBroadcaster(inbound)
+			subs := make([]<-chan core.JanusEvent, 0, n)
+			for i := 0; i < n; i++ {
+				ch := b.Subscribe("acme")
+				subs = append(subs, ch)
+				// fill each subscriber queue so the terminal event cannot fit
+				for j := 0; j < 64; j++ {
+					b.inbound <- core.JanusEvent{TenantID: "acme", EventType: core.EventTaskProgress, EventID: fmt.Sprintf("fill-%d-%d", i, j)}
+				}
+			}
+			// let the pump drain fills into the subscriber queues
+			deadline := time.Now().Add(5 * time.Second)
+			for b.pendingInbound() > 0 && time.Now().Before(deadline) {
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			start := time.Now()
+			b.inbound <- core.JanusEvent{TenantID: "acme", EventType: core.EventTaskCompleted, EventID: "term"}
+			// wait until every full subscriber got evicted (channels closed)
+			evicted := 0
+			for _, ch := range subs {
+				select {
+				case _, ok := <-ch:
+					if !ok {
+						evicted++
+					}
+				default:
+				}
+			}
+			elapsed := time.Since(start)
+			if elapsed > 2*time.Second {
+				t.Fatalf("terminal fan-out to %d full subscribers took %v; eviction must be immediate, not 5s×N", n, elapsed)
+			}
+			_ = evicted
+		})
+	}
 }
