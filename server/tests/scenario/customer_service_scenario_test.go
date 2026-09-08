@@ -562,6 +562,9 @@ func (h *harness) do(t *testing.T, method, path, body string) (*http.Response, s
 	}
 	req, err := http.NewRequest(method, h.ts.URL+path, rdr)
 	require.NoError(t, err)
+	if strings.Contains(path, "/a2a/") {
+		req.Header.Set("A2A-Version", "1.0")
+	}
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	b, _ := io.ReadAll(resp.Body)
@@ -587,6 +590,7 @@ func TestSmartCustomerService_Journey(t *testing.T) {
 		t.Logf("task created: %s state=%v", taskID, taskObj["status"])
 
 		req, _ := http.NewRequest(http.MethodGet, h.ts.URL+"/a2a/tasks/"+taskID+":subscribe", nil)
+		req.Header.Set("A2A-Version", "1.0")
 		req = req.WithContext(context.WithValue(req.Context(), auth.TenantCtxKey, "acme"))
 		resp2, err := http.DefaultClient.Do(req)
 		require.NoError(t, err)

@@ -413,6 +413,7 @@ func TestGatewayV1_Routes_UnknownActionAndMethod(t *testing.T) {
 func TestGatewayV1_TenantRequired(t *testing.T) {
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, &mockStatusGetter{})
 	req := httptest.NewRequest(http.MethodPost, "/a2a/message:send", strings.NewReader(`{}`))
+	req.Header.Set("A2A-Version", "1.0")
 	w := httptest.NewRecorder()
 	gw.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)

@@ -21,6 +21,8 @@ func withAuthCtx(r *http.Request) *http.Request {
 	if t == "" {
 		t = "acme"
 	}
+	// Conformant clients send the version selected from the Agent Card.
+	r.Header.Set("A2A-Version", "1.0")
 	return r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
 }
 

@@ -89,25 +89,55 @@ func TestFanoutBroadcaster_TerminalFanoutTimeBounded(t *testing.T) {
 			for b.pendingInbound() > 0 && time.Now().Before(deadline) {
 				time.Sleep(5 * time.Millisecond)
 			}
+			// pendingInbound()==0 only means the run loop TOOK the events;
+			// give it time to finish fanning them out before publishing.
+			time.Sleep(100 * time.Millisecond)
 
 			start := time.Now()
 			b.inbound <- core.JanusEvent{TenantID: "acme", EventType: core.EventTaskCompleted, EventID: "term"}
-			// wait until every full subscriber got evicted (channels closed)
-			evicted := 0
-			for _, ch := range subs {
+
+			// STRONG assertion (eighth review): the registry must empty —
+			// every full subscriber evicted. Poll fans directly: draining
+			// subscriber queues would free capacity and change the outcome.
+			fansCleared := time.After(5 * time.Second)
+			for {
+				b.mu.Lock()
+				remaining := len(b.fans["acme"])
+				b.mu.Unlock()
+				if remaining == 0 {
+					break
+				}
 				select {
-				case _, ok := <-ch:
-					if !ok {
-						evicted++
-					}
+				case <-fansCleared:
+					t.Fatalf("%d/%d subscribers still registered after terminal event", remaining, n)
 				default:
+					time.Sleep(5 * time.Millisecond)
 				}
 			}
-			elapsed := time.Since(start)
-			if elapsed > 2*time.Second {
-				t.Fatalf("terminal fan-out to %d full subscribers took %v; eviction must be immediate, not 5s×N", n, elapsed)
+			// eviction closed every channel: reads must observe the close
+			// after the buffered fills drain out.
+			for i, ch := range subs {
+				if !drainUntilClosed(ch, 5*time.Second) {
+					t.Fatalf("subscriber %d channel was not closed by eviction (n=%d)", i, n)
+				}
 			}
-			_ = evicted
+			if elapsed := time.Since(start); elapsed > 2*time.Second {
+				t.Fatalf("terminal fan-out to %d full subscribers took %v; must be immediate", n, elapsed)
+			}
 		})
+	}
+}
+
+func drainUntilClosed(ch <-chan core.JanusEvent, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return true
+			}
+		case <-deadline:
+			return false
+		}
 	}
 }

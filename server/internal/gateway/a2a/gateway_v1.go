@@ -87,16 +87,40 @@ func resolveSourceAgent(r *http.Request, req V1SendMessageRequest) (string, erro
 	return sourceAgent, nil
 }
 
+// a2aErrorReason maps our codes to google.rpc.ErrorInfo reasons the
+// OFFICIAL client understands (internal/rest errToDetails) so its callers
+// receive typed errors instead of a generic server error.
+var a2aErrorReason = map[string]string{
+	"TASK_NOT_FOUND":        "TASK_NOT_FOUND",
+	"UNSUPPORTED_OPERATION": "UNSUPPORTED_OPERATION",
+	"VERSION_NOT_SUPPORTED": "VERSION_NOT_SUPPORTED",
+	"INVALID_ARGUMENT":      "INVALID_REQUEST",
+	"NOT_FOUND":             "TASK_NOT_FOUND",
+	"PERMISSION_DENIED":     "",
+	"UNAVAILABLE":           "",
+	"INTERNAL":              "",
+}
+
 func writeV1Error(w http.ResponseWriter, status int, code, msg string) {
+	// The official a2a-go error parser only decodes bodies served as
+	// application/json (verified against v2.0.0 internal/rest.ToA2AError);
+	// success responses use application/a2a+json per the spec's SHOULD.
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"error": map[string]interface{}{
-			"code":    status,
-			"status":  code,
-			"message": msg,
-		},
-	})
+	errObj := map[string]interface{}{
+		"code":    status,
+		"status":  code,
+		"message": msg,
+	}
+	if reason, ok := a2aErrorReason[code]; ok && reason != "" {
+		errObj["details"] = []map[string]interface{}{{
+			"@type":    "type.googleapis.com/google.rpc.ErrorInfo",
+			"reason":   reason,
+			"domain":   "a2a-protocol.org",
+			"metadata": map[string]string{},
+		}}
+	}
+	json.NewEncoder(w).Encode(map[string]interface{}{"error": errObj})
 }
 
 func writeSSEData(w http.ResponseWriter, flusher http.Flusher, resp V1StreamResponse) error {
@@ -412,8 +436,13 @@ func timePtr(t time.Time) *time.Time { return &t }
 // "1.0" and empty; anything else gets VersionNotSupportedError (HTTP 400).
 func checkA2AVersion(w http.ResponseWriter, r *http.Request) bool {
 	v := r.Header.Get("A2A-Version")
-	if v == "" || v == "1.0" || v == "1" {
+	// Spec 3.6.2: an EMPTY version is interpreted as 0.3 — which this
+	// agent does not speak. Only exact "1.0" passes.
+	if v == "1.0" {
 		return true
+	}
+	if v == "" {
+		v = "0.3 (empty header, per spec 3.6.2)"
 	}
 	writeV1Error(w, http.StatusBadRequest, "VERSION_NOT_SUPPORTED",
 		"unsupported A2A-Version: "+v+" (this agent speaks 1.0)")
@@ -422,7 +451,11 @@ func checkA2AVersion(w http.ResponseWriter, r *http.Request) bool {
 
 func (g *Gateway) serveV1Routes(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
-	if strings.HasPrefix(path, "/a2a/") && !checkA2AVersion(w, r) {
+	// Version negotiation applies to the v1.0 surface only; the legacy
+	// v0.x routes (task/send, jsonrpc, agent/card) predate it.
+	isV1 := path == "/a2a/message:send" || path == "/a2a/message:stream" ||
+		path == "/a2a/tasks" || strings.HasPrefix(path, "/a2a/tasks/")
+	if isV1 && !checkA2AVersion(w, r) {
 		return true
 	}
 	switch {

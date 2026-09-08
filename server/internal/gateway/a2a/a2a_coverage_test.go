@@ -165,6 +165,11 @@ func TestLegacy_TenantReject(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{}`))
+			// v1 routes negotiate the version first; a conformant client
+			// always sends the header it selected from the Agent Card.
+			if strings.Contains(tc.path, "message:") || strings.Contains(tc.path, "/tasks") {
+				req.Header.Set("A2A-Version", "1.0")
+			}
 			w := httptest.NewRecorder()
 			gw.ServeHTTP(w, req)
 			assert.Equal(t, http.StatusForbidden, w.Code)

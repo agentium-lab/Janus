@@ -62,10 +62,37 @@ func (b *FanoutBroadcaster) Publish(evt core.JanusEvent) {
 		}
 		return
 	}
+	// END-TO-END NO-LOSS: when the internal pipeline is full, bypass it —
+	// deliver directly to subscribers (non-blocking; full ones are evicted).
+	// A terminal event must never be silently dropped: SSE clients hang on
+	// a missed terminal state.
 	select {
 	case b.inbound <- evt:
-	case <-time.After(terminalDeliveryWindow):
-		log.Printf("broadcaster: dropped terminal event %s for task %s (pipeline full)", evt.EventID, evt.TaskID)
+	default:
+		b.fanoutDirect(evt)
+	}
+}
+
+// fanoutDirect delivers an event straight to the fan channels, bypassing
+// the inbound pipeline (overflow path for terminal events).
+func (b *FanoutBroadcaster) fanoutDirect(evt core.JanusEvent) {
+	terminal := isTerminalEvent(evt)
+	if b.seenBefore(evt) {
+		return
+	}
+	b.mu.Lock()
+	subs := make([]chan core.JanusEvent, len(b.fans[evt.TenantID]))
+	copy(subs, b.fans[evt.TenantID])
+	b.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- evt:
+		default:
+			if terminal {
+				b.evict(evt.TenantID, ch)
+				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", evt.TaskID)
+			}
+		}
 	}
 }
 

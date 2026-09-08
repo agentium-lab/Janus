@@ -115,6 +115,14 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		),
 	)
 	defer span.End()
+	// AUTHORITY OVERWRITE: persisted identities come from the authenticated
+	// principal, never from caller declarations. When the key is bound, the
+	// top-level and envelope source_agent are forced to the bound identity,
+	// so no parsing discrepancy anywhere upstream can split identities.
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.BoundAgentID != "" {
+		task.SourceAgent = p.BoundAgentID
+		task.Envelope.SourceAgent = p.BoundAgentID
+	}
 	if task.TenantID == "" {
 		return nil, fmt.Errorf("tenant id is required")
 	}

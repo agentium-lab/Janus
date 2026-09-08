@@ -20,6 +20,7 @@ func withBoundPrincipal(r *http.Request, boundAgent string) *http.Request {
 	ctx := context.WithValue(r.Context(), auth.TenantCtxKey, "acme")
 	ctx = context.WithValue(ctx, auth.PrincipalCtxKey,
 		auth.Principal{TenantID: "acme", BoundAgentID: boundAgent})
+	r.Header.Set("A2A-Version", "1.0")
 	return r.WithContext(ctx)
 }
 
