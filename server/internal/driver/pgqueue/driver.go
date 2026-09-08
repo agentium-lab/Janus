@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -174,13 +175,32 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 // PublishEvent fans the event out to in-process subscribers (WS broadcaster,
 // audit projector). Durability is owned by the outbox row written before this
 // call, so dropping a notification on a full channel never loses the fact.
+func isTerminalEvent(evt core.JanusEvent) bool {
+	switch evt.EventType {
+	case core.EventTaskCompleted, core.EventTaskFailed,
+		core.EventTaskCancelled, core.EventTaskDeadLettered, core.EventTaskExpired:
+		return true
+	}
+	return false
+}
+
 func (d *Driver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, ch := range d.subs {
-		select {
-		case ch <- event:
-		default:
+		// Terminal events are handed off with a bounded wait (a lost
+		// terminal hangs SSE clients); the outbox row keeps the durable
+		// record either way. Non-terminal overflow drops under backpressure.
+		if isTerminalEvent(event) {
+			select {
+			case ch <- event:
+			case <-time.After(5 * time.Second):
+			}
+		} else {
+			select {
+			case ch <- event:
+			default:
+			}
 		}
 	}
 	return nil

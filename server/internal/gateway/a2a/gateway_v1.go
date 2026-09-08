@@ -92,6 +92,7 @@ func resolveSourceAgent(r *http.Request, req V1SendMessageRequest) (string, erro
 // receive typed errors instead of a generic server error.
 var a2aErrorReason = map[string]string{
 	"TASK_NOT_FOUND":        "TASK_NOT_FOUND",
+	"TASK_NOT_CANCELABLE":   "TASK_NOT_CANCELABLE",
 	"UNSUPPORTED_OPERATION": "UNSUPPORTED_OPERATION",
 	"VERSION_NOT_SUPPORTED": "VERSION_NOT_SUPPORTED",
 	"INVALID_ARGUMENT":      "INVALID_REQUEST",
@@ -168,7 +169,7 @@ func (g *Gateway) handleV1Send(w http.ResponseWriter, r *http.Request) {
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Type", "application/a2a+json")
 	json.NewEncoder(w).Encode(V1StreamResponse{Task: JanusTaskToV1(created)})
 }
 
@@ -374,6 +375,11 @@ func (g *Gateway) handleV1Cancel(w http.ResponseWriter, r *http.Request, taskID 
 		return
 	}
 	if err := g.taskSvc.Cancel(r.Context(), tenantID, taskID); err != nil {
+		if isNotCancelableErr(err) {
+			writeV1Error(w, http.StatusBadRequest, "TASK_NOT_CANCELABLE",
+				"task cannot be canceled in its current state")
+			return
+		}
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
 		return
 	}
@@ -392,6 +398,19 @@ func (g *Gateway) handleV1Cancel(w http.ResponseWriter, r *http.Request, taskID 
 	}
 	w.Header().Set("Content-Type", "application/a2a+json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func isNotCancelableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, marker := range []string{"terminal state", "invalid transition", "cannot transition", "not cancelable"} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleV1ListTasks implements GET /a2a/tasks (cursor pagination, spec 3.1.4).
@@ -436,6 +455,9 @@ func timePtr(t time.Time) *time.Time { return &t }
 // "1.0" and empty; anything else gets VersionNotSupportedError (HTTP 400).
 func checkA2AVersion(w http.ResponseWriter, r *http.Request) bool {
 	v := r.Header.Get("A2A-Version")
+	if v == "" {
+		v = r.URL.Query().Get("A2A-Version")
+	}
 	// Spec 3.6.2: an EMPTY version is interpreted as 0.3 — which this
 	// agent does not speak. Only exact "1.0" passes.
 	if v == "1.0" {

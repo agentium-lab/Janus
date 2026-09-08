@@ -235,15 +235,31 @@ func main() {
 
 	broadcastCh := make(chan core.JanusEvent, 256)
 	projectorCh := make(chan core.JanusEvent, 256)
+	// Event routing with delivery classes (ninth review: no silent loss):
+	//   terminal events    -> blocking hand-off to broadcast (bounded wait);
+	//                          a lost terminal hangs SSE clients
+	//   audit projection   -> blocking hand-off (backpressure to NATS);
+	//                          audit records must not be dropped
+	//   non-terminal (progress etc.) -> droppable under backpressure
 	go func() {
 		for evt := range rawEventCh {
-			select {
-			case broadcastCh <- evt:
-			default:
+			terminal := isTerminalJanusEvent(evt)
+			if terminal {
+				select {
+				case broadcastCh <- evt:
+				case <-time.After(5 * time.Second):
+					log.Printf("event router: broadcast hand-off timed out for terminal event %s %s", evt.EventID, evt.EventType)
+				}
+			} else {
+				select {
+				case broadcastCh <- evt:
+				default:
+				}
 			}
 			select {
 			case projectorCh <- evt:
-			default:
+			case <-time.After(5 * time.Second):
+				log.Printf("event router: audit projection hand-off timed out for event %s %s", evt.EventID, evt.EventType)
 			}
 		}
 		close(broadcastCh)
@@ -469,6 +485,15 @@ func mustOpenPool(cfg *config.Config) *pgxpool.Pool {
 		log.Fatalf("pgx pool ping: %v", err)
 	}
 	return pool
+}
+
+func isTerminalJanusEvent(evt core.JanusEvent) bool {
+	switch evt.EventType {
+	case core.EventTaskCompleted, core.EventTaskFailed,
+		core.EventTaskCancelled, core.EventTaskDeadLettered, core.EventTaskExpired:
+		return true
+	}
+	return false
 }
 
 func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {

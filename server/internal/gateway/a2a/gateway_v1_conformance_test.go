@@ -149,3 +149,43 @@ func TestGatewayV1_StreamMessage_TaskIDSemantics(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "contextId does not match")
 	})
 }
+
+// Ninth review: cancel of a not-cancelable (terminal) task must map to
+// TASK_NOT_CANCELABLE 400 with an ErrorInfo reason the official client
+// understands — not a blanket 500.
+func TestGatewayV1_Cancel_NotCancelableGraded(t *testing.T) {
+	tc := &mockTaskCreator{err: fmt.Errorf("task t1 is in terminal state completed, cannot transition to cancelled")}
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, tc, &mockStatusGetter{})
+	req := withAuthCtx(httptest.NewRequest(http.MethodPost, "/a2a/tasks/t1:cancel", nil))
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	assert.Contains(t, w.Body.String(), "TASK_NOT_CANCELABLE")
+	assert.Contains(t, w.Body.String(), "reason")
+
+	gw2 := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{err: fmt.Errorf("pq: connection refused")}, &mockStatusGetter{})
+	req2 := withAuthCtx(httptest.NewRequest(http.MethodPost, "/a2a/tasks/t1:cancel", nil))
+	w2 := httptest.NewRecorder()
+	gw2.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusInternalServerError, w2.Code, "real internal errors stay 500")
+	assert.NotContains(t, w2.Body.String(), "connection refused", "internal detail must stay sanitized")
+}
+
+func TestGatewayV1_VersionViaURLParam(t *testing.T) {
+	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, &mockTaskCreator{}, &mockStatusGetter{})
+
+	// withAuthCtx pins the 1.0 header; URL-param negotiation is only
+	// consulted when the header is absent — test without the helper.
+	req := withAuthCtx(httptest.NewRequest(http.MethodGet, "/a2a/tasks/t1?A2A-Version=1.0", nil))
+	req.Header.Del("A2A-Version")
+	w := httptest.NewRecorder()
+	gw.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code, "version via query param must pass the gate (404 = task lookup)")
+
+	req2 := withAuthCtx(httptest.NewRequest(http.MethodGet, "/a2a/tasks/t1?A2A-Version=0.3", nil))
+	req2.Header.Del("A2A-Version")
+	w2 := httptest.NewRecorder()
+	gw.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusBadRequest, w2.Code)
+	assert.Contains(t, w2.Body.String(), "VERSION_NOT_SUPPORTED")
+}

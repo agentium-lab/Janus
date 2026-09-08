@@ -39,10 +39,13 @@ func (p *EventProjector) Record(ctx context.Context, evt core.JanusEvent) {
 		evt.Timestamp = time.Now().UTC()
 	}
 
+	// Audit projection must not drop (ninth review): backpressure with a
+	// bounded wait instead of silent loss. The projector drains to PG; a
+	// full channel means the DB is slow — hold the producer briefly.
 	select {
 	case p.events <- evt:
-	default:
-		log.Printf("event projector: channel full, dropping event %s", evt.EventID)
+	case <-time.After(5 * time.Second):
+		log.Printf("event projector: projection hand-off timed out for event %s — projector stalled", evt.EventID)
 	}
 }
 

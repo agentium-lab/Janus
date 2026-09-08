@@ -73,27 +73,13 @@ func (b *FanoutBroadcaster) Publish(evt core.JanusEvent) {
 	}
 }
 
-// fanoutDirect delivers an event straight to the fan channels, bypassing
-// the inbound pipeline (overflow path for terminal events).
+// fanoutDirect is the overflow path when the inbound pipeline is full:
+// deliver under the same single critical section as run().
 func (b *FanoutBroadcaster) fanoutDirect(evt core.JanusEvent) {
-	terminal := isTerminalEvent(evt)
 	if b.seenBefore(evt) {
 		return
 	}
-	b.mu.Lock()
-	subs := make([]chan core.JanusEvent, len(b.fans[evt.TenantID]))
-	copy(subs, b.fans[evt.TenantID])
-	b.mu.Unlock()
-	for _, ch := range subs {
-		select {
-		case ch <- evt:
-		default:
-			if terminal {
-				b.evict(evt.TenantID, ch)
-				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", evt.TaskID)
-			}
-		}
-	}
+	b.fanoutLocked(evt)
 }
 
 // seenBefore records the event ID and reports whether it was already seen.
@@ -116,34 +102,35 @@ func (b *FanoutBroadcaster) seenBefore(evt core.JanusEvent) bool {
 	return false
 }
 
+// run owns the inbound pipeline. Channel sends AND closes happen inside
+// one critical section so a concurrent evict (from fanoutDirect) can never
+// close a channel this loop is about to send on — the ninth review's
+// send-on-closed-channel race. Sends are non-blocking, so lock hold time
+// stays negligible.
 func (b *FanoutBroadcaster) run() {
 	for event := range b.inbound {
 		if b.seenBefore(event) {
 			continue
 		}
-		terminal := isTerminalEvent(event)
-		b.mu.Lock()
-		subs := make([]chan core.JanusEvent, len(b.fans[event.TenantID]))
-		copy(subs, b.fans[event.TenantID])
-		b.mu.Unlock()
-		for _, ch := range subs {
-			if !terminal {
-				select {
-				case ch <- event:
-				default:
-				}
-				continue
-			}
-			// Terminal events never block the global loop: a subscriber
-			// whose queue is full is closed and evicted immediately (the SSE
-			// handler exits on the closed channel; the client recovers via
-			// GetTask). This bounds fan-out time independently of the number
-			// of slow subscribers — waiting per-subscriber multiplied the
-			// delay by N (seventh review).
-			select {
-			case ch <- event:
-			default:
-				b.evict(event.TenantID, ch)
+		b.fanoutLocked(event)
+	}
+}
+
+// fanoutLocked delivers to the tenant's subscribers under mu. Terminal
+// events evict full subscribers immediately (bounded fan-out, seventh
+// review); non-terminal overflow drops (backpressure).
+func (b *FanoutBroadcaster) fanoutLocked(event core.JanusEvent) {
+	terminal := isTerminalEvent(event)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	subs := b.fans[event.TenantID]
+	// iterate over a copy so eviction can mutate the original slice safely
+	for _, ch := range append([]chan core.JanusEvent(nil), subs...) {
+		select {
+		case ch <- event:
+		default:
+			if terminal {
+				b.evictLocked(event.TenantID, ch)
 				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", event.TaskID)
 			}
 		}
@@ -155,10 +142,8 @@ func (b *FanoutBroadcaster) run() {
 func (b *FanoutBroadcaster) pendingInbound() int { return len(b.inbound) }
 
 // evict removes and closes a fan channel. Closing wakes blocked readers so
-// their streams terminate instead of hanging.
-func (b *FanoutBroadcaster) evict(tenantID string, target chan core.JanusEvent) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+// their streams terminate instead of hanging. Callers MUST hold b.mu.
+func (b *FanoutBroadcaster) evictLocked(tenantID string, target chan core.JanusEvent) {
 	subs := b.fans[tenantID]
 	for i, ch := range subs {
 		if ch == target {

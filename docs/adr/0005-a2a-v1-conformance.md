@@ -57,3 +57,23 @@ The A2A v1.0 specification (a2a-protocol.org, canonical proto
 - E2E coverage: `server/tests/scenario/customer_service_scenario_test.go`
   drives the v1.0 surface through a smart-customer-service narrative (approval
   gate, live progress, fan-out, crash recovery).
+
+## Subset boundary (declared, not implied) — updated v1.6.3
+
+**Implemented and interop-verified** (official a2a-go client, suite in
+`server/tests/interop`): message:send, message:stream, GetTask, ListTasks
+(cursor pagination + totalSize), CancelTask (bare Task, graded
+TASK_NOT_CANCELABLE), SubscribeToTask (GET+POST, terminal rejected 400),
+Agent Card (oneof securitySchemes, skills with tags, HTTP+JSON/1.0),
+A2A-Version negotiation (header + URL param, empty=0.3 rejected),
+ErrorInfo details on typed errors, application/a2a+json success responses.
+
+**Explicitly NOT implemented** (send without these expectations):
+- multi-turn task continuation (taskId references are validated and
+  honestly rejected as unsupported)
+- message history / historyLength truncation (GetTask returns no history)
+- ListTasks filters (contextId / status / statusTimestampAfter /
+  includeArtifacts)
+- returnImmediately (responses are always immediate; the field is parsed
+  and ignored)
+- push notification configuration (capabilities.pushNotifications: false)

@@ -378,15 +378,34 @@ func (d *Driver) Conn() *nats.Conn {
 	return d.nc
 }
 
+func isTerminalEvent(evt core.JanusEvent) bool {
+	switch evt.EventType {
+	case core.EventTaskCompleted, core.EventTaskFailed,
+		core.EventTaskCancelled, core.EventTaskDeadLettered, core.EventTaskExpired:
+		return true
+	}
+	return false
+}
+
 func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent) (*nats.Subscription, error) {
 	sub, err := d.nc.Subscribe("janus.*.events.>", func(msg *nats.Msg) {
 		var event core.JanusEvent
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return
 		}
-		select {
-		case ch <- event:
-		default:
+		if isTerminalEvent(event) {
+			select {
+			case ch <- event:
+			case <-time.After(5 * time.Second):
+				// Terminal events must reach the router (SSE clients hang
+				// on a missed terminal); bounded wait beats blocking the
+				// NATS callback thread forever.
+			}
+		} else {
+			select {
+			case ch <- event:
+			default:
+			}
 		}
 	})
 	if err != nil {
