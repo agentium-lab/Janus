@@ -18,9 +18,8 @@ func TestFanoutBroadcaster_ConcurrentTerminalNoPanic(t *testing.T) {
 		inbound := make(chan core.JanusEvent, 4)
 		b := NewFanoutBroadcaster(inbound)
 		n := 8
-		subs := make([]<-chan core.JanusEvent, 0, n)
 		for i := 0; i < n; i++ {
-			subs = append(subs, b.Subscribe("acme"))
+			b.Subscribe("acme")
 			// saturate each queue so terminal events take the evict path
 			for j := 0; j < 64; j++ {
 				b.inbound <- core.JanusEvent{TenantID: "acme", EventType: core.EventTaskProgress, EventID: fmt.Sprintf("r%d-s%d-f%d", round, i, j)}
