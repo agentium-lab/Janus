@@ -279,14 +279,11 @@ func main() {
 	go outboxPub.Start(context.Background(), 500*time.Millisecond)
 	defer outboxPub.Stop()
 
-	eventProjector := outbox.NewEventProjector(eventSvc)
-	go func() {
-		for evt := range projectorCh {
-			eventProjector.Record(context.Background(), evt)
-		}
-	}()
-	go eventProjector.Start(context.Background())
-	defer eventProjector.Stop()
+	// ADR-0006: audit projection reads from the outbox table (persistent
+	// source) — crashes resume without loss; the memory channel path is gone.
+	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
+	go auditProjector.Start(context.Background())
+	defer auditProjector.Stop()
 
 	retrySched := retry.NewScheduler(pool, queueDrv).WithOutbox()
 	go retrySched.Start(context.Background(), 1*time.Second)

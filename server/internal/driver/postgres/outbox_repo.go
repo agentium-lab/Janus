@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -177,6 +178,7 @@ func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
 }
 
 func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastErr string) error {
+	metrics.OutboxDead.Inc()
 	_, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
 		 SET status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'retry' END,
@@ -187,4 +189,55 @@ func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastEr
 		id, maxOutboxRetries, lastErr,
 	)
 	return err
+}
+
+// MarkProjected marks an outbox entry as projected (audit table write done).
+func (r *OutboxRepo) MarkProjected(ctx context.Context, id string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE outbox_events SET status = 'projected', updated_at = now() WHERE id = $1`, id)
+	return err
+}
+
+// FetchByRange returns outbox entries for a tenant within a time window.
+func (r *OutboxRepo) FetchByRange(ctx context.Context, tenantID string, from, to time.Time, limit int) ([]OutboxEntry, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
+		 FROM outbox_events
+		 WHERE tenant_id = $1 AND created_at >= $2 AND created_at <= $3
+		 ORDER BY created_at ASC LIMIT $4`,
+		tenantID, from, to, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOutboxEntries(rows)
+}
+
+// RetryDead resets dead entries back to pending for another attempt cycle.
+// Returns the number of entries requeued.
+func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE outbox_events
+		 SET status = 'pending', attempts = 0, next_attempt_at = NULL, updated_at = now()
+		 WHERE status = 'dead' AND id IN (
+		     SELECT id FROM outbox_events WHERE status = 'dead'
+		     ORDER BY created_at ASC LIMIT $1
+		 )`, limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+func scanOutboxEntries(rows pgx.Rows) ([]OutboxEntry, error) {
+	var entries []OutboxEntry
+	for rows.Next() {
+		var e OutboxEntry
+		if err := rows.Scan(&e.ID, &e.TenantID, &e.Kind, &e.Payload, &e.Status, &e.Attempts, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }

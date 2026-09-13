@@ -196,7 +196,15 @@ func (d *Driver) PublishEvent(ctx context.Context, event core.JanusEvent) error 
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)
 	}
-	_, err = d.js.Publish(ctx, subject, data)
+	msgID := event.EventID
+	if msgID == "" {
+		msgID = fmt.Sprintf("%s-%s-%d", event.TenantID, event.TaskID, event.Timestamp.UnixNano())
+	}
+	_, err = d.js.PublishMsg(ctx, &nats.Msg{
+		Subject: subject,
+		Data:    data,
+		Header:  nats.Header{"Nats-Msg-Id": []string{msgID}},
+	})
 	if err != nil {
 		return fmt.Errorf("publish event to %s: %w", subject, err)
 	}

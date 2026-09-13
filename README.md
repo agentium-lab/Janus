@@ -19,7 +19,7 @@ across frameworks, teams, and organizations.
 
 ---
 
-Janus is a production-grade task broker that sits **between** your agents — LangGraph, AutoGen, CrewAI, MCP tools, custom runtimes — so that agent-to-agent collaboration **doesn't lose tasks, doesn't overrun budgets, doesn't bypass policies, and is always traceable**.
+Janus is a production-grade task broker that sits **between** your agents — LangGraph, AutoGen, CrewAI, MCP tools, custom runtimes — so that agent-to-agent collaboration **doesn't lose tasks, doesn't overrun budgets, doesn't bypass policies, and provides durable audit trails**.
 
 It doesn't replace your agent runtime. It makes collaboration between runtimes production-safe.
 
@@ -30,7 +30,7 @@ Point-to-point agent calls work in demos. In production they break:
 | Without a broker | With Janus |
 |---|---|
 | Tasks lost when an agent crashes mid-task | Durable mailboxes + lease recovery — tasks automatically return to the queue |
-| No unified audit trail across agents | Every publish / pull / start / ack / nack recorded per tenant, task, and trace |
+| No unified audit trail across agents | Audit events written transactionally (outbox pattern), projected with automatic retry, replayable via REST — per tenant, task, and trace |
 | Downstream agents overwhelmed | RPM / TPM / concurrency budgets enforced per tenant, team, and agent |
 | Anyone can call anyone | Policy engine with allow / deny / approval-required rules |
 | Token spend is invisible | Usage ledger with per-scope accounting *(trusted cost metering: roadmap)* |

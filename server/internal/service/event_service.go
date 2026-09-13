@@ -75,3 +75,10 @@ func (s *EventService) PublishEvent(ctx context.Context, tenantID string, eventT
 	}
 	return s.Record(ctx, evt)
 }
+
+// RecordIdempotent satisfies the outbox.AuditWriter interface. The
+// underlying EventRepo.Insert uses ON CONFLICT (tenant_id, event_id)
+// DO NOTHING, making re-projection safe.
+func (s *EventService) RecordIdempotent(ctx context.Context, evt core.JanusEvent) error {
+	return s.Record(ctx, evt)
+}

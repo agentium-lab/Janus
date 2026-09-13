@@ -19,7 +19,8 @@ func NewEventRepo(pool *pgxpool.Pool) *EventRepo {
 func (r *EventRepo) Insert(ctx context.Context, evt core.JanusEvent) error {
 	_, err := r.pool.Exec(ctx,
 		`INSERT INTO audit_event_projection (tenant_id, event_id, event_type, task_id, agent_id, trace_id, occurred_at, payload)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			 ON CONFLICT (tenant_id, event_id) DO NOTHING`,
 		evt.TenantID, evt.EventID, evt.EventType, evt.TaskID, evt.SourceAgent, evt.TraceID, evt.Timestamp, evt.Payload,
 	)
 	return err

@@ -86,3 +86,23 @@ var (
 		Help: "Total number of retry attempts promoted to queued by the retry scheduler",
 	})
 )
+
+// Audit pipeline observability (ADR-0006).
+var (
+	AuditProjectionWritten = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_audit_projection_written_total",
+		Help: "Audit events successfully projected from outbox to audit table",
+	})
+	AuditProjectionErrors = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_audit_projection_errors_total",
+		Help: "Audit projection failures (malformed payload or write error)",
+	})
+	TerminalEventDrops = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_terminal_event_drops_total",
+		Help: "Terminal events dropped after bounded hand-off timeout (SSE/notification loss; task state remains durable)",
+	})
+	OutboxDead = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_outbox_dead_total",
+		Help: "Outbox entries moved to dead status after exhausting retries",
+	})
+)
