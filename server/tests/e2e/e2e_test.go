@@ -28,6 +28,7 @@ import (
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/mcp"
 	"github.com/agentium-lab/Janus/server/internal/handler"
+	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
@@ -106,6 +107,12 @@ func TestMain(m *testing.M) {
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	eventSvc := service.NewEventService(eventRepo)
 	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
+
+	// ADR-0006: audit projection reads from the outbox table (pull-based).
+	outboxRepo := pgdriver.NewOutboxRepo(pool)
+	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
+	go auditProjector.Start(context.Background())
+	defer auditProjector.Stop()
 
 	// Wire the real event pipeline: NATS → fan-out → (broadcaster for WS,
 	// projector for audit_event_projection). This mirrors main.go lines
