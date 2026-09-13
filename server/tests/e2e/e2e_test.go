@@ -102,17 +102,12 @@ func TestMain(m *testing.M) {
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, redisDrv, natsDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
 	budgetSvc := service.NewBudgetService(budgetRepo)
-	taskSvc := service.NewTaskService(taskRepo, natsDrv, nil, nil).WithPolicy(policySvc)
+	outboxRepo := pgdriver.NewOutboxRepo(pool)
+	taskSvc := service.NewTaskService(taskRepo, natsDrv, pool, outboxRepo).WithPolicy(policySvc)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, natsDrv)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, natsDrv, policySvc, budgetSvc)
 	eventSvc := service.NewEventService(eventRepo)
 	contextRefSvc := service.NewContextRefService(pgdriver.NewContextRefRepo(pool))
-
-	// ADR-0006: audit projection reads from the outbox table (pull-based).
-	outboxRepo := pgdriver.NewOutboxRepo(pool)
-	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
-	go auditProjector.Start(context.Background())
-	defer auditProjector.Stop()
 
 	// Wire the real event pipeline: NATS → fan-out → (broadcaster for WS,
 	// projector for audit_event_projection). This mirrors main.go lines
@@ -136,6 +131,17 @@ func TestMain(m *testing.M) {
 	}()
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
+
+	// Production event pipeline (mirror main.go):
+	// TaskService → outbox table → Publisher → NATS → broadcaster → WS
+	//                             → AuditProjector → audit_event_projection
+	outboxPub := outbox.NewPublisher(outboxRepo, natsDrv)
+	go outboxPub.Start(context.Background(), 100*time.Millisecond)
+	defer outboxPub.Stop()
+
+	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
+	go auditProjector.Start(context.Background())
+	defer auditProjector.Stop()
 
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
 
