@@ -28,18 +28,16 @@ import (
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/gateway/mcp"
 	"github.com/agentium-lab/Janus/server/internal/handler"
-	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
 const testTenant = "e2e-tenant"
 
 var (
-	pool           *pgxpool.Pool
-	server         *httptest.Server
-	natsDrv        *natsdriver.Driver
-	redisDrv       *redisdriver.Driver
-	eventProjector *outbox.EventProjector
+	pool     *pgxpool.Pool
+	server   *httptest.Server
+	natsDrv  *natsdriver.Driver
+	redisDrv *redisdriver.Driver
 )
 
 func TestMain(m *testing.M) {
@@ -120,30 +118,17 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	broadcastCh := make(chan core.JanusEvent, 256)
-	projectorCh := make(chan core.JanusEvent, 256)
 	go func() {
 		for evt := range rawEventCh {
 			select {
 			case broadcastCh <- evt:
 			default:
 			}
-			select {
-			case projectorCh <- evt:
-			default:
-			}
 		}
 		close(broadcastCh)
-		close(projectorCh)
 	}()
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
 	wsH := handler.NewWebSocketHandler(broadcaster)
-	eventProjector = outbox.NewEventProjector(eventSvc)
-	go func() {
-		for evt := range projectorCh {
-			eventProjector.Record(context.Background(), evt)
-		}
-	}()
-	go eventProjector.Start(context.Background())
 
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(natsDrv)
 
@@ -168,7 +153,6 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	eventProjector.Stop()
 	server.Close()
 	natsDrv.Close()
 	redisDrv.Close()

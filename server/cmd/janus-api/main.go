@@ -234,7 +234,6 @@ func main() {
 	}()
 
 	broadcastCh := make(chan core.JanusEvent, 256)
-	projectorCh := make(chan core.JanusEvent, 256)
 	// Event routing with delivery classes (ninth review: no silent loss):
 	//   terminal events    -> blocking hand-off to broadcast (bounded wait);
 	//                          a lost terminal hangs SSE clients
@@ -256,14 +255,8 @@ func main() {
 				default:
 				}
 			}
-			select {
-			case projectorCh <- evt:
-			case <-time.After(5 * time.Second):
-				log.Printf("event router: audit projection hand-off timed out for event %s %s", evt.EventID, evt.EventType)
-			}
 		}
 		close(broadcastCh)
-		close(projectorCh)
 	}()
 
 	broadcaster := handler.NewFanoutBroadcaster(broadcastCh)
@@ -282,8 +275,29 @@ func main() {
 	// ADR-0006: audit projection reads from the outbox table (persistent
 	// source) — crashes resume without loss; the memory channel path is gone.
 	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
+	auditH.WithReplayer(auditProjector)
 	go auditProjector.Start(context.Background())
 	defer auditProjector.Stop()
+
+	// Dead-entry recovery: periodically requeue dead outbox rows.
+	deadRetryStop := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-deadRetryStop:
+				return
+			case <-ticker.C:
+				if n, err := outboxRepo.RetryDead(context.Background(), 100); err != nil {
+					log.Printf("outbox dead retry: %v", err)
+				} else if n > 0 {
+					log.Printf("outbox dead retry: requeued %d entries", n)
+				}
+			}
+		}
+	}()
+	defer close(deadRetryStop)
 
 	retrySched := retry.NewScheduler(pool, queueDrv).WithOutbox()
 	go retrySched.Start(context.Background(), 1*time.Second)
@@ -618,6 +632,8 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, taskH.Create)
 		case hasSegment(p, "events"):
 			getOnly(w, r, auditH.QueryByTenant)
+		case hasSuffix(p, "/audit/replay"):
+			postOnly(w, r, auditH.ReplayAudit)
 		case hasSegment(p, "context-refs") && hasSuffix(p, "/attach"):
 			postOnly(w, r, contextRefH.Attach)
 		case hasSegment(p, "context-refs") && hasSuffix(p, "/detach"):

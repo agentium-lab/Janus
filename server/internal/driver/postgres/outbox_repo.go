@@ -194,7 +194,7 @@ func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastEr
 // MarkProjected marks an outbox entry as projected (audit table write done).
 func (r *OutboxRepo) MarkProjected(ctx context.Context, id string) error {
 	_, err := r.pool.Exec(ctx,
-		`UPDATE outbox_events SET status = 'projected', updated_at = now() WHERE id = $1`, id)
+		`UPDATE outbox_events SET projected_at = now() WHERE id = $1`, id)
 	return err
 }
 
@@ -219,7 +219,7 @@ func (r *OutboxRepo) FetchByRange(ctx context.Context, tenantID string, from, to
 func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
-		 SET status = 'pending', attempts = 0, next_attempt_at = NULL, updated_at = now()
+		 SET status = 'pending', attempts = 0, next_attempt_at = NULL
 		 WHERE status = 'dead' AND id IN (
 		     SELECT id FROM outbox_events WHERE status = 'dead'
 		     ORDER BY created_at ASC LIMIT $1
@@ -228,6 +228,22 @@ func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
+}
+
+// FetchUnprojected returns event_publish entries that have not yet been
+// projected to the audit table. Independent of the status field (which
+// tracks NATS publish progress) — the audit projector owns this cursor.
+func (r *OutboxRepo) FetchUnprojected(ctx context.Context, limit int) ([]OutboxEntry, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
+		 FROM outbox_events
+		 WHERE kind = 'event_publish' AND projected_at IS NULL
+		 ORDER BY created_at ASC LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanOutboxEntries(rows)
 }
 
 func scanOutboxEntries(rows pgx.Rows) ([]OutboxEntry, error) {
