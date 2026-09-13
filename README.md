@@ -157,7 +157,7 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A v1 subset Gateway** (`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`; multi-turn task continuation not yet supported) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
+**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress; terminal events are never silently dropped (delivery classes: terminal → guaranteed, audit → backpressure, progress → droppable under load) · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A v1 subset Gateway** (`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, `GET /a2a/tasks` cursor-paginated, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`, `A2A-Version` negotiation, typed errors with `ErrorInfo`; verified against the official a2a-go client in CI; multi-turn continuation, history, List filters not yet supported — see [ADR-0005](docs/adr/0005-a2a-v1-conformance.md) for the full subset table) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
 
 ### 📊 Observability & 🔐 Security
 
@@ -167,6 +167,8 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 | Prometheus — 16+ metrics | mTLS — TLS 1.2+ with client cert verification |
 | Structured JSON logs — tenant/task/trace in every line | Tenant isolation — every query, subject, key, path scoped |
 | Grafana dashboard — backlog, latency, errors pre-built | TenantGuard — path tenant must match authenticated tenant |
+| | Agent identity binding — keys can carry `bound_agent_id`; bound keys may only act as their agent (enforced at middleware + gRPC interceptor + service-layer authority overwrite) |
+| | Official-client interop — the a2a-go SDK drives our gateway in CI (`server/tests/interop`), verifying Agent Card, send/stream, Get/List/Cancel, error mapping |
 
 ## SDKs
 
