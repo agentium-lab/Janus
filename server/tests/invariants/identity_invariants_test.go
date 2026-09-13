@@ -191,3 +191,10 @@ func TestIdentityInvariant_GRPC_SpoofRejected(t *testing.T) {
 }
 
 var _ = core.Task{}
+
+// ReplayAudit requires admin scope (self-review finding #2).
+func TestAuditReplay_RequiresAdminScope(t *testing.T) {
+	scope, ok := auth.RequiredScope("POST", "/v1/tenants/acme/audit/replay")
+	require.True(t, ok, "replay path must be in the scope table")
+	assert.Equal(t, auth.ScopeAdmin, scope, "audit replay must require admin scope")
+}

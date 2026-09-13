@@ -114,6 +114,7 @@ var scopeRules = []scopeRule{
 	{segment: "policy-rules", scope: ScopeAdmin},
 	{segment: "budgets", scope: ScopeAdmin},
 	{segment: "dlq", suffixes: []string{"/replay", "/discard"}, scope: ScopeAdmin},
+	{segment: "audit", suffixes: []string{"/replay"}, scope: ScopeAdmin},
 	{segment: "traces", scope: ScopeAuditRead},
 }
 
