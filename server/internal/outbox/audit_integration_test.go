@@ -4,12 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,37 +24,14 @@ import (
 // This is the test that would have caught the v1.6.6 P0s: it uses the real
 // OutboxRepo against real PostgreSQL, not fakes.
 
+// openOutboxIntegrationDB reuses openOutboxTestDB from publisher_pg_test.go:
+// creates a unique test database, runs all migrations, and cleans up.
 func openOutboxIntegrationDB(t *testing.T) (*pgxpool.Pool, *postgres.OutboxRepo) {
 	t.Helper()
-	// Reuse the same connection logic as the existing PG-backed tests
-	dsn := getTestDSN(t)
-	if dsn == "" {
-		t.Skip("PostgreSQL not reachable (set JANUS_PG_DSN to enable)")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	require.NoError(t, err)
-	t.Cleanup(pool.Close)
-
+	pool := openOutboxTestDB(t)
 	repo := postgres.NewOutboxRepo(pool)
 	repo.SetWorker("integration-test", 5*time.Second)
 	return pool, repo
-}
-
-func getTestDSN(t *testing.T) string {
-	t.Helper()
-	if v := osGetenv("JANUS_PG_DSN"); v != "" {
-		return v
-	}
-	// try standard local PG
-	if _, err := pgx.Connect(context.Background(), "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"); err == nil {
-		return "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
-	}
-	return ""
-}
-
-func osGetenv(key string) string {
-	v, _ := os.LookupEnv(key)
-	return v
 }
 
 func TestIntegration_PublisherAndProjector_Independent(t *testing.T) {
