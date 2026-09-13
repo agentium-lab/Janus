@@ -633,7 +633,7 @@ func (s *TaskService) TransitionInTx(ctx context.Context, tx pgx.Tx, tenantID, t
 		return fmt.Errorf("transition in tx requires postgres task repo")
 	}
 	if !core.CanTransition(expected, status) {
-		return fmt.Errorf("invalid transition: %s -> %s for task %s", expected, status, taskID)
+		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, expected, status, taskID)
 	}
 	ok2, err := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, expected, status, attemptInc)
 	if err != nil {

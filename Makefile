@@ -48,7 +48,7 @@ COVERAGE_PKGS := \
 # Coverage gate threshold (percent). The hard 90% floor is a Milestone 1
 # (Core Reliability Alpha) exit criterion; the Phase 0 default is 0
 # (report-only). Override at the command line: make coverage COVERAGE_THRESHOLD=90
-COVERAGE_THRESHOLD ?= 85
+COVERAGE_THRESHOLD ?= 90
 
 # Proto generation uses a pinned buf + plugin toolchain.
 PROTO_PLUGINS := protoc-gen-go protoc-gen-go-grpc protoc-gen-grpc-gateway
