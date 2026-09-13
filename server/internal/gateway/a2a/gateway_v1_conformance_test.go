@@ -154,7 +154,7 @@ func TestGatewayV1_StreamMessage_TaskIDSemantics(t *testing.T) {
 // TASK_NOT_CANCELABLE 400 with an ErrorInfo reason the official client
 // understands — not a blanket 500.
 func TestGatewayV1_Cancel_NotCancelableGraded(t *testing.T) {
-	tc := &mockTaskCreator{err: fmt.Errorf("task t1 is in terminal state completed, cannot transition to cancelled")}
+	tc := &mockTaskCreator{err: fmt.Errorf("%w: task t1 is completed", core.ErrTaskInTerminalState)}
 	gw := NewGatewayWithStatus(&mockAgentRegistrar{}, tc, &mockStatusGetter{})
 	req := withAuthCtx(httptest.NewRequest(http.MethodPost, "/a2a/tasks/t1:cancel", nil))
 	w := httptest.NewRecorder()

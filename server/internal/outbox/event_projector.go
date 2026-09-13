@@ -57,11 +57,32 @@ func (p *EventProjector) Start(ctx context.Context) {
 		case <-p.done:
 			return
 		case evt := <-p.events:
-			if err := p.writer.Record(ctx, evt); err != nil {
-				log.Printf("event projector record: %v", err)
+			// Record with bounded retry; persistent failures are counted
+			// and logged at error level (visible in metrics/alerting).
+			if err := p.recordWithRetry(ctx, evt); err != nil {
+				log.Printf("event projector: record FAILED after retries for %s: %v", evt.EventID, err)
 			}
 		}
 	}
+}
+
+func (p *EventProjector) recordWithRetry(ctx context.Context, evt core.JanusEvent) error {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return lastErr
+			case <-time.After(time.Duration(attempt) * 500 * time.Millisecond):
+			}
+		}
+		if err := p.writer.Record(ctx, evt); err != nil {
+			lastErr = err
+			continue
+		}
+		return nil
+	}
+	return lastErr
 }
 
 func (p *EventProjector) Stop() {

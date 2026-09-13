@@ -259,7 +259,7 @@ func TestExtra_Transition_InvalidStatus(t *testing.T) {
 
 	err := svc.Start(ctx, "acme", "t1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "terminal state")
+	assert.Contains(t, err.Error(), "task is in a terminal state")
 }
 
 func TestExtra_Transition_CannotTransition(t *testing.T) {
@@ -271,7 +271,7 @@ func TestExtra_Transition_CannotTransition(t *testing.T) {
 
 	err := svc.Complete(ctx, "acme", "t1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid transition")
+	assert.Contains(t, err.Error(), "invalid state transition")
 }
 
 func TestExtra_Transition_GetTaskError(t *testing.T) {
@@ -709,7 +709,7 @@ func TestExtra_Fail_InvalidTransition(t *testing.T) {
 
 	err := svc.Fail(ctx, "acme", "t1", nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid transition")
+	assert.Contains(t, err.Error(), "invalid state transition")
 }
 
 func TestExtra_Fail_TransitionError(t *testing.T) {

@@ -401,16 +401,7 @@ func (g *Gateway) handleV1Cancel(w http.ResponseWriter, r *http.Request, taskID 
 }
 
 func isNotCancelableErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	for _, marker := range []string{"terminal state", "invalid transition", "cannot transition", "not cancelable"} {
-		if strings.Contains(msg, marker) {
-			return true
-		}
-	}
-	return false
+	return core.IsNotCancelable(err)
 }
 
 // handleV1ListTasks implements GET /a2a/tasks (cursor pagination, spec 3.1.4).

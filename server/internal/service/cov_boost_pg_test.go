@@ -242,11 +242,11 @@ func TestCovPG_TransitionInTx_Branches(t *testing.T) {
 	ctx := context.Background()
 	task := createTestTask(t, env, "task-tx-1")
 
-	t.Run("invalid transition rejected before repo access", func(t *testing.T) {
+	t.Run("invalid state transition rejected before repo access", func(t *testing.T) {
 		err := env.taskSvc.TransitionInTx(ctx, nil, "acme", task.ID,
 			core.TaskStatusCompleted, core.TaskStatusQueued, core.EventTaskQueued, 0)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "invalid transition")
+		assert.Contains(t, err.Error(), "invalid state transition")
 	})
 
 	t.Run("conflict on stale expected status", func(t *testing.T) {

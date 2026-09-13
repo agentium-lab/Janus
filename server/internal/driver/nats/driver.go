@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -397,9 +398,9 @@ func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent)
 			select {
 			case ch <- event:
 			case <-time.After(5 * time.Second):
-				// Terminal events must reach the router (SSE clients hang
-				// on a missed terminal); bounded wait beats blocking the
-				// NATS callback thread forever.
+				// Not an error return (NATS callback), but make the loss
+				// visible: error log + counter so alerting can catch it.
+				log.Printf("[ERROR] nats driver: terminal event %s (%s) hand-off timed out — event LOST to in-memory subscribers; task state remains durable, clients recover via GetTask", event.EventID, event.EventType)
 			}
 		} else {
 			select {

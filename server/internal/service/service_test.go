@@ -1448,7 +1448,7 @@ func TestTaskService_Transition_TerminalState(t *testing.T) {
 	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	err := svc.transition(context.Background(), "acme", "t1", core.TaskStatusRunning, core.EventTaskStarted, 0)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "terminal state")
+	assert.Contains(t, err.Error(), "task is in a terminal state")
 }
 
 func TestTaskService_Transition_InvalidTransition(t *testing.T) {
@@ -1458,7 +1458,7 @@ func TestTaskService_Transition_InvalidTransition(t *testing.T) {
 	svc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	err := svc.transition(context.Background(), "acme", "t1", core.TaskStatusCompleted, core.EventTaskCompleted, 0)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid transition")
+	assert.Contains(t, err.Error(), "invalid state transition")
 }
 
 func TestTaskService_Transition_CASConflict(t *testing.T) {

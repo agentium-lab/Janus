@@ -565,10 +565,10 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 		return fmt.Errorf("get task for transition: %w", err)
 	}
 	if current.Status.IsTerminal() {
-		return fmt.Errorf("task %s is in terminal state %s, cannot transition to %s", taskID, current.Status, status)
+		return fmt.Errorf("%w: task %s is %s, cannot transition to %s", core.ErrTaskInTerminalState, taskID, current.Status, status)
 	}
 	if !core.CanTransition(current.Status, status) {
-		return fmt.Errorf("invalid transition: %s -> %s for task %s", current.Status, status, taskID)
+		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, status, taskID)
 	}
 
 	// Lifecycle path: CAS + event outbox in one tx (when PG repos + lifecycle).

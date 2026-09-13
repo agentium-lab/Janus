@@ -187,14 +187,18 @@ func isTerminalEvent(evt core.JanusEvent) bool {
 func (d *Driver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	var firstTimeout error
 	for _, ch := range d.subs {
-		// Terminal events are handed off with a bounded wait (a lost
-		// terminal hangs SSE clients); the outbox row keeps the durable
-		// record either way. Non-terminal overflow drops under backpressure.
+		// Terminal events block with a bounded wait; a timeout returns an
+		// error so the outbox publisher retries (the outbox row stays
+		// pending until a successful hand-off). Non-terminal overflow drops.
 		if isTerminalEvent(event) {
 			select {
 			case ch <- event:
 			case <-time.After(5 * time.Second):
+				if firstTimeout == nil {
+					firstTimeout = fmt.Errorf("pgqueue: terminal event %s hand-off timed out after 5s (subscriber stalled)", event.EventID)
+				}
 			}
 		} else {
 			select {
@@ -203,7 +207,7 @@ func (d *Driver) PublishEvent(_ context.Context, event core.JanusEvent) error {
 			}
 		}
 	}
-	return nil
+	return firstTimeout
 }
 
 func (d *Driver) ReplayEvents(ctx context.Context, _ core.EventReplayFilter) (core.EventIterator, error) {
