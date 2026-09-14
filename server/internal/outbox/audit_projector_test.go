@@ -98,9 +98,9 @@ func TestAuditProjector_ReplayEmpty(t *testing.T) {
 	reader := &fakeOutboxReader{}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
+	res, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
 	require.NoError(t, err)
-	assert.Equal(t, 0, n)
+	assert.Equal(t, 0, res.Projected)
 }
 
 func TestAuditProjector_StartStop(t *testing.T) {
@@ -121,9 +121,9 @@ func TestAuditProjector_ReplayWithEntries(t *testing.T) {
 	}}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
+	res, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
 	require.NoError(t, err)
-	assert.Equal(t, 1, n, "only event_publish replayed")
+	assert.Equal(t, 1, res.Projected, "only event_publish replayed")
 	assert.Len(t, writer.written, 1)
 }
 
@@ -177,9 +177,11 @@ func TestAuditProjector_ReplayMalformed(t *testing.T) {
 	}}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
-	require.Error(t, err, "all entries failed should return error")
-	assert.Equal(t, 0, n)
+	res, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
+	require.NoError(t, err, "replay itself should succeed")
+	assert.Equal(t, 0, res.Projected)
+	assert.Equal(t, "all_failed", res.Status)
+	assert.Greater(t, res.Failed, 0)
 }
 
 func TestAuditProjector_ReplayWriteError(t *testing.T) {
@@ -190,7 +192,9 @@ func TestAuditProjector_ReplayWriteError(t *testing.T) {
 	}}
 	writer := &fakeWriter{err: fmt.Errorf("write fail")}
 	p := NewAuditProjector(reader, writer)
-	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
-	require.Error(t, err, "all entries failed should return error")
-	assert.Equal(t, 0, n)
+	res, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
+	require.NoError(t, err, "replay itself should succeed")
+	assert.Equal(t, 0, res.Projected)
+	assert.Equal(t, "all_failed", res.Status)
+	assert.Greater(t, res.Failed, 0)
 }

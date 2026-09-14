@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -235,7 +236,7 @@ func (g *Gateway) emitToolEvent(ctx context.Context, typ core.EventType, tenantI
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"tool_name": toolName})
-	_ = g.eventPub.PublishEvent(ctx, core.JanusEvent{
+	if err := g.eventPub.PublishEvent(ctx, core.JanusEvent{
 		EventID:     fmt.Sprintf("%s-%s-%d", typ, taskID, time.Now().UnixNano()),
 		EventType:   typ,
 		TenantID:    tenantID,
@@ -243,7 +244,9 @@ func (g *Gateway) emitToolEvent(ctx context.Context, typ core.EventType, tenantI
 		SourceAgent: agent,
 		Payload:     payload,
 		Timestamp:   time.Now().UTC(),
-	})
+	}); err != nil {
+		log.Printf("mcp gateway: tool event publish failed for %s %s: %v", typ, taskID, err)
+	}
 }
 
 func tenantFromContextOrReject(w http.ResponseWriter, r *http.Request) (string, bool) {

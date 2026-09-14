@@ -178,16 +178,25 @@ func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
 }
 
 func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastErr string) error {
-	_, err := r.pool.Exec(ctx,
+	// Detect dead transition via RETURNING to increment the metric only
+	// when an entry actually enters dead status (not on every retry failure).
+	var becameDead bool
+	err := r.pool.QueryRow(ctx,
 		`UPDATE outbox_events
 		 SET status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'retry' END,
-		     last_error = CASE WHEN $3 != '' THEN $3 ELSE last_error END,
-		     next_attempt_at = CASE WHEN attempts < $2 THEN now() + interval '5 seconds' * attempts ^ 2 ELSE NULL END,
-		     locked_by = NULL, locked_at = NULL, lease_expires_at = NULL
-		 WHERE id = $1`,
-		id, maxOutboxRetries, lastErr,
-	)
-	return err
+		     attempts = attempts + 1,
+		     next_attempt_at = now() + interval '5 seconds' * (attempts + 1),
+		     last_error = $3
+		 WHERE id = $1 AND status NOT IN ('dead', 'published')
+		 RETURNING (status = 'dead')`,
+		id, maxOutboxRetries, lastErr).Scan(&becameDead)
+	if err != nil {
+		return err
+	}
+	if becameDead {
+		metrics.OutboxDead.Inc()
+	}
+	return nil
 }
 
 // MarkProjected marks an outbox entry as projected (audit table write done).
@@ -228,7 +237,7 @@ func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 	}
 	n := tag.RowsAffected()
 	if n > 0 {
-		metrics.OutboxDead.Add(float64(n))
+		metrics.OutboxDeadRetried.Add(float64(n))
 	}
 	return n, nil
 }

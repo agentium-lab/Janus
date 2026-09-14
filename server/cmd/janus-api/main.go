@@ -212,7 +212,7 @@ func main() {
 	budgetH := handler.NewBudgetHandler(service.NewBudgetSpecService(budgetRepo))
 	contextRefH := handler.NewContextRefHandler(contextRefSvc)
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
-	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(queueDrv)
+	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(outbox.NewOutboxEventRecorder(outboxRepo))
 
 	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, queueDrv).WithOutbox(outboxRepo, pool)
 	dlqH := handler.NewDLQHandler(dlqSvc)

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"fmt"
+	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ type AuditService interface {
 
 // AuditReplayer re-projects audit events from the outbox (ADR-0006 replay).
 type AuditReplayer interface {
-	Replay(ctx context.Context, tenantID string, from, to time.Time, limit int) (int, error)
+	Replay(ctx context.Context, tenantID string, from, to time.Time, limit int) (outbox.ReplayResult, error)
 }
 
 type AuditHandler struct {
@@ -115,14 +116,24 @@ func (h *AuditHandler) ReplayAudit(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	count, err := h.replayer.Replay(r.Context(), tenantID, from, to, limit)
+	result, err := h.replayer.Replay(r.Context(), tenantID, from, to, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"replayed": count,
-		"from":     fromStr,
-		"to":       toStr,
+	code := http.StatusOK
+	if result.Status == "partial_failure" {
+		code = http.StatusMultiStatus
+	} else if result.Status == "all_failed" {
+		code = http.StatusUnprocessableEntity
+	}
+	writeJSON(w, code, map[string]interface{}{
+		"projected":  result.Projected,
+		"failed":     result.Failed,
+		"skipped":    result.Skipped,
+		"status":     result.Status,
+		"last_error": result.LastError,
+		"from":       fromStr,
+		"to":         toStr,
 	})
 }

@@ -100,35 +100,81 @@ func (p *AuditProjector) projectBatch(ctx context.Context) {
 }
 
 // Replay re-projects a time range for a tenant (REST replay endpoint).
-func (p *AuditProjector) Replay(ctx context.Context, tenantID string, from, to time.Time, limit int) (int, error) {
+type ReplayResult struct {
+	Projected int    `json:"projected"`
+	Failed    int    `json:"failed"`
+	Skipped   int    `json:"skipped"`
+	Status    string `json:"status"` // "success" | "partial_failure" | "all_failed"
+	LastError string `json:"last_error,omitempty"`
+}
+
+func (p *AuditProjector) Replay(ctx context.Context, tenantID string, from, to time.Time, limit int) (ReplayResult, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 500
 	}
 	entries, err := p.reader.FetchByRange(ctx, tenantID, from, to, limit)
 	if err != nil {
-		return 0, fmt.Errorf("replay fetch: %w", err)
+		return ReplayResult{}, fmt.Errorf("replay fetch: %w", err)
 	}
-	projected, skipped := 0, 0
-	var lastErr error
+	result := ReplayResult{Status: "success"}
 	for _, entry := range entries {
 		if entry.Kind != "event_publish" {
+			result.Skipped++
 			continue
 		}
 		var evt core.JanusEvent
 		if err := json.Unmarshal(entry.Payload, &evt); err != nil {
-			skipped++
-			lastErr = err
+			result.Failed++
+			result.LastError = err.Error()
 			continue
 		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
-			skipped++
-			lastErr = err
+			result.Failed++
+			result.LastError = err.Error()
 			continue
 		}
-		projected++
+		result.Projected++
 	}
-	if skipped > 0 && projected == 0 {
-		return projected, fmt.Errorf("replay: all %d entries failed; last error: %w", skipped, lastErr)
+	switch {
+	case result.Failed > 0 && result.Projected > 0:
+		result.Status = "partial_failure"
+	case result.Failed > 0:
+		result.Status = "all_failed"
 	}
-	return projected, nil
+	return result, nil
+}
+
+// OutboxEventRecorder writes events directly to the outbox table as
+// event_publish entries — the persistent path. The outbox Publisher later
+// delivers to NATS, and the AuditProjector projects to the audit table.
+// This replaces direct PublishEvent calls from gateways (P1 fix).
+type OutboxEventRecorder struct {
+	repo  OutboxDirectWriter
+	clock func() string
+}
+
+// OutboxDirectWriter is the subset of OutboxRepo needed for event recording.
+type OutboxDirectWriter interface {
+	InsertDirectWithDedupe(ctx context.Context, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error
+}
+
+func NewOutboxEventRecorder(repo OutboxDirectWriter) *OutboxEventRecorder {
+	return &OutboxEventRecorder{repo: repo, clock: func() string {
+		return fmt.Sprintf("evt_%d", time.Now().UnixNano())
+	}}
+}
+
+func (r *OutboxEventRecorder) PublishEvent(ctx context.Context, event core.JanusEvent) error {
+	if event.EventID == "" {
+		event.EventID = r.clock()
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return fmt.Errorf("marshal event: %w", err)
+	}
+	return r.repo.InsertDirectWithDedupe(ctx, event.EventID, event.TenantID,
+		"event_publish", event.EventID, payload)
 }

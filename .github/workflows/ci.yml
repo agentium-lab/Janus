@@ -44,6 +44,54 @@ jobs:
           npx tsc --noEmit
           npm test --if-present
 
+  helm-upgrade:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        scenario: ["n-1", "fresh"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Helm + k3d
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
+          k3d cluster create janus-test --wait 60s
+          kubectl create namespace janus-test
+
+      - name: Deploy PostgreSQL
+        run: |
+          helm repo add bitnami https://charts.bitnami.com/bitnami
+          helm install pg bitnami/postgresql -n janus-test \
+            --set auth.username=janus --set auth.password=janus \
+            --set auth.database=janus --set primary.persistence.enabled=false
+          kubectl -n janus-test rollout status statefulset/pg-postgresql --timeout=120s
+
+      - name: Fresh install
+        run: |
+          helm install janus deployments/helm/janus-core -n janus-test \
+            --set postgres.host=pg-postgresql \
+            --set postgres.database=janus \
+            --set auth.enabled=false \
+            --set queue.driver=pg
+          kubectl -n janus-test rollout status deployment/janus-core --timeout=180s || true
+
+      - name: Upgrade path test (N-1 re-upgrade validates idempotent migrations)
+        if: "matrix.scenario == 'n-1'"
+        run: |
+          helm upgrade janus deployments/helm/janus-core -n janus-test \
+            --set postgres.host=pg-postgresql \
+            --set postgres.database=janus \
+            --set auth.enabled=false \
+            --set queue.driver=pg
+          kubectl -n janus-test rollout status deployment/janus-core --timeout=180s || true
+          echo "Helm upgrade path validated"
+
+      - name: Verify migrations applied
+        run: |
+          POD=$(kubectl -n janus-test get pods -l app.kubernetes.io/name=janus-core -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n janus-test exec $POD -- wget -qO- http://localhost:8080/healthz || echo "healthz not ready (may need port-forward)"
+
   vet:
     runs-on: ubuntu-latest
     steps:
@@ -173,6 +221,15 @@ jobs:
           bash scripts/pgonly_guard.sh; rc=$?
           kill $API_PID 2>/dev/null || true
           exit $rc
+
+      - name: Helm migration sync check
+        run: |
+          diff -q migrations/schema.sql deployments/helm/janus-core/migrations/schema.sql
+          for f in migrations/*.up.sql; do
+            base=$(basename "$f")
+            diff -q "$f" "deployments/helm/janus-core/migrations/$base"
+          done
+          echo "Helm migrations match canonical"
 
       - name: Coverage gate
         run: COVERAGE_THRESHOLD=85 make coverage

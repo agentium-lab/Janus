@@ -106,3 +106,8 @@ var (
 		Help: "Outbox entries moved to dead status after exhausting retries",
 	})
 )
+
+var OutboxDeadRetried = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "janus_outbox_dead_retried_total",
+	Help: "Dead outbox entries requeued for another retry cycle",
+})
