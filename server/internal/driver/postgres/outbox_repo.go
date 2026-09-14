@@ -178,7 +178,6 @@ func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
 }
 
 func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastErr string) error {
-	metrics.OutboxDead.Inc()
 	_, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
 		 SET status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'retry' END,
@@ -227,7 +226,11 @@ func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	n := tag.RowsAffected()
+	if n > 0 {
+		metrics.OutboxDead.Add(float64(n))
+	}
+	return n, nil
 }
 
 // FetchUnprojected returns event_publish entries that have not yet been

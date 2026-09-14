@@ -108,19 +108,27 @@ func (p *AuditProjector) Replay(ctx context.Context, tenantID string, from, to t
 	if err != nil {
 		return 0, fmt.Errorf("replay fetch: %w", err)
 	}
-	projected := 0
+	projected, skipped := 0, 0
+	var lastErr error
 	for _, entry := range entries {
 		if entry.Kind != "event_publish" {
 			continue
 		}
 		var evt core.JanusEvent
 		if err := json.Unmarshal(entry.Payload, &evt); err != nil {
+			skipped++
+			lastErr = err
 			continue
 		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
+			skipped++
+			lastErr = err
 			continue
 		}
 		projected++
+	}
+	if skipped > 0 && projected == 0 {
+		return projected, fmt.Errorf("replay: all %d entries failed; last error: %w", skipped, lastErr)
 	}
 	return projected, nil
 }

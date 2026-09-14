@@ -175,7 +175,7 @@ jobs:
           exit $rc
 
       - name: Coverage gate
-        run: COVERAGE_THRESHOLD=85 make coverage
+        run: COVERAGE_THRESHOLD=90 make coverage
 
       - name: Helm chart lint
         run: |

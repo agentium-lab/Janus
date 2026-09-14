@@ -281,7 +281,8 @@ CREATE TABLE IF NOT EXISTS outbox_events (
     locked_at timestamptz,
     lease_expires_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
-    published_at timestamptz
+    published_at timestamptz,
+    projected_at timestamptz
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS outbox_events_dedupe_idx

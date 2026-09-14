@@ -178,7 +178,7 @@ func TestAuditProjector_ReplayMalformed(t *testing.T) {
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
 	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
-	require.NoError(t, err, "malformed entries are skipped, not errors")
+	require.Error(t, err, "all entries failed should return error")
 	assert.Equal(t, 0, n)
 }
 
@@ -191,6 +191,6 @@ func TestAuditProjector_ReplayWriteError(t *testing.T) {
 	writer := &fakeWriter{err: fmt.Errorf("write fail")}
 	p := NewAuditProjector(reader, writer)
 	n, err := p.Replay(context.Background(), "acme", time.Now().Add(-time.Hour), time.Now(), 100)
-	require.NoError(t, err)
-	assert.Equal(t, 0, n, "failed writes skipped in replay")
+	require.Error(t, err, "all entries failed should return error")
+	assert.Equal(t, 0, n)
 }

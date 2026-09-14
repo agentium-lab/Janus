@@ -236,11 +236,13 @@ func (g *Gateway) emitToolEvent(ctx context.Context, typ core.EventType, tenantI
 	}
 	payload, _ := json.Marshal(map[string]string{"tool_name": toolName})
 	_ = g.eventPub.PublishEvent(ctx, core.JanusEvent{
+		EventID:     fmt.Sprintf("%s-%s-%d", typ, taskID, time.Now().UnixNano()),
 		EventType:   typ,
 		TenantID:    tenantID,
 		TaskID:      taskID,
 		SourceAgent: agent,
 		Payload:     payload,
+		Timestamp:   time.Now().UTC(),
 	})
 }
 
