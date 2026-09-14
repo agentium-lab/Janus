@@ -56,7 +56,7 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
           curl -s https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash
-          k3d cluster create janus-test --wait 60s
+          k3d cluster create janus-test --wait --timeout 120s
           kubectl create namespace janus-test
 
       - name: Deploy PostgreSQL
