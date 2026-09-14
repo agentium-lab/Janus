@@ -84,7 +84,7 @@ test:
 ## coverage: Run unit tests with coverage and enforce a floor.
 ## coverage: Run unit tests with coverage and report. The hard 90% floor is a
 # Core Reliability Alpha (Milestone 1) exit criterion, not a Phase 0 gate, so
-# the threshold comes from COVERAGE_THRESHOLD above (default 85).
+# the threshold comes from COVERAGE_THRESHOLD above (default 90; CI uses 85 due to PG timing variance).
 coverage:
 	@mkdir -p .cover
 	go test -count=1 -timeout=120s -race -coverprofile=.cover/core.out $(COVERAGE_PKGS)
