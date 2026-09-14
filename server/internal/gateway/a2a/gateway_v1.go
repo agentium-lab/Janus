@@ -13,7 +13,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/auth"
 )
 
-const serverVersion = "1.6.7"
+const serverVersion = "1.6.8"
 
 // EventSubscriber provides access to the in-memory fanout (fast lane of the
 // ADR-0004 dual-path). Implemented by handler.FanoutBroadcaster.
