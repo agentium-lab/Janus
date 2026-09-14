@@ -226,6 +226,15 @@ func TestE2E_WS_TenantIsolation(t *testing.T) {
 	defer ws.Close()
 	time.Sleep(200 * time.Millisecond)
 
+	// Drain any buffered events from earlier tests (the outbox publisher
+	// delivers them asynchronously with up to 100ms tick delay).
+	for {
+		ws.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		if _, _, err := ws.ReadMessage(); err != nil {
+			break // buffer drained (timeout)
+		}
+	}
+
 	err = natsDrv.PublishEvent(natsDriverCtx(otherTenant), core.JanusEvent{
 		EventID:     "evt-ws-iso-1",
 		EventType:   core.EventTaskCreated,
