@@ -67,6 +67,11 @@ jobs:
             --set auth.database=janus --set primary.persistence.enabled=false
           kubectl -n janus-test rollout status statefulset/pg-postgresql --timeout=120s
 
+      - name: Install Prometheus CRDs
+        run: |
+          helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+          helm install prom-crds prometheus-community/prometheus-operator-crds -n janus-test
+
       - name: Fresh install
         run: |
           helm install janus deployments/helm/janus-core -n janus-test \
