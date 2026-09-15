@@ -226,6 +226,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
     name text NOT NULL,
     prefix text NOT NULL,
     scopes text[] NOT NULL DEFAULT '{}',
+    bound_agent_id text NOT NULL DEFAULT'',
     id text NOT NULL DEFAULT ('key_' || substr(md5(random()::text || clock_timestamp()::text), 1, 24)),
     last_used_at timestamptz,
     revoked_at timestamptz,
