@@ -91,11 +91,12 @@ jobs:
 
       - name: Migration files identical
         run: |
-          diff -r migrations/ deployments/helm/janus-core/migrations/ \
-            --exclude="schema.sql" || true  # schema.sql may differ in whitespace
-          diff -q migrations/schema.sql deployments/helm/janus-core/migrations/schema.sql \
-            || { echo "schema.sql differs — run scripts/sync_helm_migrations.sh"; exit 1; }
-          echo "Helm migrations match canonical"
+          for f in migrations/*.sql; do
+            base=$(basename "$f")
+            diff -q "$f" "deployments/helm/janus-core/migrations/$base" \
+              || { echo "MISMATCH: $base — run scripts/sync_helm_migrations.sh"; exit 1; }
+          done
+          echo "Helm migrations match canonical (all files)"
 
       - name: Schema includes all migration columns
         run: |
@@ -205,6 +206,7 @@ jobs:
           go test -count=1 -timeout=120s -cover ./server/tests/scenario/...
           go test -count=1 -timeout=120s -cover ./server/tests/interop/...
           go test -count=1 -timeout=120s -cover ./server/tests/invariants/...
+          go test -count=1 -timeout=180s -cover ./server/tests/recovery/...
 
       - name: E2E + integration tests (with infra)
         run: |

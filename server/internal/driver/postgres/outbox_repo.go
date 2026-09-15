@@ -184,7 +184,6 @@ func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastEr
 	err := r.pool.QueryRow(ctx,
 		`UPDATE outbox_events
 		 SET status = CASE WHEN attempts >= $2 THEN 'dead' ELSE 'retry' END,
-		     attempts = attempts + 1,
 		     next_attempt_at = now() + interval '5 seconds' * (attempts + 1),
 		     last_error = $3
 		 WHERE id = $1 AND status NOT IN ('dead', 'published')

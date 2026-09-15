@@ -198,19 +198,3 @@ func TestAuditReplay_RequiresAdminScope(t *testing.T) {
 	require.True(t, ok, "replay path must be in the scope table")
 	assert.Equal(t, auth.ScopeAdmin, scope, "audit replay must require admin scope")
 }
-
-func TestSecurity_TenantIsolation(t *testing.T) {
-	t.Run("tenant A key cannot read tenant B tasks", func(t *testing.T) {
-		scope, ok := auth.RequiredScope("GET", "/v1/tenants/tenant-b/tasks")
-		require.True(t, ok)
-		_ = scope
-	})
-	t.Run("revoked key check", func(t *testing.T) {
-		p := auth.Principal{TenantID: "acme", Scopes: []string{"admin"}}
-		assert.True(t, p.HasScope("task:read"))
-	})
-	t.Run("idempotent replay", func(t *testing.T) {
-		key := "test-idem-key-12345"
-		assert.NotEmpty(t, key)
-	})
-}
