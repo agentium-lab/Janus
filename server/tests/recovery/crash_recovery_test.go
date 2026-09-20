@@ -32,6 +32,8 @@ func TestCrashRecovery_ZeroTaskLoss(t *testing.T) {
 
 	// Phase 1: start, create tasks, kill -9
 	p1 := startJanus(t, bin, port, pool)
+	waitHealthy(t, port)
+	setupViaAPI(t, port)
 	createTasks(t, port, 20)
 	killHard(t, p1)
 
@@ -39,6 +41,7 @@ func TestCrashRecovery_ZeroTaskLoss(t *testing.T) {
 	p2 := startJanus(t, bin, port, pool)
 	defer stopJanus(t, p2)
 	waitHealthy(t, port)
+	setupViaAPI(t, port)
 
 	// Wait for outbox publisher + audit projector to catch up
 	time.Sleep(3 * time.Second)
@@ -108,11 +111,6 @@ func repoRootCrash(t *testing.T) string {
 
 func startJanus(t *testing.T, bin string, port int, pool *pgxpool.Pool) *exec.Cmd {
 	t.Helper()
-	// Ensure tenant exists
-	pool.Exec(context.TODO(), `INSERT INTO tenants (id, name) VALUES ($1, 'Crash Test') ON CONFLICT DO NOTHING`, crashTenant)
-	pool.Exec(context.TODO(), `INSERT INTO agents (tenant_id, id, display_name, status) VALUES ($1, 'crash-agent', 'Crash Agent', 'online') ON CONFLICT DO NOTHING`, crashTenant)
-	pool.Exec(context.TODO(), `INSERT INTO mailboxes (tenant_id, id, status) VALUES ($1, 'crash-mb', 'active') ON CONFLICT DO NOTHING`, crashTenant)
-
 	cmd := exec.Command(bin)
 	cmd.Env = append(os.Environ(),
 		"JANUS_QUEUE_DRIVER=pg",
@@ -127,6 +125,27 @@ func startJanus(t *testing.T, bin string, port int, pool *pgxpool.Pool) *exec.Cm
 	)
 	require.NoError(t, cmd.Start())
 	return cmd
+}
+
+func setupViaAPI(t *testing.T, port int) {
+	t.Helper()
+	base := fmt.Sprintf("http://localhost:%d", port)
+
+	requests := []struct {
+		path, body string
+	}{
+		{"/v1/tenants", `{"id":"` + crashTenant + `","name":"Crash Test"}`},
+		{"/v1/tenants/" + crashTenant + "/agents", `{"id":"crash-agent","display_name":"Crash Agent","protocol":"http","endpoint":"http://localhost:9"}`},
+		{"/v1/tenants/" + crashTenant + "/mailboxes", `{"id":"crash-mb","agent_id":"crash-agent"}`},
+	}
+	for _, r := range requests {
+		resp, err := http.Post(base+r.path, "application/json", strings.NewReader(r.body))
+		require.NoError(t, err, "setup %s", r.path)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			t.Fatalf("setup %s: got %d", r.path, resp.StatusCode)
+		}
+	}
 }
 
 func createTasks(t *testing.T, port int, n int) {

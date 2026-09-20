@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -265,7 +266,7 @@ type mockOutboxWriter struct {
 	insertErr error
 }
 
-func (m *mockOutboxWriter) InsertDirect(_ context.Context, _, _, _ string, _ []byte) error {
+func (m *mockOutboxWriter) InsertDirect(_ context.Context, _, _, _ string, _ json.RawMessage) error {
 	m.inserts++
 	if m.insertErr != nil {
 		return m.insertErr

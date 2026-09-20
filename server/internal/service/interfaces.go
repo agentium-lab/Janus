@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+
+	"github.com/jackc/pgx/v5"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
@@ -72,9 +75,46 @@ type QueueDriver interface {
 }
 
 type OutboxWriter interface {
-	InsertDirect(ctx context.Context, id, tenantID, kind string, payload []byte) error
+	InsertDirect(ctx context.Context, id, tenantID, kind string, payload json.RawMessage) error
 }
 
 type HeartbeatDriver interface {
 	core.HeartbeatDriver
+}
+
+// Tx-scoped interfaces for the unified transaction path (Priority 1
+// simplification). The pgx.Tx parameter is nil for in-memory adapters.
+
+type TaskTxRepo interface {
+	TaskRepo
+	CreateTx(ctx context.Context, tx pgx.Tx, task core.Task) error
+	UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
+	UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error)
+	SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error
+	UpdateRetryAtTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, retryAt time.Time) error
+}
+
+type AttemptTxRepo interface {
+	TaskAttemptRepo
+	CreateTx(ctx context.Context, tx pgx.Tx, attempt core.TaskAttempt) error
+	UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON, usageJSON []byte) (bool, error)
+}
+
+type ApprovalTxRepo interface {
+	ApprovalRepo
+	UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error
+}
+
+type OutboxTxWriter interface {
+	OutboxWriter
+	Insert(ctx context.Context, tx pgx.Tx, id, tenantID, kind string, payload json.RawMessage) error
+}
+
+type OutboxDedupeWriter interface {
+	OutboxTxWriter
+	InsertDirectWithDedupe(ctx context.Context, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error
+}
+
+type Lifecycle interface {
+	ApplyTx(ctx context.Context, fn func(tx pgx.Tx) error) error
 }
