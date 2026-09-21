@@ -114,7 +114,3 @@ type OutboxDedupeWriter interface {
 	OutboxTxWriter
 	InsertDirectWithDedupe(ctx context.Context, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error
 }
-
-type Lifecycle interface {
-	ApplyTx(ctx context.Context, fn func(tx pgx.Tx) error) error
-}

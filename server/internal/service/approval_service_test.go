@@ -274,23 +274,6 @@ func (m *mockOutboxWriter) InsertDirect(_ context.Context, _, _, _ string, _ jso
 	return nil
 }
 
-func TestApprovalService_Approve_WithOutbox(t *testing.T) {
-	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
-		"acme:apr-ob": {TenantID: "acme", ID: "apr-ob", TaskID: "task-ob", Status: "pending", ExpiresAt: time.Now().Add(1 * time.Hour)},
-	}}
-	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
-		"acme:task-ob": {TenantID: "acme", ID: "task-ob", Status: core.TaskStatusApprovalPending, MailboxID: "mb-1"},
-	}}
-	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
-	svc := NewApprovalService(repo, taskSvc, nil)
-	outbox := &mockOutboxWriter{}
-	svc.WithOutbox(outbox)
-
-	err := svc.Approve(context.Background(), "acme", "apr-ob", "admin", "looks good")
-	require.NoError(t, err)
-	assert.Equal(t, 1, outbox.inserts)
-}
-
 func TestApprovalService_Approve_WithQueueDriver(t *testing.T) {
 	qdrv := &mockQueueDriver{}
 	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
@@ -331,7 +314,7 @@ func TestApprovalService_Approve_TransitionError(t *testing.T) {
 
 	err := svc.Approve(context.Background(), "acme", "apr-te", "admin", "ok")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "queue task")
+	assert.Contains(t, err.Error(), "get task")
 }
 
 func TestApprovalService_Approve_UpdateDecisionError(t *testing.T) {

@@ -182,6 +182,9 @@ func (r *TaskRepository) UpdateStatusWithCheck(ctx context.Context, tenantID, ta
 }
 
 func (r *TaskRepository) UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error {
+	if tx == nil {
+		return r.UpdateStatus(ctx, tenantID, taskID, status, attemptIncrement)
+	}
 	if attemptIncrement > 0 {
 		_, err := tx.Exec(ctx,
 			`UPDATE tasks SET status = $1, attempt_count = attempt_count + $2, updated_at = now()

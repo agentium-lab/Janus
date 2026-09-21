@@ -35,7 +35,7 @@ type serviceTestEnv struct {
 	agentRepo   *postgres.AgentRepository
 	dispatch    *DispatchService
 	taskSvc     *TaskService
-	lifecycle   *LifecycleService
+	lifecycle   Lifecycle
 	driver      *mockDispatchQueueDriver
 }
 
@@ -144,9 +144,9 @@ func setupServiceTestEnv(t *testing.T) *serviceTestEnv {
 	policySvc := NewPolicyService(policyRepo)
 	drv := &mockDispatchQueueDriver{}
 
-	lifecycle := NewLifecycleService(pool)
+	lifecycle := NewPGLifecycle(pool)
 	dispatch := NewDispatchService(taskRepo, attemptRepo, mailboxRepo, drv, policySvc, budgetSvc)
-	dispatch = dispatch.WithLifecycle(lifecycle, outboxRepo, budgetUsage)
+	dispatch = dispatch.WithTxPath(lifecycle, outboxRepo, PGBudgetLedger(budgetUsage))
 
 	taskSvc := NewTaskService(taskRepo, drv, pool, outboxRepo).WithPolicy(policySvc)
 	taskSvc = taskSvc.WithLifecycle(lifecycle)

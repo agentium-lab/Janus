@@ -744,13 +744,8 @@ func TestTaskService_WithApproval(t *testing.T) {
 
 func TestTaskService_WithLifecycle(t *testing.T) {
 	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
-	s2 := svc.WithLifecycle(nil)
+	s2 := svc.WithLifecycle(NewMemoryLifecycle())
 	assert.Same(t, svc, s2)
-}
-
-func TestLifecycleService_New(t *testing.T) {
-	ls := NewLifecycleService(nil)
-	assert.NotNil(t, ls)
 }
 
 func TestTaskService_ListByStatus(t *testing.T) {
@@ -1086,7 +1081,7 @@ func TestTaskService_CreateEventError(t *testing.T) {
 		Envelope: makeTestEnvelope("t1", "acme"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "publish created event")
+	assert.Contains(t, err.Error(), "outbox insert created")
 }
 
 func TestTaskService_CreateQueuePublishError(t *testing.T) {
@@ -1099,7 +1094,7 @@ func TestTaskService_CreateQueuePublishError(t *testing.T) {
 		MailboxID: "mb1", Envelope: makeTestEnvelope("t1", "acme"),
 	})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "publish to queue")
+	assert.Contains(t, err.Error(), "outbox insert task")
 }
 
 type mockQueueDriverFailPublish struct {
@@ -1408,15 +1403,15 @@ func TestAgentService_ResolveCapability_RepoError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestApprovalService_WithOutbox(t *testing.T) {
+func TestApprovalService_WithTxPath(t *testing.T) {
 	svc := NewApprovalService(&mockApprovalRepo{}, nil, nil)
-	s2 := svc.WithOutbox(nil)
+	s2 := svc.WithTxPath(nil, nil)
 	assert.Same(t, svc, s2)
 }
 
-func TestDispatchService_WithLifecycle(t *testing.T) {
+func TestDispatchService_WithTxPath(t *testing.T) {
 	svc := NewDispatchService(&mockDispatchTaskRepo{}, &mockDispatchAttemptRepo{}, &mockDispatchMailboxRepo{}, &mockQueueDriver{}, nil, nil)
-	s2 := svc.WithLifecycle(nil, nil, nil)
+	s2 := svc.WithTxPath(nil, nil, nil)
 	assert.Same(t, svc, s2)
 }
 

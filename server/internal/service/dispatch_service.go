@@ -34,9 +34,13 @@ type DispatchService struct {
 	queueDriver QueueDriver
 	policySvc   *PolicyService
 	budgetSvc   *BudgetService
-	lifecycle   *LifecycleService
-	outboxRepo  *postgres.OutboxRepo
-	budgetUsage *postgres.BudgetUsageRepo
+
+	// Unified transaction path (Priority 1): one code shape for PG and memory.
+	lifecycle Lifecycle
+	taskTx    TaskTxRepo
+	attemptTx AttemptTxRepo
+	txOutbox  OutboxDedupeWriter
+	ledger    BudgetLedger
 }
 
 func NewDispatchService(
@@ -47,7 +51,7 @@ func NewDispatchService(
 	policySvc *PolicyService,
 	budgetSvc *BudgetService,
 ) *DispatchService {
-	return &DispatchService{
+	s := &DispatchService{
 		taskRepo:    taskRepo,
 		attemptRepo: attemptRepo,
 		mailboxRepo: mailboxRepo,
@@ -55,15 +59,43 @@ func NewDispatchService(
 		policySvc:   policySvc,
 		budgetSvc:   budgetSvc,
 	}
+	s.initTxPath()
+	return s
 }
 
-// WithLifecycle wires the transaction wrapper + outbox + budget-usage repos.
-// When set, ACK/NACK/Pull/Start go through ApplyTx + outbox (production path).
-// When nil, the service falls back to direct publish (test path).
-func (s *DispatchService) WithLifecycle(lc *LifecycleService, outboxRepo *postgres.OutboxRepo, budgetUsage *postgres.BudgetUsageRepo) *DispatchService {
-	s.lifecycle = lc
-	s.outboxRepo = outboxRepo
-	s.budgetUsage = budgetUsage
+// initTxPath resolves the unified transaction path from the wired repos: PG
+// repos contribute their native *Tx methods; anything else is bridged through
+// TxAdapter + MemoryLifecycle + PublishingOutbox so tests run the production
+// code shape.
+func (s *DispatchService) initTxPath() {
+	if pgTask, ok := s.taskRepo.(*postgres.TaskRepository); ok && pgTask != nil {
+		s.taskTx = pgTask
+	} else {
+		s.taskTx = TaskRepoTxAdapter{s.taskRepo}
+	}
+	if pgAttempt, ok := s.attemptRepo.(*postgres.TaskAttemptRepository); ok && pgAttempt != nil {
+		s.attemptTx = pgAttempt
+	} else {
+		s.attemptTx = AttemptRepoTxAdapter{s.attemptRepo}
+	}
+	if s.attemptRepo == nil {
+		s.attemptTx = nil
+	}
+	s.lifecycle = NewMemoryLifecycle()
+	s.txOutbox = NewPublishingOutbox(s.queueDriver)
+}
+
+// WithTxPath wires the production transaction components: PGLifecycle, the
+// PG repos' native *Tx methods, the persistent outbox, and the idempotent
+// budget ledger.
+func (s *DispatchService) WithTxPath(lc Lifecycle, outbox OutboxDedupeWriter, ledger BudgetLedger) *DispatchService {
+	if lc != nil {
+		s.lifecycle = lc
+	}
+	if outbox != nil {
+		s.txOutbox = outbox
+	}
+	s.ledger = ledger
 	return s
 }
 
@@ -228,71 +260,37 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		DeliveryRef: string(delivery.DeliveryRef),
 	}
 
-	// Lifecycle path: attempt create + task status + claimed event in one tx.
-	if s.lifecycle != nil {
-		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
-			if pgAttemptRepo, ok := s.attemptRepo.(*postgres.TaskAttemptRepository); ok {
-				err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-					// Serialize pulls per agent and re-check capacity under the lock,
-					// closing the race between the pre-fetch count check and attempt
-					// creation that allowed concurrent pulls to exceed limits.
-					if _, lerr := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext($1))`, tenantID+":"+agentID); lerr != nil {
-						return fmt.Errorf("advisory lock: %w", lerr)
-					}
-					tRunning, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
-					aRunning, _ := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
-					if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aRunning, tRunning); cerr != nil {
-						return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
-					}
-					if cerr := pgAttemptRepo.CreateTx(ctx, tx, attempt); cerr != nil {
-						return fmt.Errorf("create attempt: %w", cerr)
-					}
-					if _, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1); uerr != nil {
-						return fmt.Errorf("update task claimed: %w", uerr)
-					}
-					claimedPayload, _ := json.Marshal(core.JanusEvent{
-						EventType: core.EventTaskClaimed, TenantID: tenantID, TaskID: task.ID,
-						Payload: mustMarshal(map[string]string{"lease_id": leaseID, "agent_id": agentID}),
-					})
-					return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", claimedPayload)
-				})
-				if err != nil {
-					s.budgetSvc.Release(ctx, tenantID, agentID)
-					if errors.Is(err, errAgentAtCapacity) {
-						_ = s.queueDriver.NackTask(ctx, tenantID, delivery.DeliveryRef, core.NackRetriable)
-						return nil, &core.BackpressureError{Reason: core.ReasonAgentConcurrencyExceeded,
-							Message: "agent concurrency limit reached; delivery requeued"}
-					}
-					return nil, err
-				}
-				return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
-			}
+	// Attempt create + task claim + claimed event in one tx, serialized per
+	// agent with a capacity re-check under the lock (closes the race between
+	// the pre-fetch count check and attempt creation).
+	err = s.lifecycle.ApplyTxLocked(ctx, tenantID+":"+agentID, func(tx pgx.Tx) error {
+		tRunning, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
+		aRunning, _ := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
+		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aRunning, tRunning); cerr != nil {
+			return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
 		}
-	}
-
-	// Fallback path (no lifecycle or non-PG repos).
-	if err := s.attemptRepo.Create(ctx, attempt); err != nil {
-		s.budgetSvc.Release(ctx, tenantID, agentID)
-		return nil, fmt.Errorf("create attempt: %w", err)
-	}
-
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, task.ID, core.TaskStatusClaimed, 1); err != nil {
-		s.budgetSvc.Release(ctx, tenantID, agentID)
-		return nil, fmt.Errorf("update task claimed: %w", err)
-	}
-
-	s.publishEvent(ctx, core.JanusEvent{
-		EventType: core.EventTaskClaimed,
-		TenantID:  tenantID,
-		TaskID:    task.ID,
-		Payload:   mustMarshal(map[string]string{"lease_id": leaseID, "agent_id": agentID}),
+		if cerr := s.attemptTx.CreateTx(ctx, tx, attempt); cerr != nil {
+			return fmt.Errorf("create attempt: %w", cerr)
+		}
+		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1); uerr != nil {
+			return fmt.Errorf("update task claimed: %w", uerr)
+		}
+		claimedPayload, _ := json.Marshal(core.JanusEvent{
+			EventType: core.EventTaskClaimed, TenantID: tenantID, TaskID: task.ID,
+			Payload: mustMarshal(map[string]string{"lease_id": leaseID, "agent_id": agentID}),
+		})
+		return s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", claimedPayload)
 	})
-
-	return &PullResult{
-		Task:      task,
-		LeaseID:   leaseID,
-		ExpiresAt: expiresAt,
-	}, nil
+	if err != nil {
+		s.budgetSvc.Release(ctx, tenantID, agentID)
+		if errors.Is(err, errAgentAtCapacity) {
+			_ = s.queueDriver.NackTask(ctx, tenantID, delivery.DeliveryRef, core.NackRetriable)
+			return nil, &core.BackpressureError{Reason: core.ReasonAgentConcurrencyExceeded,
+				Message: "agent concurrency limit reached; delivery requeued"}
+		}
+		return nil, err
+	}
+	return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
 }
 
 func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {
@@ -308,40 +306,20 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 		return fmt.Errorf("lease mismatch: expected %s, got %s", attempt.LeaseID, leaseID)
 	}
 
-	// Lifecycle path: task status + started event in one tx.
-	if s.lifecycle != nil {
-		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
-			err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-				task, gerr := s.taskRepo.Get(ctx, tenantID, taskID)
-				if gerr != nil {
-					return fmt.Errorf("get task: %w", gerr)
-				}
-				if _, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRunning, 0); uerr != nil {
-					return fmt.Errorf("update task running: %w", uerr)
-				}
-				startedPayload, _ := json.Marshal(core.JanusEvent{
-					EventType: core.EventTaskStarted, TenantID: tenantID, TaskID: taskID,
-					Payload: mustMarshal(map[string]string{"lease_id": leaseID}),
-				})
-				return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", startedPayload)
-			})
-			return err
+	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		task, gerr := s.taskRepo.Get(ctx, tenantID, taskID)
+		if gerr != nil {
+			return fmt.Errorf("get task: %w", gerr)
 		}
-	}
-
-	// Fallback path.
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusRunning, 0); err != nil {
-		return fmt.Errorf("update task running: %w", err)
-	}
-
-	s.publishEvent(ctx, core.JanusEvent{
-		EventType: core.EventTaskStarted,
-		TenantID:  tenantID,
-		TaskID:    taskID,
-		Payload:   mustMarshal(map[string]string{"lease_id": leaseID}),
+		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRunning, 0); uerr != nil {
+			return fmt.Errorf("update task running: %w", uerr)
+		}
+		startedPayload, _ := json.Marshal(core.JanusEvent{
+			EventType: core.EventTaskStarted, TenantID: tenantID, TaskID: taskID,
+			Payload: mustMarshal(map[string]string{"lease_id": leaseID}),
+		})
+		return s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", startedPayload)
 	})
-
-	return nil
 }
 
 func (s *DispatchService) TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error {
@@ -380,22 +358,6 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		return fmt.Errorf("lease mismatch")
 	}
 
-	// Fallback path (no lifecycle): keep legacy direct behavior.
-	if s.lifecycle == nil {
-		return s.ackTaskDirect(ctx, tenantID, taskID, attempt, resultRef, usage)
-	}
-
-	// The lifecycle path needs concrete PG repos for the *Tx methods. This
-	// mirrors TaskService.createWithOutbox's type assertion pattern.
-	pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository)
-	if !ok {
-		return s.ackTaskDirect(ctx, tenantID, taskID, attempt, resultRef, usage)
-	}
-	pgAttemptRepo, ok := s.attemptRepo.(*postgres.TaskAttemptRepository)
-	if !ok {
-		return s.ackTaskDirect(ctx, tenantID, taskID, attempt, resultRef, usage)
-	}
-
 	var prompt, completion, total int64
 	if usage != nil {
 		prompt = int64(usage.PromptTokens)
@@ -406,7 +368,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 	committed := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		ok, ferr := pgAttemptRepo.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON)
+		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}
@@ -419,7 +381,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
 		}
-		taskOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusCompleted, 0)
+		taskOK, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusCompleted, 0)
 		if uerr != nil {
 			return fmt.Errorf("complete task: %w", uerr)
 		}
@@ -427,7 +389,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 			return nil
 		}
 		if resultRef != "" {
-			if serr := pgTaskRepo.SetResultRefTx(ctx, tx, tenantID, taskID, resultRef); serr != nil {
+			if serr := s.taskTx.SetResultRefTx(ctx, tx, tenantID, taskID, resultRef); serr != nil {
 				return fmt.Errorf("set result ref: %w", serr)
 			}
 		}
@@ -441,18 +403,14 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 			{"tenant", tenantID},
 			{"agent", attempt.AgentID},
 		} {
-			inserted, ierr := s.budgetUsage.InsertLedgerTx(ctx, tx, core.LedgerEntry{
-				TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt,
-				ScopeType: scope.Type, ScopeID: scope.ID,
-				PromptTokens: prompt, CompletionTokens: completion,
-				TotalTokens: total, CostUSD: costUSD,
-			})
-			if ierr != nil {
-				return fmt.Errorf("ledger insert %s: %w", scope.Type, ierr)
-			}
-			if inserted {
-				if ierr := s.budgetUsage.IncrementUsageTx(ctx, tx, tenantID, scope.Type, scope.ID, prompt, completion, total, costUSD); ierr != nil {
-					return fmt.Errorf("increment usage %s: %w", scope.Type, ierr)
+			if s.ledger != nil {
+				if ierr := s.ledger.SettleTx(ctx, tx, core.LedgerEntry{
+					TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt,
+					ScopeType: scope.Type, ScopeID: scope.ID,
+					PromptTokens: prompt, CompletionTokens: completion,
+					TotalTokens: total, CostUSD: costUSD,
+				}); ierr != nil {
+					return fmt.Errorf("ledger settle %s: %w", scope.Type, ierr)
 				}
 			}
 		}
@@ -463,7 +421,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 			SourceAgent: attempt.AgentID,
 			Payload:     mustMarshal(map[string]string{"result_ref": resultRef}),
 		})
-		if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", completedPayload); oerr != nil {
+		if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", completedPayload); oerr != nil {
 			return fmt.Errorf("outbox completed: %w", oerr)
 		}
 
@@ -476,7 +434,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 				EventType: core.EventToolInvocationCompleted, TenantID: tenantID, TaskID: taskID,
 				SourceAgent: attempt.AgentID, Payload: toolPayload,
 			})
-			if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", toolEvt); oerr != nil {
+			if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", toolEvt); oerr != nil {
 				return fmt.Errorf("outbox tool completed: %w", oerr)
 			}
 		}
@@ -502,57 +460,9 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 				EventType: core.EventTaskCompleted, TenantID: tenantID, TaskID: taskID,
 				Payload: mustMarshal(map[string]string{"result_ref": resultRef, "ack_error": aerr.Error(), "delivery_ref": attempt.DeliveryRef}),
 			})
-			_ = s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "event_publish", warnPayload)
+			_ = s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", warnPayload)
 		}
 	}
-	return nil
-}
-
-// ackTaskDirect is the fallback ACK path (no LifecycleService). Preserves the
-// pre-lifecycle behavior for unit tests / in-memory driver scenarios.
-func (s *DispatchService) ackTaskDirect(ctx context.Context, tenantID, taskID string, attempt *core.TaskAttempt, resultRef string, usage *core.TokenUsage) error {
-	var usageJSON []byte
-	if usage != nil {
-		usageJSON, _ = encodeJSON(usage)
-	}
-
-	ok, err := s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON)
-	if err != nil {
-		return fmt.Errorf("finish attempt: %w", err)
-	}
-	if !ok {
-		return nil
-	}
-
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusCompleted, 0); err != nil {
-		return fmt.Errorf("complete task: %w", err)
-	}
-
-	if resultRef != "" {
-		_ = s.taskRepo.SetResultRef(ctx, tenantID, taskID, resultRef)
-	}
-
-	_ = s.budgetSvc.Settle(ctx, tenantID, attempt.AgentID, usage)
-
-	if attempt.DeliveryRef != "" {
-		if err := s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef)); err != nil {
-			s.publishEvent(ctx, core.JanusEvent{
-				EventType: core.EventTaskCompleted,
-				TenantID:  tenantID,
-				TaskID:    taskID,
-				Payload:   mustMarshal(map[string]string{"result_ref": resultRef, "ack_warn": err.Error()}),
-			})
-			return fmt.Errorf("ack queue message: %w", err)
-		}
-	}
-
-	s.publishEvent(ctx, core.JanusEvent{
-		EventType: core.EventTaskCompleted,
-		TenantID:  tenantID,
-		TaskID:    taskID,
-		Payload:   mustMarshal(map[string]string{"result_ref": resultRef}),
-	})
-
 	return nil
 }
 
@@ -577,21 +487,6 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 		return fmt.Errorf("lease mismatch")
 	}
 
-	// Fallback path (no lifecycle): keep legacy direct behavior.
-	if s.lifecycle == nil {
-		return s.nackTaskDirect(ctx, tenantID, taskID, attempt, retriable, taskErr)
-	}
-
-	// Lifecycle path needs concrete PG repos for *Tx methods.
-	pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository)
-	if !ok {
-		return s.nackTaskDirect(ctx, tenantID, taskID, attempt, retriable, taskErr)
-	}
-	pgAttemptRepo, ok := s.attemptRepo.(*postgres.TaskAttemptRepository)
-	if !ok {
-		return s.nackTaskDirect(ctx, tenantID, taskID, attempt, retriable, taskErr)
-	}
-
 	var errJSON []byte
 	if taskErr != nil {
 		errJSON, _ = encodeJSON(taskErr)
@@ -607,7 +502,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	committed := false
 	attemptFinished := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		ok, ferr := pgAttemptRepo.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
+		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}
@@ -618,25 +513,25 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 
 		if canRetry {
 			retryAt := time.Now().Add(mb.RetryPolicy.BackoffDuration(task.AttemptCount))
-			retryOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRetryScheduled, 0)
+			retryOK, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRetryScheduled, 0)
 			if uerr != nil {
 				return fmt.Errorf("set retry_scheduled: %w", uerr)
 			}
 			if !retryOK {
 				return nil
 			}
-			if rerr := pgTaskRepo.UpdateRetryAtTx(ctx, tx, tenantID, taskID, retryAt); rerr != nil {
+			if rerr := s.taskTx.UpdateRetryAtTx(ctx, tx, tenantID, taskID, retryAt); rerr != nil {
 				return fmt.Errorf("set retry_at: %w", rerr)
 			}
 			retryPayload, _ := json.Marshal(core.JanusEvent{
 				EventType: core.EventTaskRetryScheduled, TenantID: tenantID, TaskID: taskID,
 				Payload: mustMarshal(map[string]string{"attempt": fmt.Sprintf("%d", task.AttemptCount)}),
 			})
-			if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", retryPayload); oerr != nil {
+			if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", retryPayload); oerr != nil {
 				return fmt.Errorf("outbox retry: %w", oerr)
 			}
 		} else {
-			dlOK, uerr := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusDeadLettered, 0)
+			dlOK, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusDeadLettered, 0)
 			if uerr != nil {
 				return fmt.Errorf("dead letter: %w", uerr)
 			}
@@ -653,14 +548,14 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 				TenantID: tenantID, MailboxID: task.MailboxID, TaskID: taskID,
 				Priority: task.Priority, Payload: envelopeJSON, Headers: dlqHeaders,
 			})
-			if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "dlq_publish", dlqPayload); oerr != nil {
+			if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "dlq_publish", dlqPayload); oerr != nil {
 				return fmt.Errorf("outbox dlq: %w", oerr)
 			}
 			dlEventPayload, _ := json.Marshal(core.JanusEvent{
 				EventType: core.EventTaskDeadLettered, TenantID: tenantID, TaskID: taskID,
 				Payload: errJSON,
 			})
-			if oerr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", dlEventPayload); oerr != nil {
+			if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", dlEventPayload); oerr != nil {
 				return fmt.Errorf("outbox dead_lettered: %w", oerr)
 			}
 		}
@@ -690,80 +585,6 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 			}
 		}
 	}
-	return nil
-}
-
-// nackTaskDirect is the fallback NACK path (no LifecycleService). Preserves the
-// pre-lifecycle behavior. NOTE: this path ACKs NATS before updating DB, which
-// is the ordering issue the lifecycle path fixes; kept only for tests.
-func (s *DispatchService) nackTaskDirect(ctx context.Context, tenantID, taskID string, attempt *core.TaskAttempt, retriable bool, taskErr *core.TaskError) error {
-	var errJSON []byte
-	if taskErr != nil {
-		errJSON, _ = encodeJSON(taskErr)
-	}
-
-	_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
-
-	if attempt.DeliveryRef != "" {
-		if retriable {
-			_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef))
-		} else {
-			_ = s.queueDriver.NackTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef), core.NackNonRetriable)
-		}
-	}
-
-	ok, err := s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
-	if err != nil {
-		return fmt.Errorf("finish attempt: %w", err)
-	}
-	if !ok {
-		return nil
-	}
-
-	task, err := s.taskRepo.Get(ctx, tenantID, taskID)
-	if err != nil {
-		return fmt.Errorf("get task: %w", err)
-	}
-
-	if retriable {
-		mb, mbErr := s.mailboxRepo.Get(ctx, tenantID, task.MailboxID)
-		if mbErr == nil && !mb.RetryPolicy.ExceedsMaxAttempts(task.AttemptCount) {
-			if err := s.taskRepo.UpdateRetryAt(ctx, tenantID, taskID,
-				time.Now().Add(mb.RetryPolicy.BackoffDuration(task.AttemptCount)),
-			); err != nil {
-				return fmt.Errorf("schedule retry: %w", err)
-			}
-			s.publishEvent(ctx, core.JanusEvent{
-				EventType: core.EventTaskRetryScheduled,
-				TenantID:  tenantID,
-				TaskID:    taskID,
-				Payload:   mustMarshal(map[string]string{"attempt": fmt.Sprintf("%d", task.AttemptCount)}),
-			})
-			return nil
-		}
-	}
-
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusDeadLettered, 0); err != nil {
-		return fmt.Errorf("dead letter: %w", err)
-	}
-
-	envelopeJSON, _ := json.Marshal(task.Envelope)
-	_ = s.queueDriver.PublishDLQ(ctx, core.TaskMessage{
-		TenantID:  tenantID,
-		MailboxID: task.MailboxID,
-		TaskID:    taskID,
-		Priority:  task.Priority,
-		Payload:   envelopeJSON,
-		Headers:   map[string]string{"attempt_count": fmt.Sprintf("%d", task.AttemptCount)},
-	}, errJSON)
-
-	s.publishEvent(ctx, core.JanusEvent{
-		EventType: core.EventTaskDeadLettered,
-		TenantID:  tenantID,
-		TaskID:    taskID,
-		Payload:   errJSON,
-	})
-
 	return nil
 }
 

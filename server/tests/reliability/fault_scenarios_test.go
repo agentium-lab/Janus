@@ -33,7 +33,7 @@ type faultEnv struct {
 	agentRepo   *pgdriver.AgentRepository
 	dispatch    *service.DispatchService
 	taskSvc     *service.TaskService
-	lifecycle   *service.LifecycleService
+	lifecycle   service.Lifecycle
 	queue       *faultQueueDriver
 }
 
@@ -235,9 +235,9 @@ func setupFaultEnv(t *testing.T) *faultEnv {
 	policySvc := service.NewPolicyService(policyRepo)
 	queue := &faultQueueDriver{}
 
-	lifecycle := service.NewLifecycleService(pool)
+	lifecycle := service.NewPGLifecycle(pool)
 	dispatch := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queue, policySvc, budgetSvc)
-	dispatch = dispatch.WithLifecycle(lifecycle, outboxRepo, budgetUsage)
+	dispatch = dispatch.WithTxPath(lifecycle, outboxRepo, service.PGBudgetLedger(budgetUsage))
 
 	taskSvc := service.NewTaskService(taskRepo, queue, pool, outboxRepo).WithPolicy(policySvc)
 	taskSvc = taskSvc.WithLifecycle(lifecycle)
@@ -389,7 +389,7 @@ func TestFault03_PullThenRestart_ThenAck(t *testing.T) {
 		env.taskRepo, env.attemptRepo, env.mailboxRepo, env.queue,
 		service.NewPolicyService(pgdriver.NewPolicyRuleRepository(env.pool)),
 		service.NewBudgetService(pgdriver.NewBudgetRepository(env.pool)),
-	).WithLifecycle(env.lifecycle, env.outboxRepo, env.budgetUsage)
+	).WithTxPath(env.lifecycle, env.outboxRepo, service.PGBudgetLedger(env.budgetUsage))
 
 	err = newDispatch.AckTask(ctx, "acme", task.ID, result.LeaseID, "result://after-restart", nil)
 	require.NoError(t, err)

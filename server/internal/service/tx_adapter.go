@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -48,22 +47,6 @@ func (a AttemptRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, attempt co
 
 func (a AttemptRepoTxAdapter) UpdateFinishedWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON, usageJSON []byte) (bool, error) {
 	return a.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt, status, errJSON, usageJSON)
-}
-
-type OutboxTxAdapter struct {
-	writer OutboxWriter
-}
-
-func NewOutboxTxAdapter(w OutboxWriter) OutboxTxWriter {
-	return OutboxTxAdapter{writer: w}
-}
-
-func (a OutboxTxAdapter) InsertDirect(ctx context.Context, id, tenantID, kind string, payload json.RawMessage) error {
-	return a.writer.InsertDirect(ctx, id, tenantID, kind, payload)
-}
-
-func (a OutboxTxAdapter) Insert(ctx context.Context, _ pgx.Tx, id, tenantID, kind string, payload json.RawMessage) error {
-	return a.writer.InsertDirect(ctx, id, tenantID, kind, payload)
 }
 
 type ApprovalRepoTxAdapter struct {

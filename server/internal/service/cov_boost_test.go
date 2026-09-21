@@ -420,9 +420,9 @@ func TestCov_APIKeyService_CreateRepoError(t *testing.T) {
 
 // --- approval ---
 
-func TestCov_ApprovalService_WithOutboxRepo(t *testing.T) {
+func TestCov_ApprovalService_WithTxPath(t *testing.T) {
 	svc := NewApprovalService(&mockApprovalRepo{}, nil, nil)
-	ret := svc.WithOutboxRepo(nil, nil)
+	ret := svc.WithTxPath(nil, nil)
 	assert.Same(t, svc, ret)
 }
 
@@ -436,20 +436,24 @@ func TestCov_ApprovalService_Expire_UpdateError(t *testing.T) {
 	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
 		"acme:a1": {ID: "a1", TenantID: "acme", Status: "pending", TaskID: "t1"},
 	}, updateErr: errors.New("update fail")}
-	svc := NewApprovalService(repo, NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil), nil)
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusApprovalPending},
+	}}
+	svc := NewApprovalService(repo, NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil), nil)
 	err := svc.Expire(context.Background(), "acme", "a1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "expire approval")
+	assert.Contains(t, err.Error(), "update approval")
 }
 
-func TestCov_ApprovalService_Expire_TransitionFailureLogged(t *testing.T) {
+func TestCov_ApprovalService_Expire_TaskGetFailure(t *testing.T) {
 	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
 		"acme:a1": {ID: "a1", TenantID: "acme", Status: "pending", TaskID: "missing-task"},
 	}}
 	taskSvc := NewTaskService(&mockTaskRepo{err: errors.New("db down")}, &mockQueueDriver{}, nil, nil)
 	svc := NewApprovalService(repo, taskSvc, nil)
 	err := svc.Expire(context.Background(), "acme", "a1")
-	require.NoError(t, err, "transition failure on expire is logged, not returned")
+	require.Error(t, err, "atomic expire fails when the task cannot be loaded")
+	assert.Contains(t, err.Error(), "get task")
 }
 
 func TestCov_ApprovalService_Approve_ExpiredRoutesToExpire(t *testing.T) {
@@ -457,12 +461,16 @@ func TestCov_ApprovalService_Approve_ExpiredRoutesToExpire(t *testing.T) {
 		"acme:a1": {ID: "a1", TenantID: "acme", Status: "pending", TaskID: "t1",
 			ExpiresAt: time.Now().Add(-time.Hour)},
 	}}
-	taskSvc := NewTaskService(&mockTaskRepo{err: errors.New("db down")}, &mockQueueDriver{}, nil, nil)
+	taskRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusApprovalPending},
+	}}
+	taskSvc := NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil)
 	svc := NewApprovalService(repo, taskSvc, nil)
 	err := svc.Approve(context.Background(), "acme", "a1", "boss", "ok")
 	require.NoError(t, err)
 	got, _ := repo.Get(context.Background(), "acme", "a1")
 	assert.Equal(t, "expired", got.Status)
+	assert.Equal(t, core.TaskStatusCancelled, taskRepo.tasks["acme:t1"].Status)
 }
 
 // --- budget ---
@@ -817,10 +825,10 @@ func TestCov_PullTask_EnsureMailboxConsumer(t *testing.T) {
 	assert.Equal(t, 1, qDrv.ensureCons)
 }
 
-func TestCov_PullTask_FallbackUpdateStatusError(t *testing.T) {
+func TestCov_PullTask_UpdateStatusError(t *testing.T) {
 	svc, qDrv, tRepo, _, _ := newCovDispatchSvc()
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 0)
-	tRepo.updateErr = errors.New("update fail")
+	tRepo.updateCheckErr = errors.New("update fail")
 	qDrv.deliveries = []core.TaskDelivery{{TaskID: "task-1", DeliveryRef: "ref-1"}}
 
 	_, err := svc.PullTask(context.Background(), "acme", "mb-1", "agent-1")
@@ -848,7 +856,7 @@ func TestCov_StartTask_ValidationAndUpdateError(t *testing.T) {
 
 func TestCov_AckTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
 	svc, qDrv, tRepo, aRepo := newTestDispatchSvc()
-	svc = svc.WithLifecycle(NewLifecycleService(nil), nil, nil)
+	svc = svc.WithTxPath(NewMemoryLifecycle(), nil, nil)
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
@@ -865,7 +873,7 @@ func TestCov_AckTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
 
 func TestCov_NackTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
 	svc, qDrv, tRepo, aRepo := newTestDispatchSvc()
-	svc = svc.WithLifecycle(NewLifecycleService(nil), nil, nil)
+	svc = svc.WithTxPath(NewMemoryLifecycle(), nil, nil)
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
@@ -1153,7 +1161,7 @@ func TestCov_TaskService_Transition_Branches(t *testing.T) {
 			"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning},
 		}}
 		qd := &mockQueueDriver{}
-		svc := NewTaskService(repo, qd, nil, nil).WithLifecycle(NewLifecycleService(nil))
+		svc := NewTaskService(repo, qd, nil, nil).WithLifecycle(NewMemoryLifecycle())
 		err := svc.Complete(ctx, "acme", "t1")
 		require.NoError(t, err)
 		assert.Equal(t, core.TaskStatusCompleted, repo.tasks["acme:t1"].Status)
@@ -1244,12 +1252,17 @@ func TestCov_TaskService_Replay_ErrorBranches(t *testing.T) {
 	})
 }
 
-func TestCov_TaskService_TransitionInTx_RequiresPGRepo(t *testing.T) {
-	svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil)
+func TestCov_TaskService_TransitionInTx_MemoryRepo(t *testing.T) {
+	repo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusQueued},
+	}}
+	qd := &mockQueueDriver{}
+	svc := NewTaskService(repo, qd, nil, nil)
 	err := svc.TransitionInTx(context.Background(), nil, "acme", "t1",
 		core.TaskStatusQueued, core.TaskStatusClaimed, core.EventTaskClaimed, 0)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "requires postgres task repo")
+	require.NoError(t, err)
+	assert.Equal(t, core.TaskStatusClaimed, repo.tasks["acme:t1"].Status)
+	require.Len(t, qd.publishedEvents, 1)
 }
 
 func TestCov_TaskService_PublishEvent_ActingUser(t *testing.T) {

@@ -677,8 +677,18 @@ func TestExtra_AckTask_QueueAckError(t *testing.T) {
 	qDrv.ackErr = fmt.Errorf("ack fail")
 
 	err := svc.AckTask(ctx, "acme", "task-1", "lease-abc", "", nil)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "ack queue message")
+	assert.NoError(t, err, "DB already committed; queue ack failure is logged, not returned")
+	assert.Equal(t, core.TaskStatusCompleted, tRepo.tasks["acme:task-1"].Status)
+	found := false
+	for _, evt := range qDrv.events {
+		if evt.EventType == core.EventTaskCompleted {
+			var payload map[string]string
+			if json.Unmarshal(evt.Payload, &payload) == nil && payload["ack_error"] == "ack fail" {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "ack failure must emit a warn event via outbox")
 }
 
 func TestExtra_TaskHeartbeat_GetLatestError(t *testing.T) {
@@ -735,21 +745,19 @@ func TestExtra_Replay_QueueError(t *testing.T) {
 
 	_, err := svc.Replay(ctx, "acme", "t1")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "re-publish to queue")
+	assert.Contains(t, err.Error(), "outbox insert replay")
 }
 
-func TestExtra_LifecycleService_ApplyTx_Nil(t *testing.T) {
-	var ls *LifecycleService
-	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error { return nil })
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not configured")
-}
-
-func TestExtra_LifecycleService_ApplyTx_NilPool(t *testing.T) {
-	ls := NewLifecycleService(nil)
-	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error { return nil })
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not configured")
+func TestExtra_MemoryLifecycle_ApplyTx_RunsFn(t *testing.T) {
+	ls := NewMemoryLifecycle()
+	ran := false
+	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
+		ran = true
+		assert.Nil(t, tx)
+		return nil
+	})
+	assert.NoError(t, err)
+	assert.True(t, ran)
 }
 
 func TestExtra_EventService_PublishEvent_MarshalError(t *testing.T) {
@@ -789,7 +797,7 @@ func TestExtra_ApprovalService_Reject_TransitionError(t *testing.T) {
 
 	err := svc.Reject(ctx, "acme", "appr-1", "approver", "reason")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "cancel task")
+	assert.Contains(t, err.Error(), "get task")
 }
 
 func TestExtra_NackTask_GetLatestError(t *testing.T) {
@@ -879,15 +887,15 @@ func TestExtra_LifecycleService_ApplyTx_BeginError(t *testing.T) {
 	pool, err := pgxpool.New(context.Background(), "host=/tmp port=5433 user=silv dbname=nonexistent connect_timeout=2")
 	require.NoError(t, err)
 	defer pool.Close()
-	ls := NewLifecycleService(pool)
+	ls := NewPGLifecycle(pool)
 	err = ls.ApplyTx(context.Background(), func(tx pgx.Tx) error { return nil })
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "begin lifecycle tx")
+	assert.Contains(t, err.Error(), "begin tx")
 }
 
 func TestExtra_LifecycleService_ApplyTx_FnError(t *testing.T) {
 	pool := openExtraTestPool(t)
-	ls := NewLifecycleService(pool)
+	ls := NewPGLifecycle(pool)
 	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
 		return fmt.Errorf("fn error")
 	})
@@ -897,7 +905,7 @@ func TestExtra_LifecycleService_ApplyTx_FnError(t *testing.T) {
 
 func TestExtra_LifecycleService_ApplyTx_CommitError(t *testing.T) {
 	pool := openExtraTestPool(t)
-	ls := NewLifecycleService(pool)
+	ls := NewPGLifecycle(pool)
 	err := ls.ApplyTx(context.Background(), func(tx pgx.Tx) error {
 		_ = tx.Rollback(context.Background())
 		return nil

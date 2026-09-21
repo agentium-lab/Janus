@@ -42,24 +42,50 @@ type TaskService struct {
 	taskRepo       TaskRepo
 	queueDriver    QueueDriver
 	pool           *pgxpool.Pool
-	outboxRepo     *postgres.OutboxRepo
 	policySvc      *PolicyService
 	approvalSvc    *ApprovalService
-	lifecycle      *LifecycleService
 	intentResolver IntentResolver
 	contextRefSvc  *ContextRefService
 	router         *routing.Router
 
 	agentExistence AgentExistenceChecker
 	attemptRepo    TaskAttemptRepo
+
+	// Unified transaction path (Priority 1): one code shape for PG and memory.
+	lifecycle Lifecycle
+	taskTx    TaskTxRepo
+	txOutbox  OutboxDedupeWriter
 }
 
 func NewTaskService(taskRepo TaskRepo, queueDriver QueueDriver, pool *pgxpool.Pool, outboxRepo *postgres.OutboxRepo) *TaskService {
-	return &TaskService{
+	s := &TaskService{
 		taskRepo:    taskRepo,
 		queueDriver: queueDriver,
 		pool:        pool,
-		outboxRepo:  outboxRepo,
+	}
+	s.initTxPath(outboxRepo)
+	return s
+}
+
+// initTxPath resolves the unified transaction path components from whatever
+// was wired at construction: a pool yields PGLifecycle + the PG repo's native
+// *Tx methods; otherwise MemoryLifecycle + TxAdapter + PublishingOutbox so
+// tests execute the same logical path as production.
+func (s *TaskService) initTxPath(outboxRepo *postgres.OutboxRepo) {
+	if s.pool != nil {
+		s.lifecycle = NewPGLifecycle(s.pool)
+	} else {
+		s.lifecycle = NewMemoryLifecycle()
+	}
+	if pgRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
+		s.taskTx = pgRepo
+	} else {
+		s.taskTx = TaskRepoTxAdapter{s.taskRepo}
+	}
+	if outboxRepo != nil {
+		s.txOutbox = outboxRepo
+	} else {
+		s.txOutbox = NewPublishingOutbox(s.queueDriver)
 	}
 }
 
@@ -73,10 +99,7 @@ func (s *TaskService) WithApproval(approvalSvc *ApprovalService) *TaskService {
 	return s
 }
 
-// WithLifecycle wires the transaction wrapper so management transitions
-// (cancel/block/unblock/replay) route their events through the outbox inside a
-// transaction. When nil, the service falls back to direct publish.
-func (s *TaskService) WithLifecycle(lc *LifecycleService) *TaskService {
+func (s *TaskService) WithLifecycle(lc Lifecycle) *TaskService {
 	s.lifecycle = lc
 	return s
 }
@@ -214,32 +237,15 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 
 	var result *core.Task
-	if s.outboxRepo != nil && s.pool != nil {
-		err := s.createWithOutbox(ctx, task)
-		if err == nil {
-			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
-			created, _ := s.taskRepo.Get(ctx, task.TenantID, task.ID)
-			if created != nil {
-				result = created
-			} else {
-				result = &task
-			}
-		} else {
-			return nil, err
-		}
+	if err := s.createAtomic(ctx, task); err != nil {
+		return nil, err
+	}
+	metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
+	created, _ := s.taskRepo.Get(ctx, task.TenantID, task.ID)
+	if created != nil {
+		result = created
 	} else {
-		err := s.createDirect(ctx, task)
-		if err == nil {
-			metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
-			created, _ := s.taskRepo.Get(ctx, task.TenantID, task.ID)
-			if created != nil {
-				result = created
-			} else {
-				result = &task
-			}
-		} else {
-			return nil, err
-		}
+		result = &task
 	}
 
 	if task.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
@@ -262,111 +268,58 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	return result, nil
 }
 
-func (s *TaskService) createWithOutbox(ctx context.Context, task core.Task) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
+// createAtomic persists the task, its lifecycle events, and (when routed to a
+// mailbox) the queue message in one transaction. In memory mode the
+// PublishingOutbox delivers synchronously, preserving the legacy direct
+// observable behavior.
+func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
+	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		if err := s.taskTx.CreateTx(ctx, tx, task); err != nil {
+			return fmt.Errorf("create task: %w", err)
+		}
 
-	taskRepo, ok := s.taskRepo.(*postgres.TaskRepository)
-	if !ok {
-		return s.createDirect(ctx, task)
-	}
+		createdPayload, _ := json.Marshal(core.JanusEvent{
+			EventType:   core.EventTaskCreated,
+			TenantID:    task.TenantID,
+			TaskID:      task.ID,
+			SourceAgent: task.SourceAgent,
+			Payload:     mustMarshal(map[string]string{"status": string(task.Status)}),
+		})
+		if err := s.txOutbox.Insert(ctx, tx, ulid(), task.TenantID, "event_publish", createdPayload); err != nil {
+			return fmt.Errorf("outbox insert created: %w", err)
+		}
 
-	if err := taskRepo.CreateTx(ctx, tx, task); err != nil {
-		return fmt.Errorf("create task: %w", err)
-	}
+		if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
+			payload, _ := json.Marshal(task.Envelope)
+			queuePayload, _ := json.Marshal(core.TaskMessage{
+				TenantID:  task.TenantID,
+				MailboxID: task.MailboxID,
+				TaskID:    task.ID,
+				Priority:  task.Priority,
+				Payload:   payload,
+			})
+			if err := s.txOutbox.Insert(ctx, tx, ulid(), task.TenantID, "task_publish", queuePayload); err != nil {
+				return fmt.Errorf("outbox insert task: %w", err)
+			}
 
-	createdPayload, _ := json.Marshal(core.JanusEvent{
-		EventType:   core.EventTaskCreated,
-		TenantID:    task.TenantID,
-		TaskID:      task.ID,
-		SourceAgent: task.SourceAgent,
-		Payload:     mustMarshal(map[string]string{"status": string(task.Status)}),
+			if err := s.taskTx.UpdateStatusTx(ctx, tx, task.TenantID, task.ID, core.TaskStatusQueued, 0); err != nil {
+				return fmt.Errorf("update to queued: %w", err)
+			}
+
+			queuedPayload, _ := json.Marshal(core.JanusEvent{
+				EventType:   core.EventTaskQueued,
+				TenantID:    task.TenantID,
+				TaskID:      task.ID,
+				SourceAgent: task.SourceAgent,
+				Payload:     mustMarshal(map[string]string{"mailbox": task.MailboxID}),
+			})
+			if err := s.txOutbox.Insert(ctx, tx, ulid(), task.TenantID, "event_publish", queuedPayload); err != nil {
+				return fmt.Errorf("outbox insert queued: %w", err)
+			}
+		}
+
+		return nil
 	})
-	if err := s.outboxRepo.Insert(ctx, tx, ulid(), task.TenantID, "event_publish", createdPayload); err != nil {
-		return fmt.Errorf("outbox insert created: %w", err)
-	}
-
-	if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
-		payload, _ := json.Marshal(task.Envelope)
-		queuePayload, _ := json.Marshal(core.TaskMessage{
-			TenantID:  task.TenantID,
-			MailboxID: task.MailboxID,
-			TaskID:    task.ID,
-			Priority:  task.Priority,
-			Payload:   payload,
-		})
-		if err := s.outboxRepo.Insert(ctx, tx, ulid(), task.TenantID, "task_publish", queuePayload); err != nil {
-			return fmt.Errorf("outbox insert task: %w", err)
-		}
-
-		if err := taskRepo.UpdateStatusTx(ctx, tx, task.TenantID, task.ID, core.TaskStatusQueued, 0); err != nil {
-			return fmt.Errorf("update to queued: %w", err)
-		}
-
-		queuedPayload, _ := json.Marshal(core.JanusEvent{
-			EventType:   core.EventTaskQueued,
-			TenantID:    task.TenantID,
-			TaskID:      task.ID,
-			SourceAgent: task.SourceAgent,
-			Payload:     mustMarshal(map[string]string{"mailbox": task.MailboxID}),
-		})
-		if err := s.outboxRepo.Insert(ctx, tx, ulid(), task.TenantID, "event_publish", queuedPayload); err != nil {
-			return fmt.Errorf("outbox insert queued: %w", err)
-		}
-	}
-
-	return tx.Commit(ctx)
-}
-
-func (s *TaskService) createDirect(ctx context.Context, task core.Task) error {
-	if err := s.taskRepo.Create(ctx, task); err != nil {
-		return fmt.Errorf("create task: %w", err)
-	}
-
-	if err := s.publishEvent(ctx, core.JanusEvent{
-		EventType:   core.EventTaskCreated,
-		TenantID:    task.TenantID,
-		TaskID:      task.ID,
-		SourceAgent: task.SourceAgent,
-		Payload:     mustMarshal(map[string]string{"status": string(task.Status)}),
-	}); err != nil {
-		return fmt.Errorf("publish created event: %w", err)
-	}
-
-	if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
-		payload, err := json.Marshal(task.Envelope)
-		if err != nil {
-			return fmt.Errorf("marshal envelope: %w", err)
-		}
-		if err := s.queueDriver.PublishTask(ctx, core.TaskMessage{
-			TenantID:  task.TenantID,
-			MailboxID: task.MailboxID,
-			TaskID:    task.ID,
-			Priority:  task.Priority,
-			Payload:   payload,
-		}); err != nil {
-			return fmt.Errorf("publish to queue: %w", err)
-		}
-
-		if err := s.taskRepo.UpdateStatus(ctx, task.TenantID, task.ID, core.TaskStatusQueued, 0); err != nil {
-			return fmt.Errorf("update to queued: %w", err)
-		}
-
-		if err := s.publishEvent(ctx, core.JanusEvent{
-			EventType:   core.EventTaskQueued,
-			TenantID:    task.TenantID,
-			TaskID:      task.ID,
-			SourceAgent: task.SourceAgent,
-			Payload:     mustMarshal(map[string]string{"mailbox": task.MailboxID}),
-		}); err != nil {
-			return fmt.Errorf("publish queued event: %w", err)
-		}
-	}
-
-	return nil
 }
 
 func (s *TaskService) Get(ctx context.Context, tenantID, taskID string) (*core.Task, error) {
@@ -410,32 +363,15 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 		return fmt.Errorf("tenant id and task id are required")
 	}
 
-	// Lifecycle path: status update + blocked event in one tx via outbox.
-	if s.lifecycle != nil {
-		if pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
-			err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-				if uerr := pgTaskRepo.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
-					return fmt.Errorf("block task: %w", uerr)
-				}
-				payload, _ := json.Marshal(core.JanusEvent{
-					EventType: core.EventTaskBlocked, TenantID: tenantID, TaskID: taskID,
-					Payload: mustMarshal(map[string]string{"reason": reason}),
-				})
-				return s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload)
-			})
-			return err
+	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		if uerr := s.taskTx.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
+			return fmt.Errorf("block task: %w", uerr)
 		}
-	}
-
-	// Fallback path.
-	if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusBlocked, 0); err != nil {
-		return fmt.Errorf("block task: %w", err)
-	}
-	return s.publishEvent(ctx, core.JanusEvent{
-		EventType: core.EventTaskBlocked,
-		TenantID:  tenantID,
-		TaskID:    taskID,
-		Payload:   mustMarshal(map[string]string{"reason": reason}),
+		payload, _ := json.Marshal(core.JanusEvent{
+			EventType: core.EventTaskBlocked, TenantID: tenantID, TaskID: taskID,
+			Payload: mustMarshal(map[string]string{"reason": reason}),
+		})
+		return s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload)
 	})
 }
 
@@ -469,18 +405,12 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 			Priority:  task.Priority,
 			Payload:   payload,
 		}
-		if s.outboxRepo != nil {
-			queuePayload, _ := json.Marshal(msg)
-			dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay", tenantID, taskID)
-			if err := s.outboxRepo.InsertDirectWithDedupe(ctx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
-				return nil, fmt.Errorf("outbox insert replay: %w", err)
-			}
-		} else {
-			if err := s.queueDriver.PublishTask(ctx, msg); err != nil {
-				return nil, fmt.Errorf("re-publish to queue: %w", err)
-			}
+		queuePayload, _ := json.Marshal(msg)
+		dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay", tenantID, taskID)
+		if err := s.txOutbox.InsertDirectWithDedupe(ctx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
+			return nil, fmt.Errorf("outbox insert replay: %w", err)
 		}
-		if err := s.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusQueued, 0); err != nil {
+		if err := s.taskTx.UpdateStatusTx(ctx, nil, tenantID, taskID, core.TaskStatusQueued, 0); err != nil {
 			return nil, fmt.Errorf("update task queued after replay: %w", err)
 		}
 	}
@@ -493,11 +423,9 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		SourceAgent: task.SourceAgent,
 		Payload:     mustMarshal(map[string]string{"status": "replayed"}),
 	}
-	if s.outboxRepo != nil {
-		payload, _ := json.Marshal(createdEvent)
-		_ = s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "event_publish", payload)
-	} else {
-		_ = s.publishEvent(ctx, createdEvent)
+	payload, _ := json.Marshal(createdEvent)
+	if err := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", payload); err != nil {
+		logOutboxWrite(taskID, err)
 	}
 
 	return s.taskRepo.Get(ctx, tenantID, taskID)
@@ -536,12 +464,9 @@ func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agen
 		SourceAgent: agentID,
 		Payload:     payload,
 	}
-	if s.outboxRepo != nil {
-		evtPayload, _ := json.Marshal(evt)
-		if err := s.outboxRepo.InsertDirect(ctx, ulid(), tenantID, "event_publish", evtPayload); err != nil {
-			// Audit write failure shouldn't block real-time delivery.
-			log.Printf("task %s progress: outbox write failed: %v", taskID, err)
-		}
+	evtPayload, _ := json.Marshal(evt)
+	if err := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", evtPayload); err != nil {
+		logOutboxWrite(taskID, err)
 	}
 	return &evt, nil
 }
@@ -571,35 +496,13 @@ func (s *TaskService) transition(ctx context.Context, tenantID, taskID string, s
 		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, status, taskID)
 	}
 
-	// Lifecycle path: CAS + event outbox in one tx (when PG repos + lifecycle).
-	if s.lifecycle != nil {
-		if _, ok := s.taskRepo.(*postgres.TaskRepository); ok {
-			err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-				return s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, status, eventType, attemptInc)
-			})
-			if err != nil {
-				return err
-			}
-			recordTaskMetric(tenantID, status)
-			return nil
-		}
-	}
-
-	// Fallback path (no lifecycle or non-PG repo).
-	ok, err := s.taskRepo.UpdateStatusWithCheck(ctx, tenantID, taskID, current.Status, status, attemptInc)
-	if err != nil {
-		return fmt.Errorf("update task status to %s: %w", status, err)
-	}
-	if !ok {
-		return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, current.Status)
+	if err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		return s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, status, eventType, attemptInc)
+	}); err != nil {
+		return err
 	}
 	recordTaskMetric(tenantID, status)
-	return s.publishEvent(ctx, core.JanusEvent{
-		EventType: eventType,
-		TenantID:  tenantID,
-		TaskID:    taskID,
-		Payload:   mustMarshal(map[string]string{"status": string(status)}),
-	})
+	return nil
 }
 
 // appendClaimedActor annotates an object-shaped event payload with the
@@ -628,28 +531,22 @@ func appendClaimedActor(payload []byte, actor string) []byte {
 // atomically. expectedStatus is what the caller read before opening the tx;
 // a mismatch fails the whole transaction (retryable).
 func (s *TaskService) TransitionInTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expected, status core.TaskStatus, eventType core.EventType, attemptInc int) error {
-	pgTaskRepo, ok := s.taskRepo.(*postgres.TaskRepository)
-	if !ok {
-		return fmt.Errorf("transition in tx requires postgres task repo")
-	}
 	if !core.CanTransition(expected, status) {
 		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, expected, status, taskID)
 	}
-	ok2, err := pgTaskRepo.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, expected, status, attemptInc)
+	ok2, err := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, expected, status, attemptInc)
 	if err != nil {
 		return fmt.Errorf("update task status to %s: %w", status, err)
 	}
 	if !ok2 {
 		return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, expected)
 	}
-	if s.outboxRepo != nil {
-		payload, _ := json.Marshal(core.JanusEvent{
-			EventType: eventType, TenantID: tenantID, TaskID: taskID,
-			Payload: mustMarshal(map[string]string{"status": string(status)}),
-		})
-		if ierr := s.outboxRepo.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload); ierr != nil {
-			return fmt.Errorf("record event: %w", ierr)
-		}
+	payload, _ := json.Marshal(core.JanusEvent{
+		EventType: eventType, TenantID: tenantID, TaskID: taskID,
+		Payload: mustMarshal(map[string]string{"status": string(status)}),
+	})
+	if ierr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", payload); ierr != nil {
+		return fmt.Errorf("record event: %w", ierr)
 	}
 	recordTaskMetric(tenantID, status)
 	return nil
