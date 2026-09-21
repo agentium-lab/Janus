@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -110,9 +111,18 @@ func wsWaitSubscribed(t *testing.T, ws *websocket.Conn, inbound chan core.JanusE
 		ws.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 		if _, _, err := ws.ReadMessage(); err == nil {
 			return
+		} else if !isTimeout(err) {
+			return
 		}
 	}
 	t.Fatal("websocket subscription never became ready")
+}
+
+func isTimeout(err error) bool {
+	if ne, ok := err.(net.Error); ok {
+		return ne.Timeout()
+	}
+	return false
 }
 
 func TestWebSocketHandler_BasicConnection(t *testing.T) {
