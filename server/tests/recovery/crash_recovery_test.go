@@ -5,6 +5,7 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -23,17 +24,19 @@ import (
 // verify zero task loss + zero audit loss. The outbox table IS the durable
 // record; nothing in memory matters.
 
-const crashTenant = "crash-test"
+var crashTenant = fmt.Sprintf("crash-test-%d", time.Now().UnixNano())
 
 func TestCrashRecovery_ZeroTaskLoss(t *testing.T) {
 	pool := setupCrashDB(t)
 	bin := buildJanusAPI(t)
-	port := 18500
+	listener, _ := net.Listen("tcp", "localhost:0")
+	port := listener.Addr().(*net.TCPAddr).Port
+	listener.Close()
 
 	// Phase 1: start, create tasks, kill -9
 	p1 := startJanus(t, bin, port, pool)
 	waitHealthy(t, port)
-	setupViaAPI(t, port)
+	setupViaDB(t, pool)
 	createTasks(t, port, 20)
 	killHard(t, p1)
 
@@ -41,7 +44,7 @@ func TestCrashRecovery_ZeroTaskLoss(t *testing.T) {
 	p2 := startJanus(t, bin, port, pool)
 	defer stopJanus(t, p2)
 	waitHealthy(t, port)
-	setupViaAPI(t, port)
+	setupViaDB(t, pool)
 
 	// Wait for outbox publisher + audit projector to catch up
 	time.Sleep(3 * time.Second)
@@ -50,9 +53,9 @@ func TestCrashRecovery_ZeroTaskLoss(t *testing.T) {
 	require.NoError(t, pool.QueryRow(context.TODO(),
 		`SELECT count(*) FROM tasks WHERE tenant_id = $1`, crashTenant).Scan(&taskCount))
 	require.NoError(t, pool.QueryRow(context.TODO(),
-		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1`, crashTenant).Scan(&outboxCount))
+		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1 AND kind = 'event_publish'`, crashTenant).Scan(&outboxCount))
 	require.NoError(t, pool.QueryRow(context.TODO(),
-		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1 AND projected_at IS NOT NULL`, crashTenant).Scan(&projectedCount))
+		`SELECT count(*) FROM outbox_events WHERE tenant_id = $1 AND kind = 'event_publish' AND projected_at IS NOT NULL`, crashTenant).Scan(&projectedCount))
 	require.NoError(t, pool.QueryRow(context.TODO(),
 		`SELECT count(*) FROM audit_event_projection WHERE tenant_id = $1`, crashTenant).Scan(&auditCount))
 
@@ -122,30 +125,35 @@ func startJanus(t *testing.T, bin string, port int, pool *pgxpool.Pool) *exec.Cm
 		"JANUS_AUTH_ENABLED=false",
 		"JANUS_HTTP_HOST=localhost",
 		fmt.Sprintf("JANUS_HTTP_PORT=%d", port),
+		fmt.Sprintf("JANUS_GRPC_PORT=%d", port+1),
 	)
+	var serverLog strings.Builder
+	cmd.Stdout = &serverLog
+	cmd.Stderr = &serverLog
 	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server log:\n%s", serverLog.String())
+		}
+	})
 	return cmd
 }
 
-func setupViaAPI(t *testing.T, port int) {
+func setupViaDB(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	base := fmt.Sprintf("http://localhost:%d", port)
-
-	requests := []struct {
-		path, body string
-	}{
-		{"/v1/tenants", `{"id":"` + crashTenant + `","name":"Crash Test"}`},
-		{"/v1/tenants/" + crashTenant + "/agents", `{"id":"crash-agent","display_name":"Crash Agent","protocol":"http","endpoint":"http://localhost:9"}`},
-		{"/v1/tenants/" + crashTenant + "/mailboxes", `{"id":"crash-mb","agent_id":"crash-agent"}`},
-	}
-	for _, r := range requests {
-		resp, err := http.Post(base+r.path, "application/json", strings.NewReader(r.body))
-		require.NoError(t, err, "setup %s", r.path)
-		resp.Body.Close()
-		if resp.StatusCode >= 400 {
-			t.Fatalf("setup %s: got %d", r.path, resp.StatusCode)
-		}
-	}
+	ctx := context.Background()
+	_, err := pool.Exec(ctx,
+		`INSERT INTO tenants (id, name) VALUES ($1, 'Crash Test') ON CONFLICT (id) DO NOTHING`,
+		crashTenant)
+	require.NoError(t, err, "create tenant")
+	_, err = pool.Exec(ctx,
+		`INSERT INTO agents (tenant_id, id, display_name, protocol, endpoint, status) VALUES ($1, 'crash-agent', 'Crash Agent', 'http', 'http://localhost:9', 'online') ON CONFLICT (tenant_id, id) DO NOTHING`,
+		crashTenant)
+	require.NoError(t, err, "create agent")
+	_, err = pool.Exec(ctx,
+		`INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ($1, 'crash-mb', 'crash-agent', 'active', '{"max_attempts":5,"backoff_type":"exponential","initial_seconds":10,"max_seconds":900,"jitter":true}') ON CONFLICT (tenant_id, id) DO NOTHING`,
+		crashTenant)
+	require.NoError(t, err, "create mailbox")
 }
 
 func createTasks(t *testing.T, port int, n int) {
