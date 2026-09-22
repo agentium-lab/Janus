@@ -9,6 +9,13 @@ PG_DB="${JANUS_PG_DBNAME:-janus_test}"
 NATS_URL="${JANUS_NATS_URL:-nats://localhost:4222}"
 REDIS_ADDR="${JANUS_REDIS_ADDR:-127.0.0.1:6379}"
 PGDATA="${JANUS_PGDATA:-/tmp/janus/pgdata}"
+# Restart commands are injectable so containerized environments (CI) can use
+# `docker restart ...` while the defaults keep working for local bare-metal
+# setups that own the processes.
+REDIS_RESTART_CMD="${JANUS_REDIS_RESTART_CMD:-}"
+NATS_STOP_CMD="${JANUS_NATS_STOP_CMD:-}"
+NATS_RESTART_CMD="${JANUS_NATS_RESTART_CMD:-}"
+PG_RESTART_CMD="${JANUS_PG_RESTART_CMD:-}"
 PASS=0; FAIL=0
 
 check() {
@@ -34,9 +41,15 @@ PASS=$((PASS+1))
 
 echo "--- Phase 2: Redis restart + heartbeat restore ---"
 echo "  Restarting Redis..."
-redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" SHUTDOWN NOSAVE 2>/dev/null || true
-sleep 2
-redis-server --daemonize yes --port "${REDIS_ADDR##*:}" 2>/dev/null
+if [ -n "$REDIS_RESTART_CMD" ]; then
+  redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" SHUTDOWN NOSAVE 2>/dev/null || true
+  sleep 2
+  eval "$REDIS_RESTART_CMD"
+else
+  redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" SHUTDOWN NOSAVE 2>/dev/null || true
+  sleep 2
+  redis-server --daemonize yes --port "${REDIS_ADDR##*:}" 2>/dev/null
+fi
 sleep 2
 REDIS_OK=$(redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" PING 2>/dev/null || echo "")
 check "Redis restarted and responding" "[ '$REDIS_OK' = 'PONG' ]"
@@ -46,7 +59,11 @@ check "Heartbeat after Redis restore" "[ '$HB' = 'ok' ]"
 
 echo "--- Phase 3: NATS outage → outbox retry ---"
 echo "  Stopping NATS..."
-pkill -f "nats-server" 2>/dev/null || true
+if [ -n "$NATS_STOP_CMD" ]; then
+  eval "$NATS_STOP_CMD"
+else
+  pkill -f "nats-server" 2>/dev/null || true
+fi
 sleep 3
 
 PUB_DURING_OUTAGE=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks" \
@@ -56,14 +73,22 @@ PUB_DURING_OUTAGE=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks" \
 check "Task accepted during NATS outage (outbox holds)" "[ '$PUB_DURING_OUTAGE' = 'accepted' ]"
 
 echo "  Restarting NATS..."
-nohup nats-server -js -p 4222 -m 8222 > /tmp/janus/nats-restart.log 2>&1 &
+if [ -n "$NATS_RESTART_CMD" ]; then
+  eval "$NATS_RESTART_CMD"
+else
+  nohup nats-server -js -p 4222 -m 8222 > /tmp/janus/nats-restart.log 2>&1 &
+fi
 sleep 3
 NATS_OK=$(curl -sf http://localhost:8222/jsz 2>/dev/null | head -c 10 || echo "")
 check "NATS restarted" "[ -n '$NATS_OK' ]"
 
 echo "--- Phase 4: PostgreSQL restart + state persistence ---"
 echo "  Restarting PostgreSQL..."
-pg_ctl -D "$PGDATA" -o "-k $PG_HOST -h localhost" restart 2>/dev/null
+if [ -n "$PG_RESTART_CMD" ]; then
+  eval "$PG_RESTART_CMD"
+else
+  pg_ctl -D "$PGDATA" -o "-k $PG_HOST -h localhost" restart 2>/dev/null
+fi
 sleep 3
 PG_OK=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -t -c "SELECT 1" 2>/dev/null | tr -d ' ' || echo "")
 check "PostgreSQL restarted and responding" "[ '$PG_OK' = '1' ]"

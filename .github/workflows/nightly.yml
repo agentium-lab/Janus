@@ -1,0 +1,140 @@
+name: Nightly Production Gates
+
+# P2-3: chaos / load / release-ops gates run on a schedule so main carries
+# continuous evidence instead of relying on manual runs. Core gates
+# (build/test/coverage/staticcheck/reliability/contract) stay enforced on
+# every push in ci.yml; this workflow covers the gates that need a
+# long-running full stack.
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, off-peak UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-production-gates
+  cancel-in-progress: false
+
+jobs:
+  production-gates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JANUS_PG_HOST: localhost
+      JANUS_PG_PORT: "5432"
+      JANUS_PG_USER: janus
+      JANUS_PG_PASSWORD: janus
+      JANUS_PG_DATABASE: janus_test
+      JANUS_PG_SSLMODE: disable
+      JANUS_PG_DSN: postgres://janus:janus@localhost:5432/janus_test?sslmode=disable
+      JANUS_NATS_URL: nats://localhost:4222
+      JANUS_REDIS_ADDR: 127.0.0.1:6379
+      JANUS_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.work
+
+      - name: Install tooling (helm, psql, redis-cli)
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client redis-tools
+
+      - name: Start dependency containers
+        run: |
+          set -euo pipefail
+          pull() {
+            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
+              for attempt in 1 2 3; do
+                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                sleep $((attempt * 10))
+              done
+            done
+            echo "::error::unable to pull $1"; return 1
+          }
+          pull postgres:16-alpine
+          pull nats:2-alpine
+          pull redis:7-alpine
+          docker run -d --name pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
+            -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js
+          docker run -d --name redis -p 6379:6379 redis:7-alpine
+          for i in $(seq 1 90); do
+            docker exec pg pg_isready -h 127.0.0.1 -U janus >/dev/null 2>&1 && break
+            sleep 2
+          done
+          until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
+          until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
+
+      - name: Migrate + start Janus API
+        run: |
+          go build -o /tmp/janus-api ./server/cmd/janus-api
+          JANUS_QUEUE_DRIVER=nats \
+            JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
+            JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
+            JANUS_NATS_URL=nats://localhost:4222 \
+            JANUS_REDIS_ADDR=127.0.0.1:6379 \
+            JANUS_MIGRATION_AUTO=true JANUS_MIGRATION_PATH=migrations \
+            JANUS_AUTH_ENABLED=false \
+            JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8080 \
+            /tmp/janus-api > /tmp/janus-api.log 2>&1 &
+          echo $! > /tmp/janus-api.pid
+          for i in $(seq 1 60); do
+            curl -sf "$JANUS_URL/readyz" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf "$JANUS_URL/readyz"
+
+      - name: Dependency smoke (API/PG/NATS/Redis + metrics)
+        run: JANUS_URL=$JANUS_URL bash scripts/smoke_api_dependencies.sh
+
+      - name: Seven-agent scenario (lifecycle + fanout + idempotency)
+        run: JANUS_URL=$JANUS_URL bash scripts/smoke_7_agents.sh
+
+      - name: Ops chaos (dependency restarts + state persistence)
+        env:
+          JANUS_PG_DBNAME: janus_test
+          JANUS_REDIS_RESTART_CMD: "docker restart redis"
+          JANUS_NATS_STOP_CMD: "docker stop nats"
+          JANUS_NATS_RESTART_CMD: "docker start nats"
+          JANUS_PG_RESTART_CMD: "docker restart pg && sleep 3"
+        run: JANUS_URL=$JANUS_URL bash scripts/smoke_ops_chaos.sh
+
+      - name: Release ops (helm lint + migration rollback drill)
+        env:
+          JANUS_PG_DBNAME: janus_test
+        run: bash scripts/smoke_release_ops.sh
+
+      - name: Load baseline (1000 agents / 1000 tasks, p95 gate)
+        run: |
+          set -o pipefail
+          NUM_AGENTS=1000 NUM_MAILBOXES=1000 NUM_TASKS=1000 bash scripts/load_baseline.sh | tee /tmp/load-baseline.log
+          echo "## Load baseline trend" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat /tmp/load-baseline.log >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-evidence-${{ github.run_id }}
+          retention-days: 90
+          path: |
+            /tmp/janus-api.log
+            /tmp/load-baseline.log
+
+      - name: Dump dependency logs on failure
+        if: failure()
+        run: |
+          echo "::group::postgres"; docker logs --tail 100 pg; echo "::endgroup::"
+          echo "::group::nats"; docker logs --tail 100 nats; echo "::endgroup::"
+          echo "::group::redis"; docker logs --tail 100 redis; echo "::endgroup::"
+
+      - name: Stop Janus API
+        if: always()
+        run: kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true

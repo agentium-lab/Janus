@@ -245,6 +245,18 @@ jobs:
           done
           echo "Helm migrations match canonical"
 
+      - name: Reliability fault scenarios (PG + NATS)
+        run: go test -count=1 -timeout=180s ./server/tests/reliability/...
+
+      - name: API contract drift check
+        run: python3 scripts/check_api_contract.py
+
+      - name: GA readiness gate (P0 capability matrix)
+        run: python3 scripts/check_ga_readiness.py
+
+      - name: Grafana panel PromQL ↔ metrics registry check
+        run: bash scripts/smoke_grafana_panels.sh
+
       - name: Coverage gate
         run: COVERAGE_THRESHOLD=85 make coverage
 
