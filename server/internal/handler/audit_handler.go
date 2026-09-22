@@ -22,8 +22,9 @@ type AuditReplayer interface {
 }
 
 type AuditHandler struct {
-	svc      AuditService
-	replayer AuditReplayer
+	svc           AuditService
+	replayer      AuditReplayer
+	outboxReviver OutboxRetryReviver
 }
 
 func NewAuditHandler(svc AuditService) *AuditHandler {
@@ -136,4 +137,36 @@ func (h *AuditHandler) ReplayAudit(w http.ResponseWriter, r *http.Request) {
 		"from":       fromStr,
 		"to":         toStr,
 	})
+}
+
+// OutboxRetryReviver requeues dead/quarantined outbox entries on demand.
+type OutboxRetryReviver interface {
+	RetryDead(ctx context.Context, limit int) (int64, error)
+}
+
+func (h *AuditHandler) WithOutboxRetryReviver(r OutboxRetryReviver) *AuditHandler {
+	h.outboxReviver = r
+	return h
+}
+
+// RetryOutboxDead is the manual recovery path for dead and quarantined
+// outbox entries (POST /v1/outbox/retry-dead). Typical use: after a rolling
+// upgrade that adds the handler for a previously-unknown kind.
+func (h *AuditHandler) RetryOutboxDead(w http.ResponseWriter, r *http.Request) {
+	if h.outboxReviver == nil {
+		writeError(w, http.StatusServiceUnavailable, "outbox reviver not configured")
+		return
+	}
+	limit := 100
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 1000 {
+			limit = n
+		}
+	}
+	n, err := h.outboxReviver.RetryDead(r.Context(), limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"requeued": n, "limit": limit})
 }

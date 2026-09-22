@@ -266,38 +266,33 @@ func main() {
 	a2aGw := a2a.NewGatewayWithStatus(agentSvc, taskSvc, taskSvc).WithTaskStreamer(sseH).
 		WithEventSubscriber(broadcaster).WithTaskLister(pgTaskLister{repo: taskRepo})
 
-	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv)
+	outboxInterval, err := time.ParseDuration(cfg.Outbox.WorkerInterval)
+	if err != nil || outboxInterval <= 0 {
+		outboxInterval = 500 * time.Millisecond
+	}
+	leaseDuration, err := time.ParseDuration(cfg.Outbox.LeaseDuration)
+	if err != nil || leaseDuration <= 0 {
+		leaseDuration = 60 * time.Second
+	}
+	outboxPub := outbox.NewPublisher(outboxRepo, queueDrv).WithBatchSize(cfg.Outbox.BatchSize)
 	host, _ := os.Hostname()
-	outboxRepo.SetWorker(fmt.Sprintf("%s-%d", host, os.Getpid()), 60*time.Second)
-	go outboxPub.Start(context.Background(), 500*time.Millisecond)
+	outboxRepo.SetWorker(fmt.Sprintf("%s-%d", host, os.Getpid()), leaseDuration)
+	outboxRepo.SetMaxRetries(cfg.Outbox.MaxAttempts)
+	go outboxPub.Start(context.Background(), outboxInterval)
 	defer outboxPub.Stop()
 
 	// ADR-0006: audit projection reads from the outbox table (persistent
 	// source) — crashes resume without loss; the memory channel path is gone.
 	auditProjector := outbox.NewAuditProjector(outboxRepo, eventSvc)
-	auditH.WithReplayer(auditProjector)
-	go auditProjector.Start(context.Background())
+	auditH.WithReplayer(auditProjector).WithOutboxRetryReviver(outboxRepo)
+	go auditProjector.WithInterval(outboxInterval).WithBatchSize(cfg.Outbox.BatchSize).Start(context.Background())
 	defer auditProjector.Stop()
 
-	// Dead-entry recovery: periodically requeue dead outbox rows.
-	deadRetryStop := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(60 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-deadRetryStop:
-				return
-			case <-ticker.C:
-				if n, err := outboxRepo.RetryDead(context.Background(), 100); err != nil {
-					log.Printf("outbox dead retry: %v", err)
-				} else if n > 0 {
-					log.Printf("outbox dead retry: requeued %d entries", n)
-				}
-			}
-		}
-	}()
-	defer close(deadRetryStop)
+	// Dead/quarantined entries are NOT auto-revived: a poison message would
+	// retry forever at a fixed cadence. Recovery is manual via
+	// POST /v1/outbox/retry-dead (e.g. after a rolling upgrade adds the
+	// handler for a quarantined kind); visibility via janus_outbox_dead_total
+	// and janus_outbox_quarantined_total.
 
 	retrySched := retry.NewScheduler(pool, queueDrv).WithOutbox()
 	go retrySched.Start(context.Background(), 1*time.Second)
@@ -548,6 +543,8 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			postOnly(w, r, dispatchH.Pull)
 		case hasSegment(p, "traces"):
 			getOnly(w, r, auditH.QueryByTrace)
+		case hasSuffix(p, "/outbox/retry-dead"):
+			postOnly(w, r, auditH.RetryOutboxDead)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/progress"):
 			postOnly(w, r, progressH.Report)
 		case hasSegment(p, "tasks") && hasSuffix(p, "/stream"):

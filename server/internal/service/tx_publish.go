@@ -113,7 +113,7 @@ func MemoryBudgetLedger(budgetSvc *BudgetService) BudgetLedger {
 			CompletionTokens: int(e.CompletionTokens),
 			TotalTokens:      int(e.TotalTokens),
 		}
-		return budgetSvc.Settle(ctx, e.TenantID, e.ScopeID, usage)
+		return budgetSvc.SettleScope(ctx, e.TenantID, core.BudgetScopeType(e.ScopeType), e.ScopeID, usage)
 	})
 }
 

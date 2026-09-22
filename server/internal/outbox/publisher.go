@@ -26,21 +26,31 @@ type OutboxRepo interface {
 	FetchPending(ctx context.Context, limit int) ([]postgres.OutboxEntry, error)
 	MarkPublished(ctx context.Context, id string) error
 	MarkFailedWithReason(ctx context.Context, id string, reason string) error
+	MarkQuarantined(ctx context.Context, id, reason string) error
 }
 
 // Publisher dispatches outbox events to the queue driver.
 type Publisher struct {
-	repo   OutboxRepo
-	driver core.QueueEventDriver
-	done   chan struct{}
+	repo      OutboxRepo
+	driver    core.QueueEventDriver
+	done      chan struct{}
+	batchSize int
 }
 
 // NewPublisher creates a Publisher with the given repo and driver.
+func (p *Publisher) WithBatchSize(n int) *Publisher {
+	if n > 0 {
+		p.batchSize = n
+	}
+	return p
+}
+
 func NewPublisher(repo OutboxRepo, driver core.QueueEventDriver) *Publisher {
 	return &Publisher{
-		repo:   repo,
-		driver: driver,
-		done:   make(chan struct{}),
+		repo:      repo,
+		driver:    driver,
+		done:      make(chan struct{}),
+		batchSize: 100,
 	}
 }
 
@@ -85,10 +95,11 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 		if err := p.publishOne(batchCtx, e); err != nil {
 			if errors.Is(err, ErrUnknownKind) {
 				// Unknown kinds appear during rolling upgrades (a newer writer
-				// emitted a kind this publisher doesn't know). Mark published:
-				// retrying would loop forever since no worker understands it.
-				log.Printf("outbox publish %s: skipping unknown kind", e.ID)
-				_ = p.repo.MarkPublished(batchCtx, e.ID)
+				// emitted a kind this publisher doesn't know). Quarantine, never
+				// drop: publishing would lose the message, retrying would loop.
+				log.Printf("outbox publish %s: quarantined unknown kind %q (recover via outbox retry after upgrade)", e.ID, e.Kind)
+				metrics.OutboxQuarantined.Inc()
+				_ = p.repo.MarkQuarantined(batchCtx, e.ID, fmt.Sprintf("unknown kind: %s", e.Kind))
 				continue
 			}
 			metrics.OutboxPublishFailedTotal.Inc()

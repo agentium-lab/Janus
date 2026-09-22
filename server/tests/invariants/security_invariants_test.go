@@ -118,18 +118,15 @@ type fakeKeyValidator struct {
 	keys map[string]auth.Principal
 }
 
-func (v *fakeKeyValidator) Validate(_ context.Context, apiKey string) (string, error) {
+// fakeKeyValidator satisfies auth.PrincipalValidator so the tests run the
+// REAL production middleware chain (Middleware -> ScopeGuard -> TenantGuard
+// -> AgentIdentityMiddleware), not a re-implementation that can drift.
+func (v *fakeKeyValidator) ValidatePrincipal(_ context.Context, apiKey string) (auth.Principal, error) {
 	if p, ok := v.keys[apiKey]; ok {
-		return p.TenantID, nil
+		p.KeyPrefix = apiKey[:8] + "..."
+		return p, nil
 	}
-	return "", fmt.Errorf("invalid api key")
-}
-
-func (v *fakeKeyValidator) InjectPrincipal(ctx context.Context, apiKey string) context.Context {
-	if p, ok := v.keys[apiKey]; ok {
-		return context.WithValue(ctx, auth.PrincipalCtxKey, p)
-	}
-	return ctx
+	return auth.Principal{}, fmt.Errorf("invalid api key")
 }
 
 func newSecurityServer(t *testing.T) *httptest.Server {
@@ -155,39 +152,20 @@ func newSecurityServer(t *testing.T) *httptest.Server {
 		http.NotFound(w, r)
 	})
 
-	return httptest.NewServer(customAuthMiddleware(validator, mux))
+	// Production chain from main.go: Middleware -> ScopeGuard -> TenantGuard
+	// -> handler, with the only difference being the injected key validator.
+	core := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(mux)))
+	return httptest.NewServer(core)
 }
 
-func customAuthMiddleware(v *fakeKeyValidator, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		apiKey := r.Header.Get("X-API-Key")
-		p, ok := v.keys[apiKey]
-		if !ok {
-			w.WriteHeader(http.StatusUnauthorized)
-			w.Write([]byte(`{"error":"invalid api key"}`))
-			return
+func extractTenantFromPath(path string) string {
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if seg == "tenants" && i+1 < len(segs) {
+			return segs[i+1]
 		}
-		segs := strings.Split(r.URL.Path, "/")
-		pathTenant := ""
-		for i, seg := range segs {
-			if seg == "tenants" && i+1 < len(segs) {
-				pathTenant = segs[i+1]
-			}
-		}
-		if pathTenant != "" && pathTenant != p.TenantID {
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"tenant mismatch"}`))
-			return
-		}
-		if r.Method == http.MethodPost && !p.HasScope("task:write") {
-			w.WriteHeader(http.StatusForbidden)
-			w.Write([]byte(`{"error":"missing required scope task:write"}`))
-			return
-		}
-		ctx := context.WithValue(r.Context(), auth.TenantCtxKey, p.TenantID)
-		ctx = context.WithValue(ctx, auth.PrincipalCtxKey, p)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+	}
+	return ""
 }
 
 func TestSecurity_CrossTenantAccessDenied(t *testing.T) {

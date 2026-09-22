@@ -14,6 +14,8 @@ type OutboxRepo struct {
 	pool          *pgxpool.Pool
 	workerID      string
 	leaseDuration time.Duration
+
+	maxRetries int
 }
 
 func NewOutboxRepo(pool *pgxpool.Pool) *OutboxRepo {
@@ -22,6 +24,20 @@ func NewOutboxRepo(pool *pgxpool.Pool) *OutboxRepo {
 
 // SetWorker identifies this repo instance's outbox worker for lease tracking.
 // Call once at startup with a stable, unique-per-process id.
+// SetMaxRetries overrides how many attempts an entry gets before 'dead'.
+func (r *OutboxRepo) SetMaxRetries(n int) {
+	if n > 0 {
+		r.maxRetries = n
+	}
+}
+
+func (r *OutboxRepo) retryLimit() int {
+	if r.maxRetries > 0 {
+		return r.maxRetries
+	}
+	return maxOutboxRetries
+}
+
 func (r *OutboxRepo) SetWorker(workerID string, leaseDuration time.Duration) {
 	r.workerID = workerID
 	if leaseDuration > 0 {
@@ -171,7 +187,7 @@ func (r *OutboxRepo) MarkPublished(ctx context.Context, id string) error {
 	return err
 }
 
-const maxOutboxRetries = 5
+const maxOutboxRetries = 5 // default; override via SetMaxRetries / outbox.max_attempts
 
 func (r *OutboxRepo) MarkFailed(ctx context.Context, id string) error {
 	return r.MarkFailedWithReason(ctx, id, "")
@@ -188,7 +204,7 @@ func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastEr
 		     last_error = $3
 		 WHERE id = $1 AND status NOT IN ('dead', 'published')
 		 RETURNING (status = 'dead')`,
-		id, maxOutboxRetries, lastErr).Scan(&becameDead)
+		id, r.retryLimit(), lastErr).Scan(&becameDead)
 	if err != nil {
 		return err
 	}
@@ -221,14 +237,17 @@ func (r *OutboxRepo) FetchByRange(ctx context.Context, tenantID string, from, to
 	return scanOutboxEntries(rows)
 }
 
-// RetryDead resets dead entries back to pending for another attempt cycle.
-// Returns the number of entries requeued.
+// RetryDead resets dead AND quarantined entries back to pending. It is the
+// manual recovery path (admin endpoint / rolling-upgrade completion): dead
+// entries exhausted their retries and quarantined entries carried a kind the
+// running publisher did not understand — after an upgrade that adds the
+// kind, replaying here recovers them without message loss.
 func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
-		 SET status = 'pending', attempts = 0, next_attempt_at = NULL
-		 WHERE status = 'dead' AND id IN (
-		     SELECT id FROM outbox_events WHERE status = 'dead'
+		 SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
+		 WHERE status IN ('dead', 'quarantine') AND id IN (
+		     SELECT id FROM outbox_events WHERE status IN ('dead', 'quarantine')
 		     ORDER BY created_at ASC LIMIT $1
 		 )`, limit)
 	if err != nil {
@@ -239,6 +258,20 @@ func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
 		metrics.OutboxDeadRetried.Add(float64(n))
 	}
 	return n, nil
+}
+
+// MarkQuarantined parks an entry whose kind this publisher version cannot
+// handle. Unlike MarkPublished (which would silently drop the message) or
+// MarkFailed (which would retry forever), quarantine preserves the row for
+// a version that understands the kind, surfaced via the outbox_quarantined
+// metric.
+func (r *OutboxRepo) MarkQuarantined(ctx context.Context, id, reason string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE outbox_events
+		 SET status = 'quarantine', last_error = $2
+		 WHERE id = $1 AND status NOT IN ('published')`,
+		id, reason)
+	return err
 }
 
 // FetchUnprojected returns event_publish entries that have not yet been

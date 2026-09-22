@@ -338,10 +338,19 @@ func TestPublisher_PublishBatch_UnknownKind_NoOp(t *testing.T) {
 	pub := NewPublisher(repo, drv)
 	pub.publishBatch(ctx)
 
-	// Unknown kind: publishOne returns nil (no-op), MarkPublished should be called.
-	var status string
+	// Unknown kind must be QUARANTINED, never dropped: publishing would lose
+	// the message (rolling-upgrade data loss), retrying would loop forever.
+	// RetryDead (manual recovery after upgrade) resets it to pending.
+	var status, lastErr string
+	pool.QueryRow(ctx, "SELECT status, coalesce(last_error,'') FROM outbox_events WHERE id = $1", "ob-unknown").Scan(&status, &lastErr)
+	assert.Equal(t, "quarantine", status)
+	assert.Contains(t, lastErr, "unknown kind")
+
+	n, err := repo.RetryDead(ctx, 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), n)
 	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-unknown").Scan(&status)
-	assert.Equal(t, "published", status)
+	assert.Equal(t, "pending", status)
 }
 
 // mockOutboxRepo allows controlling error returns for testing.
@@ -354,6 +363,8 @@ type mockOutboxRepo struct {
 	markFailedID        string
 	markPublishedCalled bool
 	markPublishedID     string
+
+	quarantined bool
 }
 
 func (m *mockOutboxRepo) FetchPending(_ context.Context, _ int) ([]postgres.OutboxEntry, error) {
@@ -370,6 +381,11 @@ func (m *mockOutboxRepo) MarkFailedWithReason(_ context.Context, id string, _ st
 	m.markFailedCalled = true
 	m.markFailedID = id
 	return m.markFailedErr
+}
+
+func (m *mockOutboxRepo) MarkQuarantined(_ context.Context, _ string, _ string) error {
+	m.quarantined = true
+	return nil
 }
 
 func TestPublisher_PublishBatch_FetchPendingError(t *testing.T) {

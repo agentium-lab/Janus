@@ -51,6 +51,20 @@ func NewAuditProjector(reader AuditReader, writer AuditWriter) *AuditProjector {
 	}
 }
 
+func (p *AuditProjector) WithInterval(d time.Duration) *AuditProjector {
+	if d > 0 {
+		p.interval = d
+	}
+	return p
+}
+
+func (p *AuditProjector) WithBatchSize(n int) *AuditProjector {
+	if n > 0 {
+		p.batchSize = n
+	}
+	return p
+}
+
 func (p *AuditProjector) Start(ctx context.Context) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()

@@ -203,7 +203,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("tracing.enabled", false)
 	v.SetDefault("tracing.otlp_endpoint", "localhost:4317")
 	v.SetDefault("tracing.service_name", "janus-api")
-	v.SetDefault("outbox.worker_interval", "1s")
+	v.SetDefault("outbox.worker_interval", "500ms")
 	v.SetDefault("outbox.batch_size", 50)
 	v.SetDefault("outbox.lease_duration", "60s")
 	v.SetDefault("outbox.max_attempts", 10)

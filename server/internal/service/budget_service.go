@@ -142,6 +142,25 @@ func EstimateCostUSD(totalTokens int64) float64 {
 	return float64(totalTokens) * EstimatedCostPerTokenUSD
 }
 
+// SettleScope records usage for one scope. Agent scopes additionally
+// release the reservation held since Reserve; tenant scopes only accumulate
+// usage (they never held a reservation).
+func (s *BudgetService) SettleScope(ctx context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string, usage *core.TokenUsage) error {
+	if s.usageRepo == nil {
+		return nil
+	}
+	if usage != nil {
+		costUSD := EstimateCostUSD(int64(usage.TotalTokens))
+		if err := s.usageRepo.SettleUsage(ctx, tenantID, string(scopeType), scopeID, usage.TotalTokens, costUSD); err != nil {
+			return err
+		}
+	}
+	if scopeType == core.BudgetScopeAgent {
+		return s.usageRepo.ReleaseTask(ctx, tenantID, string(scopeType), scopeID)
+	}
+	return nil
+}
+
 func (s *BudgetService) Settle(ctx context.Context, tenantID, agentID string, usage *core.TokenUsage) error {
 	if s.usageRepo == nil {
 		return nil

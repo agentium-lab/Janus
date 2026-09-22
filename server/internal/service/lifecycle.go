@@ -1,6 +1,8 @@
 package service
 
 import (
+	"sync"
+
 	"context"
 	"fmt"
 
@@ -61,11 +63,18 @@ func (s *PGLifecycle) ApplyTxLocked(ctx context.Context, key string, fn func(tx 
 
 // MemoryLifecycle implements Lifecycle without a database — for tests.
 // It runs fn with a nil transaction, so in-memory repos (which ignore the
-// tx parameter) execute the SAME logical path as production.
-type MemoryLifecycle struct{}
+// tx parameter) execute the SAME logical path as production. There is no
+// rollback: writes that already ran stay visible when fn fails (memory
+// repos are best-effort in tests). ApplyTxLocked DOES serialize per key,
+// mirroring the production advisory lock so concurrency-sensitive tests
+// exercise the same mutual exclusion.
+type MemoryLifecycle struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
 
 func NewMemoryLifecycle() *MemoryLifecycle {
-	return &MemoryLifecycle{}
+	return &MemoryLifecycle{locks: make(map[string]*sync.Mutex)}
 }
 
 func (s *MemoryLifecycle) ApplyTx(ctx context.Context, fn func(tx pgx.Tx) error) error {
@@ -73,5 +82,14 @@ func (s *MemoryLifecycle) ApplyTx(ctx context.Context, fn func(tx pgx.Tx) error)
 }
 
 func (s *MemoryLifecycle) ApplyTxLocked(ctx context.Context, key string, fn func(tx pgx.Tx) error) error {
-	return s.ApplyTx(ctx, fn) // single test goroutine per key; no lock needed
+	s.mu.Lock()
+	lk, ok := s.locks[key]
+	if !ok {
+		lk = &sync.Mutex{}
+		s.locks[key] = lk
+	}
+	s.mu.Unlock()
+	lk.Lock()
+	defer lk.Unlock()
+	return s.ApplyTx(ctx, fn)
 }

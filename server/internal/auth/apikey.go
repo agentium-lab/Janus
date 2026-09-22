@@ -229,7 +229,14 @@ func (v *APIKeyValidator) HasScope(ctx context.Context, scope string) bool {
 	return p.HasScope(scope)
 }
 
-func Middleware(validator *APIKeyValidator) func(http.Handler) http.Handler {
+// PrincipalValidator is the auth dependency of Middleware. *APIKeyValidator
+// satisfies it in production; tests inject an in-memory implementation to
+// exercise the REAL middleware chain instead of a re-implementation.
+type PrincipalValidator interface {
+	ValidatePrincipal(ctx context.Context, apiKey string) (Principal, error)
+}
+
+func Middleware(validator PrincipalValidator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			apiKey := extractAPIKey(r)

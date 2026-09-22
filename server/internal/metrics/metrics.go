@@ -111,3 +111,8 @@ var OutboxDeadRetried = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "janus_outbox_dead_retried_total",
 	Help: "Dead outbox entries requeued for another retry cycle",
 })
+
+var OutboxQuarantined = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "janus_outbox_quarantined_total",
+	Help: "Outbox entries quarantined (unknown kind for this publisher version; recover via outbox retry after upgrade)",
+})
