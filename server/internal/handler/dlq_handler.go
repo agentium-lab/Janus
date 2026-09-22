@@ -13,6 +13,7 @@ import (
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
 type DLQService interface {
@@ -182,8 +183,9 @@ func (a *DLQServiceAdapter) replayDLQAtomic(ctx context.Context, tenantID, taskI
 		}
 	}()
 
-	if err := pgTaskRepo.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusCreated, 0); err != nil {
-		return nil, fmt.Errorf("set created: %w", err)
+	generation, err := pgTaskRepo.ResetForReplayTx(ctx, tx, tenantID, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("reset task: %w", err)
 	}
 
 	if task.MailboxID != "" {
@@ -192,7 +194,7 @@ func (a *DLQServiceAdapter) replayDLQAtomic(ctx context.Context, tenantID, taskI
 			TenantID: tenantID, MailboxID: task.MailboxID, TaskID: taskID,
 			Priority: task.Priority, Payload: envelopeJSON,
 		})
-		dedupeKey := fmt.Sprintf("task_publish:%s:%s:dlq_replay", tenantID, taskID)
+		dedupeKey := fmt.Sprintf("task_publish:%s:%s:dlq_replay:%d", tenantID, taskID, generation)
 		if err := a.outboxRepo.InsertWithDedupe(ctx, tx, dlqULID(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
 			return nil, fmt.Errorf("outbox task_publish: %w", err)
 		}
@@ -201,10 +203,11 @@ func (a *DLQServiceAdapter) replayDLQAtomic(ctx context.Context, tenantID, taskI
 		}
 	}
 
-	createdPayload, _ := json.Marshal(core.JanusEvent{
+	createdEvent := core.JanusEvent{
 		EventType: core.EventTaskCreated, TenantID: tenantID, TaskID: taskID,
 		Payload: dlqMustMarshal(map[string]string{"status": "replayed_from_dlq"}),
-	})
+	}
+	createdPayload := service.MarshalEvent(&createdEvent)
 	if err := a.outboxRepo.Insert(ctx, tx, dlqULID(), tenantID, "event_publish", createdPayload); err != nil {
 		return nil, fmt.Errorf("outbox event_publish: %w", err)
 	}

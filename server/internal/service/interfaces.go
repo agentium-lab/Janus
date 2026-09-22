@@ -92,6 +92,7 @@ type TaskTxRepo interface {
 	UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error)
 	SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error
 	UpdateRetryAtTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, retryAt time.Time) error
+	ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error)
 }
 
 type AttemptTxRepo interface {
@@ -108,6 +109,7 @@ type ApprovalTxRepo interface {
 type OutboxTxWriter interface {
 	OutboxWriter
 	Insert(ctx context.Context, tx pgx.Tx, id, tenantID, kind string, payload json.RawMessage) error
+	InsertWithDedupe(ctx context.Context, tx pgx.Tx, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error
 }
 
 type OutboxDedupeWriter interface {

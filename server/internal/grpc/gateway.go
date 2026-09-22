@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"net/http"
 	"strconv"
+	"strings"
 
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
@@ -15,6 +16,26 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// passthroughHeaders are identity/auth headers the gRPC AuthInterceptor and
+// the identity guard read from metadata. grpc-gateway's DefaultHeaderMatcher
+// DROPS non-permanent headers (X-API-Key never reaches the backend) and
+// prefixes permanent ones (Authorization would become grpcgateway-* without
+// its built-in pass-through), so these must be forwarded explicitly.
+var passthroughHeaders = map[string]struct{}{
+	"x-api-key":           {},
+	"authorization":       {},
+	"x-tenant-id":         {},
+	"x-janus-acting-user": {},
+}
+
+func headerMatcher(key string) (string, bool) {
+	lower := strings.ToLower(key)
+	if _, ok := passthroughHeaders[lower]; ok {
+		return lower, true
+	}
+	return runtime.DefaultHeaderMatcher(key)
+}
+
 func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (http.Handler, error) {
 	// Use proto field names (snake_case) in JSON, matching the HTTP handlers.
 	mux := runtime.NewServeMux(
@@ -24,6 +45,7 @@ func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (
 		}),
 		// Allow handlers to override HTTP status via metadata.
 		runtime.WithForwardResponseOption(setHTTPStatus),
+		runtime.WithIncomingHeaderMatcher(headerMatcher),
 	)
 	opts := []grpc.DialOption{}
 	if tlsCfg != nil {

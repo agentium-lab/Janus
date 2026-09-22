@@ -667,3 +667,84 @@ func TestDispatch_AckTask_ToolInvocationCompleted(t *testing.T) {
 	}
 	assert.True(t, hasCompleted, "outbox should contain tool.invocation_completed for tool tasks")
 }
+
+func TestTaskService_Replay_RepeatDeliversEachGeneration(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	task := createTestTask(t, env, "task-replay-repeat-1")
+
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", task.ID))
+	_, err := env.taskSvc.Replay(ctx, "acme", task.ID)
+	require.NoError(t, err)
+	// Replay again after the first replayed run completes.
+	got, err := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, err)
+	require.Equal(t, core.TaskStatusQueued, got.Status, "first replay should re-queue")
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", task.ID))
+	_, err = env.taskSvc.Replay(ctx, "acme", task.ID)
+	require.NoError(t, err)
+
+	taskPublish := 0
+	entries, _ := env.outboxRepo.FetchPending(ctx, 500)
+	for _, e := range entries {
+		if e.Kind == "task_publish" && e.TenantID == "acme" {
+			var msg core.TaskMessage
+			require.NoError(t, json.Unmarshal(e.Payload, &msg), "task_publish payload must stay a TaskMessage")
+			if msg.TaskID == task.ID {
+				taskPublish++
+			}
+		}
+	}
+	assert.Equal(t, 2, taskPublish,
+		"a repeated replay must deliver again (generation-keyed dedupe), not be swallowed")
+
+	got, err = env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, err)
+	assert.Equal(t, core.TaskStatusQueued, got.Status)
+	assert.GreaterOrEqual(t, got.ReplayCount, 2, "replay generation must advance in the task row")
+}
+
+func TestTaskService_OutboxEventIdentity_EndToEnd(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	task := createTestTask(t, env, "task-identity-1")
+
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", task.ID))
+
+	entries, _ := env.outboxRepo.FetchPending(ctx, 500)
+	payloadIDs := map[string]bool{}
+	for _, e := range entries {
+		if e.Kind != "event_publish" || e.TenantID != "acme" {
+			continue
+		}
+		var event core.JanusEvent
+		require.NoError(t, json.Unmarshal(e.Payload, &event))
+		require.NotEmpty(t, event.EventID, "outbox event payload must carry a stable event_id (write-point enrichment)")
+		require.False(t, event.Timestamp.IsZero(), "outbox event payload must carry a timestamp")
+		payloadIDs[event.EventID] = true
+
+		// The audit projection must reuse the SAME identity.
+		require.NoError(t, env.eventRepo.Insert(ctx, event))
+	}
+
+	auditEvents, err := env.eventRepo.ListByTask(ctx, "acme", task.ID, 100)
+	require.NoError(t, err)
+	require.NotEmpty(t, auditEvents)
+	for _, evt := range auditEvents {
+		assert.True(t, payloadIDs[evt.EventID],
+			"audit row event_id %q must equal the outbox payload event_id (one identity end-to-end)", evt.EventID)
+	}
+
+	// Idempotent re-projection: inserting the same events again must not grow the audit trail.
+	for _, e := range entries {
+		if e.Kind != "event_publish" || e.TenantID != "acme" {
+			continue
+		}
+		var event core.JanusEvent
+		require.NoError(t, json.Unmarshal(e.Payload, &event))
+		require.NoError(t, env.eventRepo.Insert(ctx, event))
+	}
+	again, err := env.eventRepo.ListByTask(ctx, "acme", task.ID, 100)
+	require.NoError(t, err)
+	assert.Len(t, again, len(auditEvents), "re-projection with stable event_ids must be idempotent")
+}

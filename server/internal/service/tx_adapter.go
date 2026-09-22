@@ -1,6 +1,8 @@
 package service
 
 import (
+	"sync"
+
 	"context"
 	"time"
 
@@ -15,26 +17,43 @@ import (
 
 type TaskRepoTxAdapter struct {
 	TaskRepo
+
+	replayGenMu sync.Mutex
+	replayGen   map[string]int
 }
 
-func (a TaskRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, task core.Task) error {
+func (a *TaskRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, task core.Task) error {
 	return a.Create(ctx, task)
 }
 
-func (a TaskRepoTxAdapter) UpdateStatusTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, status core.TaskStatus, attempt int) error {
+func (a *TaskRepoTxAdapter) UpdateStatusTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, status core.TaskStatus, attempt int) error {
 	return a.UpdateStatus(ctx, tenantID, taskID, status, attempt)
 }
 
-func (a TaskRepoTxAdapter) UpdateStatusWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, expected, next core.TaskStatus, attempt int) (bool, error) {
+func (a *TaskRepoTxAdapter) UpdateStatusWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, expected, next core.TaskStatus, attempt int) (bool, error) {
 	return a.UpdateStatusWithCheck(ctx, tenantID, taskID, expected, next, attempt)
 }
 
-func (a TaskRepoTxAdapter) SetResultRefTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, ref string) error {
+func (a *TaskRepoTxAdapter) SetResultRefTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, ref string) error {
 	return a.SetResultRef(ctx, tenantID, taskID, ref)
 }
 
-func (a TaskRepoTxAdapter) UpdateRetryAtTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, retryAt time.Time) error {
+func (a *TaskRepoTxAdapter) UpdateRetryAtTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, retryAt time.Time) error {
 	return a.UpdateRetryAt(ctx, tenantID, taskID, retryAt)
+}
+
+func (a *TaskRepoTxAdapter) ResetForReplayTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string) (int, error) {
+	if err := a.ResetForReplay(ctx, tenantID, taskID); err != nil {
+		return 0, err
+	}
+	a.replayGenMu.Lock()
+	defer a.replayGenMu.Unlock()
+	if a.replayGen == nil {
+		a.replayGen = make(map[string]int)
+	}
+	key := tenantID + ":" + taskID
+	a.replayGen[key]++
+	return a.replayGen[key], nil
 }
 
 type AttemptRepoTxAdapter struct {

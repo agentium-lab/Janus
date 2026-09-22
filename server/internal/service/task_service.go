@@ -80,7 +80,7 @@ func (s *TaskService) initTxPath(outboxRepo *postgres.OutboxRepo) {
 	if pgRepo, ok := s.taskRepo.(*postgres.TaskRepository); ok {
 		s.taskTx = pgRepo
 	} else {
-		s.taskTx = TaskRepoTxAdapter{s.taskRepo}
+		s.taskTx = &TaskRepoTxAdapter{TaskRepo: s.taskRepo}
 	}
 	if outboxRepo != nil {
 		s.txOutbox = outboxRepo
@@ -278,7 +278,7 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 			return fmt.Errorf("create task: %w", err)
 		}
 
-		createdPayload, _ := json.Marshal(core.JanusEvent{
+		createdPayload := MarshalEvent(&core.JanusEvent{
 			EventType:   core.EventTaskCreated,
 			TenantID:    task.TenantID,
 			TaskID:      task.ID,
@@ -306,7 +306,7 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 				return fmt.Errorf("update to queued: %w", err)
 			}
 
-			queuedPayload, _ := json.Marshal(core.JanusEvent{
+			queuedPayload := MarshalEvent(&core.JanusEvent{
 				EventType:   core.EventTaskQueued,
 				TenantID:    task.TenantID,
 				TaskID:      task.ID,
@@ -367,7 +367,7 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 		if uerr := s.taskTx.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
 			return fmt.Errorf("block task: %w", uerr)
 		}
-		payload, _ := json.Marshal(core.JanusEvent{
+		payload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskBlocked, TenantID: tenantID, TaskID: taskID,
 			Payload: mustMarshal(map[string]string{"reason": reason}),
 		})
@@ -392,42 +392,51 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
 	}
 
-	if err := s.taskRepo.ResetForReplay(ctx, tenantID, taskID); err != nil {
-		return nil, fmt.Errorf("reset task: %w", err)
-	}
+	// Atomic replay: reset + republish + status transition + created event
+	// commit together. The replay generation from the reset lands in the
+	// task_publish dedupe key, so a repeat replay delivers again instead of
+	// being silently swallowed while the status still flips to queued.
+	if err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		generation, rerr := s.taskTx.ResetForReplayTx(ctx, tx, tenantID, taskID)
+		if rerr != nil {
+			return fmt.Errorf("reset task: %w", rerr)
+		}
 
-	if task.MailboxID != "" {
-		payload, _ := json.Marshal(task.Envelope)
-		msg := core.TaskMessage{
-			TenantID:  tenantID,
-			MailboxID: task.MailboxID,
-			TaskID:    taskID,
-			Priority:  task.Priority,
-			Payload:   payload,
+		if task.MailboxID != "" {
+			payload, _ := json.Marshal(task.Envelope)
+			msg := core.TaskMessage{
+				TenantID:  tenantID,
+				MailboxID: task.MailboxID,
+				TaskID:    taskID,
+				Priority:  task.Priority,
+				Payload:   payload,
+			}
+			queuePayload, _ := json.Marshal(msg)
+			dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay:%d", tenantID, taskID, generation)
+			if ierr := s.txOutbox.InsertWithDedupe(ctx, tx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); ierr != nil {
+				return fmt.Errorf("outbox insert replay: %w", ierr)
+			}
+			if uerr := s.taskTx.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusQueued, 0); uerr != nil {
+				return fmt.Errorf("update task queued after replay: %w", uerr)
+			}
 		}
-		queuePayload, _ := json.Marshal(msg)
-		dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay", tenantID, taskID)
-		if err := s.txOutbox.InsertDirectWithDedupe(ctx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
-			return nil, fmt.Errorf("outbox insert replay: %w", err)
+
+		createdEvent := core.JanusEvent{
+			EventType:   core.EventTaskCreated,
+			TenantID:    tenantID,
+			TaskID:      taskID,
+			SourceAgent: task.SourceAgent,
+			Payload:     mustMarshal(map[string]string{"status": "replayed"}),
 		}
-		if err := s.taskTx.UpdateStatusTx(ctx, nil, tenantID, taskID, core.TaskStatusQueued, 0); err != nil {
-			return nil, fmt.Errorf("update task queued after replay: %w", err)
+		if ierr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", MarshalEvent(&createdEvent)); ierr != nil {
+			return fmt.Errorf("outbox insert replay event: %w", ierr)
 		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	metrics.TasksCreated.WithLabelValues(tenantID).Inc()
-	createdEvent := core.JanusEvent{
-		EventType:   core.EventTaskCreated,
-		TenantID:    tenantID,
-		TaskID:      taskID,
-		SourceAgent: task.SourceAgent,
-		Payload:     mustMarshal(map[string]string{"status": "replayed"}),
-	}
-	payload, _ := json.Marshal(createdEvent)
-	if err := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", payload); err != nil {
-		logOutboxWrite(taskID, err)
-	}
-
 	return s.taskRepo.Get(ctx, tenantID, taskID)
 }
 
@@ -457,14 +466,13 @@ func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agen
 	// delayed beyond the window may redeliver.
 	payload, _ := json.Marshal(prog)
 	evt := core.JanusEvent{
-		EventID:     ulid(),
 		EventType:   core.EventTaskProgress,
 		TenantID:    tenantID,
 		TaskID:      taskID,
 		SourceAgent: agentID,
 		Payload:     payload,
 	}
-	evtPayload, _ := json.Marshal(evt)
+	evtPayload := MarshalEvent(&evt)
 	if err := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", evtPayload); err != nil {
 		logOutboxWrite(taskID, err)
 	}
@@ -541,7 +549,7 @@ func (s *TaskService) TransitionInTx(ctx context.Context, tx pgx.Tx, tenantID, t
 	if !ok2 {
 		return fmt.Errorf("conflict: task %s status changed concurrently, expected %s", taskID, expected)
 	}
-	payload, _ := json.Marshal(core.JanusEvent{
+	payload := MarshalEvent(&core.JanusEvent{
 		EventType: eventType, TenantID: tenantID, TaskID: taskID,
 		Payload: mustMarshal(map[string]string{"status": string(status)}),
 	})

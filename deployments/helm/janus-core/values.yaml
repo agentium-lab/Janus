@@ -123,7 +123,9 @@ redis:
   secretKey: "password"
 
 artifacts:
-  enabled: true
+  # Disabled by default: result refs use object storage / external URIs.
+  # ReadWriteOnce PVC + HPA minReplicas>1 would violate multi-attach limits.
+  enabled: false
   storageClass: ""
   accessMode: ReadWriteOnce
   size: 10Gi

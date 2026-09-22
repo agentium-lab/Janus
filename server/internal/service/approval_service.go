@@ -132,7 +132,7 @@ func (s *ApprovalService) approveAtomic(ctx context.Context, tenantID, approvalI
 			return nil
 		}
 
-		queuedPayload, _ := json.Marshal(core.JanusEvent{
+		queuedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: terminalEvent, TenantID: tenantID, TaskID: approval.TaskID,
 			Payload: mustMarshal(map[string]string{"mailbox": task.MailboxID, "approval": approvalID}),
 		})

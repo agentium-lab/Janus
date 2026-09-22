@@ -75,13 +75,13 @@ func (r *TaskRepository) Get(ctx context.Context, tenantID, taskID string) (*cor
 	err := r.pool.QueryRow(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
-		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
 		 FROM tasks WHERE tenant_id = $1 AND id = $2`,
 		tenantID, taskID,
 	).Scan(
 		&t.TenantID, &t.ID, &idempotencyKey, &t.SourceAgent, &targetType, &targetValue,
 		&mailboxID, &status, &priority, &deadline, &ttlSeconds, &envelopeJSON,
-		&resultRef, &errorJSON, &t.AttemptCount, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+		&resultRef, &errorJSON, &t.AttemptCount, &t.ReplayCount, &t.CreatedAt, &t.UpdatedAt, &completedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -272,7 +272,7 @@ func (r *TaskRepository) ListByStatus(ctx context.Context, tenantID string, stat
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
-		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
 		 FROM tasks WHERE tenant_id = $1 AND status = $2
 		 ORDER BY priority ASC, created_at ASC LIMIT $3`,
 		tenantID, string(status), limit,
@@ -299,7 +299,7 @@ func scanTasks(rows pgx.Rows) ([]*core.Task, error) {
 		err := rows.Scan(
 			&t.TenantID, &t.ID, &idempotencyKey, &t.SourceAgent, &targetType, &targetValue,
 			&mailboxID, &status, &priority, &deadline, &ttlSeconds, &envelopeJSON,
-			&resultRef, &errorJSON, &t.AttemptCount, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+			&resultRef, &errorJSON, &t.AttemptCount, &t.ReplayCount, &t.CreatedAt, &t.UpdatedAt, &completedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -343,11 +343,29 @@ func nilIfEmpty(s string) interface{} {
 func (r *TaskRepository) ResetForReplay(ctx context.Context, tenantID, taskID string) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE tasks SET status = 'created', attempt_count = 0, result_ref = NULL,
-		        error = NULL, completed_at = NULL, retry_at = NULL, updated_at = now()
+		        error = NULL, completed_at = NULL, retry_at = NULL, replay_count = replay_count + 1,
+		        updated_at = now()
 		 WHERE tenant_id = $1 AND id = $2`,
 		tenantID, taskID,
 	)
 	return err
+}
+
+// ResetForReplayTx is the transactional variant of ResetForReplay. It returns
+// the new replay generation, which callers embed in the task_publish dedupe
+// key so a second replay is NOT silently swallowed (fixed keys made tasks
+// stick in 'queued' with no delivery on repeat replay).
+func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
+	var generation int
+	err := tx.QueryRow(ctx,
+		`UPDATE tasks SET status = 'created', attempt_count = 0, result_ref = NULL,
+		        error = NULL, completed_at = NULL, retry_at = NULL, replay_count = replay_count + 1,
+		        updated_at = now()
+		 WHERE tenant_id = $1 AND id = $2
+		 RETURNING replay_count`,
+		tenantID, taskID,
+	).Scan(&generation)
+	return generation, err
 }
 
 func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailboxID string, limit int) ([]*core.Task, error) {
@@ -358,7 +376,7 @@ func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailbox
 		rows, err := r.pool.Query(ctx,
 			`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 			        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
-			        result_ref, error, attempt_count, created_at, updated_at, completed_at
+			        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
 			 FROM tasks WHERE tenant_id = $1 AND mailbox_id = $2 AND status = 'dead_lettered'
 			 ORDER BY updated_at DESC LIMIT $3`,
 			tenantID, mailboxID, limit,
@@ -372,7 +390,7 @@ func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailbox
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
-		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
 		 FROM tasks WHERE tenant_id = $1 AND status = 'dead_lettered'
 		 ORDER BY updated_at DESC LIMIT $2`,
 		tenantID, limit,
@@ -448,7 +466,7 @@ func (r *TaskRepository) ListPage(ctx context.Context, tenantID string, pageSize
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
 		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
-		        result_ref, error, attempt_count, created_at, updated_at, completed_at
+		        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
 		 FROM tasks
 		 WHERE tenant_id = $1
 		   AND ($2 = '' OR (updated_at, id) < (

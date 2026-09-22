@@ -3,6 +3,7 @@ package lease
 import (
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -180,10 +181,11 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 					log.Printf("lease scanner: dlq outbox %s/%s: %v", e.TenantID, e.TaskID, err)
 					return false
 				}
-				dlEventPayload, _ := json.Marshal(core.JanusEvent{
+				dlEvent := core.JanusEvent{
 					EventType: core.EventTaskDeadLettered, TenantID: e.TenantID, TaskID: e.TaskID,
 					Payload: []byte(`{"reason":"lease_expired"}`),
-				})
+				}
+				dlEventPayload := marshalLeaseEvent(&dlEvent)
 				if _, err := tx.Exec(ctx,
 					`INSERT INTO outbox_events (id, tenant_id, kind, payload)
 					 VALUES ($1, $2, 'event_publish', $3)`,
@@ -233,4 +235,18 @@ func backoff(attempt int) time.Duration {
 		d = 15 * time.Minute
 	}
 	return d
+}
+
+func marshalLeaseEvent(event *core.JanusEvent) []byte {
+	if event.EventID == "" {
+		b := make([]byte, 10)
+		if _, err := cryptorand.Read(b); err == nil {
+			event.EventID = "evt_" + hex.EncodeToString(b)
+		}
+	}
+	if event.Timestamp.IsZero() {
+		event.Timestamp = time.Now().UTC()
+	}
+	b, _ := json.Marshal(event)
+	return b
 }

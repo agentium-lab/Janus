@@ -193,6 +193,7 @@ type Task struct {
 	ResultRef      string       `json:"result_ref,omitempty"`
 	Error          *TaskError   `json:"error,omitempty"`
 	AttemptCount   int          `json:"attempt_count"`
+	ReplayCount    int          `json:"replay_count"`
 	CreatedAt      time.Time    `json:"created_at"`
 	UpdatedAt      time.Time    `json:"updated_at"`
 	CompletedAt    *time.Time   `json:"completed_at,omitempty"`

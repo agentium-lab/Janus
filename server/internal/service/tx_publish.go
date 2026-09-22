@@ -38,6 +38,10 @@ func (o *PublishingOutbox) InsertDirect(ctx context.Context, id, tenantID, kind 
 	return o.route(ctx, id, tenantID, kind, payload)
 }
 
+func (o *PublishingOutbox) InsertWithDedupe(ctx context.Context, _ pgx.Tx, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error {
+	return o.InsertDirectWithDedupe(ctx, id, tenantID, kind, dedupeKey, payload)
+}
+
 func (o *PublishingOutbox) InsertDirectWithDedupe(ctx context.Context, id, tenantID, kind, dedupeKey string, payload json.RawMessage) error {
 	o.mu.Lock()
 	if _, seen := o.dedupeKV[dedupeKey]; seen {

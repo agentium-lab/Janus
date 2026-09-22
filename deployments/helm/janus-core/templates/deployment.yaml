@@ -1,5 +1,9 @@
-{{- if and .Values.artifacts.enabled (eq .Values.artifacts.accessMode "ReadWriteOnce") (gt (int .Values.replicaCount) 1) }}
-{{- fail "artifacts: ReadWriteOnce storage cannot serve replicaCount > 1 — switch accessMode to ReadWriteMany (shared FS), use object storage for result refs, or run a single replica" }}
+{{- $rwoReplicas := gt (int .Values.replicaCount) 1 }}
+{{- if .Values.autoscaling.enabled }}
+{{- $rwoReplicas = or $rwoReplicas (gt (int .Values.autoscaling.minReplicas) 1) (gt (int .Values.autoscaling.maxReplicas) 1) }}
+{{- end }}
+{{- if and .Values.artifacts.enabled (eq .Values.artifacts.accessMode "ReadWriteOnce") $rwoReplicas }}
+{{- fail "artifacts: ReadWriteOnce storage cannot serve more than one replica — replicaCount, autoscaling.minReplicas and autoscaling.maxReplicas must all be 1 (HPA scales past PVC multi-attach limits). Switch accessMode to ReadWriteMany (shared FS), use object storage for result refs, or disable autoscaling." }}
 {{- end }}
 apiVersion: apps/v1
 kind: Deployment

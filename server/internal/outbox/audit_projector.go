@@ -85,6 +85,16 @@ func (p *AuditProjector) projectBatch(ctx context.Context) {
 			_ = p.reader.MarkProjected(ctx, entry.ID)
 			continue
 		}
+		if evt.EventID == "" {
+			// Legacy rows written before write-point enrichment. Derive the
+			// identity from the outbox row ID so re-projection stays
+			// idempotent AND distinct rows cannot collapse onto one audit
+			// record (event repo dedupes on (tenant_id, event_id)).
+			evt.EventID = "obx_" + entry.ID
+		}
+		if evt.Timestamp.IsZero() {
+			evt.Timestamp = entry.CreatedAt
+		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
 			log.Printf("audit projector: write %s: %v", evt.EventID, err)
 			metrics.AuditProjectionErrors.Inc()
@@ -127,6 +137,12 @@ func (p *AuditProjector) Replay(ctx context.Context, tenantID string, from, to t
 			result.Failed++
 			result.LastError = err.Error()
 			continue
+		}
+		if evt.EventID == "" {
+			evt.EventID = "obx_" + entry.ID
+		}
+		if evt.Timestamp.IsZero() {
+			evt.Timestamp = entry.CreatedAt
 		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
 			result.Failed++

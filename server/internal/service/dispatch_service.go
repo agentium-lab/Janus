@@ -71,7 +71,7 @@ func (s *DispatchService) initTxPath() {
 	if pgTask, ok := s.taskRepo.(*postgres.TaskRepository); ok && pgTask != nil {
 		s.taskTx = pgTask
 	} else {
-		s.taskTx = TaskRepoTxAdapter{s.taskRepo}
+		s.taskTx = &TaskRepoTxAdapter{TaskRepo: s.taskRepo}
 	}
 	if pgAttempt, ok := s.attemptRepo.(*postgres.TaskAttemptRepository); ok && pgAttempt != nil {
 		s.attemptTx = pgAttempt
@@ -275,7 +275,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1); uerr != nil {
 			return fmt.Errorf("update task claimed: %w", uerr)
 		}
-		claimedPayload, _ := json.Marshal(core.JanusEvent{
+		claimedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskClaimed, TenantID: tenantID, TaskID: task.ID,
 			Payload: mustMarshal(map[string]string{"lease_id": leaseID, "agent_id": agentID}),
 		})
@@ -314,7 +314,7 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRunning, 0); uerr != nil {
 			return fmt.Errorf("update task running: %w", uerr)
 		}
-		startedPayload, _ := json.Marshal(core.JanusEvent{
+		startedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskStarted, TenantID: tenantID, TaskID: taskID,
 			Payload: mustMarshal(map[string]string{"lease_id": leaseID}),
 		})
@@ -416,7 +416,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		}
 
 		// completed event via outbox.
-		completedPayload, _ := json.Marshal(core.JanusEvent{
+		completedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskCompleted, TenantID: tenantID, TaskID: taskID,
 			SourceAgent: attempt.AgentID,
 			Payload:     mustMarshal(map[string]string{"result_ref": resultRef}),
@@ -430,7 +430,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 				"tool_name":  task.Envelope.ToolInvocation.Name,
 				"result_ref": resultRef,
 			})
-			toolEvt, _ := json.Marshal(core.JanusEvent{
+			toolEvt := MarshalEvent(&core.JanusEvent{
 				EventType: core.EventToolInvocationCompleted, TenantID: tenantID, TaskID: taskID,
 				SourceAgent: attempt.AgentID, Payload: toolPayload,
 			})
@@ -456,7 +456,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		if aerr := s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(attempt.DeliveryRef)); aerr != nil {
 			log.Printf("ack queue message failed after task completed: tenant=%s task=%s attempt=%d delivery_ref=%s err=%v",
 				tenantID, taskID, attempt.Attempt, attempt.DeliveryRef, aerr)
-			warnPayload, _ := json.Marshal(core.JanusEvent{
+			warnPayload := MarshalEvent(&core.JanusEvent{
 				EventType: core.EventTaskCompleted, TenantID: tenantID, TaskID: taskID,
 				Payload: mustMarshal(map[string]string{"result_ref": resultRef, "ack_error": aerr.Error(), "delivery_ref": attempt.DeliveryRef}),
 			})
@@ -523,7 +523,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 			if rerr := s.taskTx.UpdateRetryAtTx(ctx, tx, tenantID, taskID, retryAt); rerr != nil {
 				return fmt.Errorf("set retry_at: %w", rerr)
 			}
-			retryPayload, _ := json.Marshal(core.JanusEvent{
+			retryPayload := MarshalEvent(&core.JanusEvent{
 				EventType: core.EventTaskRetryScheduled, TenantID: tenantID, TaskID: taskID,
 				Payload: mustMarshal(map[string]string{"attempt": fmt.Sprintf("%d", task.AttemptCount)}),
 			})
@@ -551,7 +551,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 			if oerr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "dlq_publish", dlqPayload); oerr != nil {
 				return fmt.Errorf("outbox dlq: %w", oerr)
 			}
-			dlEventPayload, _ := json.Marshal(core.JanusEvent{
+			dlEventPayload := MarshalEvent(&core.JanusEvent{
 				EventType: core.EventTaskDeadLettered, TenantID: tenantID, TaskID: taskID,
 				Payload: errJSON,
 			})

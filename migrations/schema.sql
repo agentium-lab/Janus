@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     result_ref text,
     error jsonb,
     attempt_count integer NOT NULL DEFAULT 0,
+    replay_count integer NOT NULL DEFAULT 0,
     retry_at timestamptz,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
