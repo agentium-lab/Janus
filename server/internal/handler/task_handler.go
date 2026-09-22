@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+
 	"context"
 	"net/http"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
+	"github.com/agentium-lab/Janus/server/internal/service"
 )
 
 type TaskService interface {
@@ -303,6 +306,11 @@ func (h *TaskHandler) Replay(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	result, err := h.svc.Replay(r.Context(), tenantID, taskID)
 	if err != nil {
+		var conflict *service.ReplayConflictError
+		if errors.As(err, &conflict) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

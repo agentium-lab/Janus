@@ -92,22 +92,12 @@ func (p *AuditProjector) projectBatch(ctx context.Context) {
 		if entry.Kind != "event_publish" {
 			continue // defensive: FetchUnprojected already filters, but belt-and-suspenders
 		}
-		var evt core.JanusEvent
-		if err := json.Unmarshal(entry.Payload, &evt); err != nil {
+		evt, err := NormalizeLegacyEvent(entry)
+		if err != nil {
 			log.Printf("audit projector: malformed payload for %s: %v", entry.ID, err)
 			metrics.AuditProjectionErrors.Inc()
 			_ = p.reader.MarkProjected(ctx, entry.ID)
 			continue
-		}
-		if evt.EventID == "" {
-			// Legacy rows written before write-point enrichment. Derive the
-			// identity from the outbox row ID so re-projection stays
-			// idempotent AND distinct rows cannot collapse onto one audit
-			// record (event repo dedupes on (tenant_id, event_id)).
-			evt.EventID = "obx_" + entry.ID
-		}
-		if evt.Timestamp.IsZero() {
-			evt.Timestamp = entry.CreatedAt
 		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
 			log.Printf("audit projector: write %s: %v", evt.EventID, err)
@@ -146,17 +136,11 @@ func (p *AuditProjector) Replay(ctx context.Context, tenantID string, from, to t
 			result.Skipped++
 			continue
 		}
-		var evt core.JanusEvent
-		if err := json.Unmarshal(entry.Payload, &evt); err != nil {
+		evt, err := NormalizeLegacyEvent(entry)
+		if err != nil {
 			result.Failed++
 			result.LastError = err.Error()
 			continue
-		}
-		if evt.EventID == "" {
-			evt.EventID = "obx_" + entry.ID
-		}
-		if evt.Timestamp.IsZero() {
-			evt.Timestamp = entry.CreatedAt
 		}
 		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
 			result.Failed++

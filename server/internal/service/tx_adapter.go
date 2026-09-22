@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
 // TxAdapter wraps non-transactional repos to satisfy the Tx interfaces.
@@ -43,6 +44,13 @@ func (a *TaskRepoTxAdapter) UpdateRetryAtTx(ctx context.Context, _ pgx.Tx, tenan
 }
 
 func (a *TaskRepoTxAdapter) ResetForReplayTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string) (int, error) {
+	t, err := a.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return 0, err
+	}
+	if !t.Status.IsTerminal() {
+		return 0, postgres.ErrTaskNotReplayable
+	}
 	if err := a.ResetForReplay(ctx, tenantID, taskID); err != nil {
 		return 0, err
 	}

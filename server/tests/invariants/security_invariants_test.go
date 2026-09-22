@@ -227,3 +227,64 @@ func TestSecurity_IdempotentReplayReturnsExisting(t *testing.T) {
 	assert.Equal(t, r1.ID, r2.ID, "same idempotency key must return existing task")
 	assert.Equal(t, 1, len(repo.tasks["tenant-a"]), "must be exactly one task")
 }
+
+type securityTenantSvc struct{}
+
+func (securityTenantSvc) Create(_ context.Context, _, _ string) error { return nil }
+func (securityTenantSvc) Get(_ context.Context, id string) (*core.Tenant, error) {
+	return &core.Tenant{ID: id, Name: "t"}, nil
+}
+func (securityTenantSvc) List(_ context.Context) ([]core.Tenant, error) {
+	return []core.Tenant{{ID: "tenant-a", Name: "A"}, {ID: "tenant-b", Name: "B"}}, nil
+}
+
+func TestSecurity_TenantAdminCannotManageTenants(t *testing.T) {
+	ts := newSecurityServer(t)
+	defer ts.Close()
+
+	// A plain tenant admin key (no platform:admin scope).
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/tenants", nil)
+	req.Header.Set("X-API-Key", "key-tenant-a-admin")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"tenant admin must not list tenants (platform control plane)")
+
+	body := `{"id":"evil-tenant","name":"Evil"}`
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/tenants", strings.NewReader(body))
+	req2.Header.Set("X-API-Key", "key-tenant-b-admin")
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp2.StatusCode,
+		"tenant admin must not create tenants (platform control plane)")
+}
+
+func TestSecurity_PlatformAdminManagesTenants(t *testing.T) {
+	tenantH := handler.NewTenantHandler(securityTenantSvc{})
+
+	validator := &fakeKeyValidator{keys: map[string]auth.Principal{
+		"key-platform": {TenantID: "platform-operator", Scopes: []string{"platform:admin"}},
+	}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			tenantH.List(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	core := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(mux)))
+	ts := httptest.NewServer(core)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/tenants", nil)
+	req.Header.Set("X-API-Key", "key-platform")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode,
+		"platform:admin key must reach tenant list (empty path tenant passes the guard)")
+}

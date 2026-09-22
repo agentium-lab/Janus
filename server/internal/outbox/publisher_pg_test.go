@@ -346,7 +346,7 @@ func TestPublisher_PublishBatch_UnknownKind_NoOp(t *testing.T) {
 	assert.Equal(t, "quarantine", status)
 	assert.Contains(t, lastErr, "unknown kind")
 
-	n, err := repo.RetryDead(ctx, 10)
+	n, err := repo.RetryDead(ctx, "acme", 10)
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), n)
 	pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", "ob-unknown").Scan(&status)
@@ -433,4 +433,74 @@ func TestPublisher_PublishBatch_MarkFailedError(t *testing.T) {
 	assert.Empty(t, drv.publishedTasks)
 	assert.True(t, repo.markFailedCalled)
 	assert.Equal(t, "ob-mf-err", repo.markFailedID)
+}
+
+func TestOutboxRepo_RetryDead_TenantIsolation(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	ctx := context.Background()
+
+	insertOutboxEntry(t, pool, "rd-a1", "tenant-a", "event_publish", "dead", []byte(`{}`))
+	insertOutboxEntry(t, pool, "rd-a2", "tenant-a", "event_publish", "quarantine", []byte(`{}`))
+	insertOutboxEntry(t, pool, "rd-b1", "tenant-b", "event_publish", "dead", []byte(`{}`))
+
+	n, err := repo.RetryDead(ctx, "tenant-a", 100)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "only tenant-a's entries are requeued")
+
+	statusOf := func(id string) string {
+		var st string
+		require.NoError(t, pool.QueryRow(ctx, "SELECT status FROM outbox_events WHERE id = $1", id).Scan(&st))
+		return st
+	}
+	assert.Equal(t, "pending", statusOf("rd-a1"))
+	assert.Equal(t, "pending", statusOf("rd-a2"))
+	assert.Equal(t, "dead", statusOf("rd-b1"), "tenant-b's dead entry must be untouched by tenant-a's recovery")
+}
+
+func TestPublisher_LegacyRow_IdentitySharedWithProjector(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	// Legacy row: pre-enrichment shape — no event_id, no timestamp.
+	insertOutboxEntry(t, pool, "obx-legacy-1", "acme", "event_publish", "pending",
+		[]byte(`{"event_type":"task.cancelled","tenant_id":"acme","task_id":"t1"}`))
+
+	drv := &recordingDriver{}
+	pub := NewPublisher(repo, drv)
+	pub.publishBatch(ctx)
+
+	require.Len(t, drv.publishedEvent, 1)
+	live := drv.publishedEvent[0]
+	require.Equal(t, "obx_obx-legacy-1", live.EventID,
+		"publisher must stamp obx_<row-id> on legacy rows")
+	require.False(t, live.Timestamp.IsZero())
+
+	normalized, err := NormalizeLegacyEvent(postgres.OutboxEntry{ID: "obx-legacy-1",
+		TenantID: "acme", Kind: "event_publish",
+		Payload: []byte(`{"event_type":"task.cancelled","tenant_id":"acme","task_id":"t1"}`)})
+	require.NoError(t, err)
+	assert.Equal(t, live.EventID, normalized.EventID,
+		"audit projection derives the SAME identity as the live stream")
+}
+
+func TestPublisher_WithBatchSize_LimitsFetch(t *testing.T) {
+	pool := openOutboxTestDB(t)
+	repo := postgres.NewOutboxRepo(pool)
+	repo.SetWorker("test-worker", 60*time.Second)
+	ctx := context.Background()
+
+	for i := 0; i < 5; i++ {
+		insertOutboxEntry(t, pool, fmt.Sprintf("bs-%d", i), "acme", "event_publish", "pending",
+			[]byte(`{"event_type":"task.created","tenant_id":"acme"}`))
+	}
+
+	drv := &recordingDriver{}
+	pub := NewPublisher(repo, drv).WithBatchSize(2)
+	pub.publishBatch(ctx)
+
+	assert.Len(t, drv.publishedEvent, 2,
+		"batch_size must bound the number of entries fetched per cycle")
 }

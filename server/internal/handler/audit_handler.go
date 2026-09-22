@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"time"
 )
 
@@ -139,9 +141,10 @@ func (h *AuditHandler) ReplayAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// OutboxRetryReviver requeues dead/quarantined outbox entries on demand.
+// OutboxRetryReviver requeues a tenant's dead/quarantined outbox entries on
+// demand.
 type OutboxRetryReviver interface {
-	RetryDead(ctx context.Context, limit int) (int64, error)
+	RetryDead(ctx context.Context, tenantID string, limit int) (int64, error)
 }
 
 func (h *AuditHandler) WithOutboxRetryReviver(r OutboxRetryReviver) *AuditHandler {
@@ -149,12 +152,22 @@ func (h *AuditHandler) WithOutboxRetryReviver(r OutboxRetryReviver) *AuditHandle
 	return h
 }
 
-// RetryOutboxDead is the manual recovery path for dead and quarantined
-// outbox entries (POST /v1/outbox/retry-dead). Typical use: after a rolling
-// upgrade that adds the handler for a previously-unknown kind.
+// RetryOutboxDead is the manual recovery path for a tenant's dead and
+// quarantined outbox entries
+// (POST /v1/tenants/{tenant}/outbox/retry-dead, admin scope). Typical use:
+// after a rolling upgrade that adds the handler for a previously-unknown
+// kind. Only the path tenant's entries are requeued.
 func (h *AuditHandler) RetryOutboxDead(w http.ResponseWriter, r *http.Request) {
 	if h.outboxReviver == nil {
 		writeError(w, http.StatusServiceUnavailable, "outbox reviver not configured")
+		return
+	}
+	tenantID := auth.TenantFromContext(r.Context())
+	if tenantID == "" {
+		tenantID = tenantIDFromPath(r.URL.Path)
+	}
+	if tenantID == "" {
+		writeError(w, http.StatusBadRequest, "tenant id required")
 		return
 	}
 	limit := 100
@@ -163,10 +176,10 @@ func (h *AuditHandler) RetryOutboxDead(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	n, err := h.outboxReviver.RetryDead(r.Context(), limit)
+	n, err := h.outboxReviver.RetryDead(r.Context(), tenantID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{"requeued": n, "limit": limit})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"requeued": n, "tenant_id": tenantID, "limit": limit})
 }

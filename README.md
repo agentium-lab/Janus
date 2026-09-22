@@ -272,10 +272,10 @@ janus-event-replay-probe      # audit projection consistent?
 
 ## Verification
 
-**988 test functions** · 7 fault scenarios · 11 verification gates
+**1,800+ test functions** · 7 fault scenarios · 11 verification gates
 
 ```bash
-make verify                    # vet + staticcheck + tests + coverage ≥ 90%
+make verify                    # vet + staticcheck + tests + coverage ≥ 90% (CI enforces ≥ 85% to absorb PG timing variance)
 make contract-check            # API contract drift check
 make beta-fast                 # in-memory concurrent pipeline simulation
 go test ./server/tests/reliability/   # PG-backed fault scenarios

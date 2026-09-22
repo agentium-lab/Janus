@@ -237,19 +237,21 @@ func (r *OutboxRepo) FetchByRange(ctx context.Context, tenantID string, from, to
 	return scanOutboxEntries(rows)
 }
 
-// RetryDead resets dead AND quarantined entries back to pending. It is the
-// manual recovery path (admin endpoint / rolling-upgrade completion): dead
-// entries exhausted their retries and quarantined entries carried a kind the
-// running publisher did not understand — after an upgrade that adds the
-// kind, replaying here recovers them without message loss.
-func (r *OutboxRepo) RetryDead(ctx context.Context, limit int) (int64, error) {
+// RetryDead resets the tenant's dead AND quarantined entries back to
+// pending. It is the manual recovery path (admin endpoint / rolling-upgrade
+// completion): dead entries exhausted their retries and quarantined entries
+// carried a kind the running publisher did not understand — after an upgrade
+// that adds the kind, replaying here recovers them without message loss.
+// Tenant-scoped so one tenant's recovery can never replay another's messages.
+func (r *OutboxRepo) RetryDead(ctx context.Context, tenantID string, limit int) (int64, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE outbox_events
 		 SET status = 'pending', attempts = 0, next_attempt_at = NULL, last_error = NULL
-		 WHERE status IN ('dead', 'quarantine') AND id IN (
-		     SELECT id FROM outbox_events WHERE status IN ('dead', 'quarantine')
+		 WHERE tenant_id = $2 AND status IN ('dead', 'quarantine') AND id IN (
+		     SELECT id FROM outbox_events
+		     WHERE tenant_id = $2 AND status IN ('dead', 'quarantine')
 		     ORDER BY created_at ASC LIMIT $1
-		 )`, limit)
+		 )`, limit, tenantID)
 	if err != nil {
 		return 0, err
 	}

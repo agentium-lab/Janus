@@ -290,7 +290,7 @@ func TestMiddleware_WhitespaceOnlyKey_TreatedAsMissing(t *testing.T) {
 func TestRequiredScope_TenantManagementAndExemptPaths(t *testing.T) {
 	scope, ok := RequiredScope(http.MethodDelete, "/v1/tenants")
 	assert.True(t, ok)
-	assert.Equal(t, ScopeAdmin, scope, "tenant management is control-plane")
+	assert.Equal(t, ScopePlatformAdmin, scope, "tenant management is the platform control plane")
 
 	scope, ok = RequiredScope(http.MethodPost, "/a2a/message:send")
 	assert.True(t, ok)

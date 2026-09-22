@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"errors"
+
 	"context"
 	"encoding/json"
 	"time"
@@ -351,10 +353,18 @@ func (r *TaskRepository) ResetForReplay(ctx context.Context, tenantID, taskID st
 	return err
 }
 
-// ResetForReplayTx is the transactional variant of ResetForReplay. It returns
-// the new replay generation, which callers embed in the task_publish dedupe
-// key so a second replay is NOT silently swallowed (fixed keys made tasks
-// stick in 'queued' with no delivery on repeat replay).
+// ErrTaskNotReplayable is returned by ResetForReplayTx when it matches no
+// terminal task — either the task is mid-lifecycle or another replay won
+// the race.
+var ErrTaskNotReplayable = errors.New("task is not in a replayable terminal state")
+
+// ResetForReplayTx is the transactional variant of ResetForReplay. It
+// returns the new replay generation, which callers embed in the
+// task_publish dedupe key so a second replay is NOT silently swallowed
+// (fixed keys made tasks stick in 'queued' with no delivery on repeat
+// replay). The reset is conditional on terminal status, so a concurrent
+// replay loses cleanly with ErrTaskNotReplayable instead of
+// double-publishing.
 func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
 	var generation int
 	err := tx.QueryRow(ctx,
@@ -362,9 +372,13 @@ func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenant
 		        error = NULL, completed_at = NULL, retry_at = NULL, replay_count = replay_count + 1,
 		        updated_at = now()
 		 WHERE tenant_id = $1 AND id = $2
+		   AND status IN ('completed', 'dead_lettered', 'cancelled', 'expired')
 		 RETURNING replay_count`,
 		tenantID, taskID,
 	).Scan(&generation)
+	if err == pgx.ErrNoRows {
+		return 0, ErrTaskNotReplayable
+	}
 	return generation, err
 }
 

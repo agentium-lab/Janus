@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -393,12 +395,15 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	}
 
 	// Atomic replay: reset + republish + status transition + created event
-	// commit together. The replay generation from the reset lands in the
-	// task_publish dedupe key, so a repeat replay delivers again instead of
-	// being silently swallowed while the status still flips to queued.
+	// commit together. The reset itself is the gate — a conditional UPDATE
+	// on terminal status — so two concurrent replays cannot both pass and
+	// double-publish: the loser gets ErrTaskNotReplayable (409).
 	if err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
 		generation, rerr := s.taskTx.ResetForReplayTx(ctx, tx, tenantID, taskID)
 		if rerr != nil {
+			if errors.Is(rerr, postgres.ErrTaskNotReplayable) {
+				return rerr
+			}
 			return fmt.Errorf("reset task: %w", rerr)
 		}
 
@@ -433,6 +438,9 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		}
 		return nil
 	}); err != nil {
+		if errors.Is(err, postgres.ErrTaskNotReplayable) {
+			return nil, &ReplayConflictError{TaskID: taskID}
+		}
 		return nil, err
 	}
 
@@ -589,6 +597,16 @@ func (s *TaskService) emitToolPolicyEvent(ctx context.Context, task *core.Task, 
 		EventType: typ, TenantID: task.TenantID, TaskID: task.ID,
 		SourceAgent: task.SourceAgent, Payload: payload,
 	})
+}
+
+// ReplayConflictError reports a replay that lost the race (or hit a
+// non-terminal task): the conditional reset matched zero rows.
+type ReplayConflictError struct {
+	TaskID string
+}
+
+func (e *ReplayConflictError) Error() string {
+	return fmt.Sprintf("task %s is not in a replayable terminal state (concurrent replay or mid-lifecycle)", e.TaskID)
 }
 
 type IdempotentError struct {

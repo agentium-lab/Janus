@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -747,4 +748,60 @@ func TestTaskService_OutboxEventIdentity_EndToEnd(t *testing.T) {
 	again, err := env.eventRepo.ListByTask(ctx, "acme", task.ID, 100)
 	require.NoError(t, err)
 	assert.Len(t, again, len(auditEvents), "re-projection with stable event_ids must be idempotent")
+}
+
+func TestTaskService_Replay_ConcurrentSingleDelivery(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	task := createTestTask(t, env, "task-replay-race-1")
+
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", task.ID))
+
+	// Two concurrent replays race for the same terminal task. The
+	// conditional reset (status IN terminal) must let exactly one through;
+	// the loser gets a conflict and MUST NOT write a second task_publish.
+	const racers = 2
+	results := make(chan error, racers)
+	var start sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < racers; i++ {
+		go func() {
+			start.Wait()
+			_, err := env.taskSvc.Replay(ctx, "acme", task.ID)
+			results <- err
+		}()
+	}
+	start.Done()
+
+	var succeeded, conflicted int
+	for i := 0; i < racers; i++ {
+		err := <-results
+		switch {
+		case err == nil:
+			succeeded++
+		case strings.Contains(err.Error(), "not in a replayable terminal state"),
+			strings.Contains(err.Error(), "only terminal tasks can be replayed"):
+			// The pre-check or the conditional reset caught the loser —
+			// both are correct conflict outcomes.
+			conflicted++
+		default:
+			t.Fatalf("unexpected replay error: %v", err)
+		}
+	}
+	assert.Equal(t, 1, succeeded, "exactly one replay must win")
+	assert.Equal(t, 1, conflicted, "the losing replay must get a conflict")
+
+	taskPublish := 0
+	entries, _ := env.outboxRepo.FetchPending(ctx, 500)
+	for _, e := range entries {
+		if e.Kind == "task_publish" && e.TenantID == "acme" {
+			var msg core.TaskMessage
+			require.NoError(t, json.Unmarshal(e.Payload, &msg))
+			if msg.TaskID == task.ID {
+				taskPublish++
+			}
+		}
+	}
+	assert.Equal(t, 1, taskPublish,
+		"concurrent replay must produce exactly one delivery, not one per racer")
 }

@@ -83,7 +83,7 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 	batchCtx, cancel := context.WithTimeout(ctx, publishBatchTimeout)
 	defer cancel()
 
-	entries, err := p.repo.FetchPending(batchCtx, 100)
+	entries, err := p.repo.FetchPending(batchCtx, p.batchSize)
 	if err != nil {
 		log.Printf("outbox fetch: %v", err)
 		return
@@ -137,8 +137,8 @@ func (p *Publisher) publishOne(ctx context.Context, e postgres.OutboxEntry) erro
 		msg.DedupeKey = e.ID
 		return p.driver.PublishTask(ctx, msg)
 	case "event_publish":
-		var event core.JanusEvent
-		if err := json.Unmarshal(e.Payload, &event); err != nil {
+		event, err := NormalizeLegacyEvent(e)
+		if err != nil {
 			return err
 		}
 		return p.driver.PublishEvent(ctx, event)

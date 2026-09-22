@@ -32,6 +32,12 @@ const (
 	ScopeTaskWrite = "task:write"
 	ScopeTaskRead  = "task:read"
 	ScopeAuditRead = "audit:read"
+
+	// ScopePlatformAdmin gates control-plane operations that affect the
+	// platform itself (tenant create/list). It is deliberately NOT implied
+	// by ScopeAdmin: a tenant administrator must never manage other
+	// tenants, so platform authority has to be granted explicitly.
+	ScopePlatformAdmin = "platform:admin"
 )
 
 type Principal struct {
@@ -60,7 +66,10 @@ func (p Principal) HasScope(scope string) bool {
 		return true
 	}
 	for _, s := range p.Scopes {
-		if s == ScopeAdmin || s == scope {
+		if s == ScopeAdmin && scope != ScopePlatformAdmin {
+			return true
+		}
+		if s == scope {
 			return true
 		}
 	}
@@ -116,6 +125,7 @@ var scopeRules = []scopeRule{
 	{segment: "dlq", suffixes: []string{"/replay", "/discard"}, scope: ScopeAdmin},
 	{segment: "audit", suffixes: []string{"/replay"}, scope: ScopeAdmin},
 	{segment: "traces", scope: ScopeAuditRead},
+	{segment: "outbox", suffixes: []string{"/retry-dead"}, scope: ScopeAdmin},
 }
 
 // RequiredScope resolves which scope a request demands. ok=false marks paths
@@ -123,7 +133,7 @@ var scopeRules = []scopeRule{
 // key scope.
 func RequiredScope(method, path string) (scope string, ok bool) {
 	if path == "/v1/tenants" {
-		return ScopeAdmin, true // tenant management is a control-plane operation
+		return ScopePlatformAdmin, true // tenant management is the platform control plane
 	}
 	if !strings.HasPrefix(path, "/v1/tenants/") &&
 		!strings.HasPrefix(path, "/a2a/") &&

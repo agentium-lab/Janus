@@ -251,7 +251,7 @@ func main() {
 
 	// Dead/quarantined entries are NOT auto-revived: a poison message would
 	// retry forever at a fixed cadence. Recovery is manual via
-	// POST /v1/outbox/retry-dead (e.g. after a rolling upgrade adds the
+	// POST /v1/tenants/{tenant}/outbox/retry-dead (e.g. after a rolling upgrade adds the
 	// handler for a quarantined kind); visibility via janus_outbox_dead_total
 	// and janus_outbox_quarantined_total.
 
