@@ -63,8 +63,15 @@ METRIC_COUNT=$(echo "$METRICS" | grep -c "^janus_" 2>/dev/null || echo "0")
 check "Has Janus metrics ($METRIC_COUNT metrics)" "[ $METRIC_COUNT -gt 5 ]"
 
 echo "--- Phase 4: Audit trace query ---"
-EVENTS=$(curl -sf "$JANUS_URL/v1/tenants/$TENANT/tasks/$TASK_ID/events" 2>/dev/null || echo "[]")
-EVENT_COUNT=$(echo "$EVENTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('events',[])))" 2>/dev/null || echo "0")
+# Projection is asynchronous (transactional outbox -> publisher/projector
+# ticks); poll briefly instead of racing the first tick.
+EVENT_COUNT=0
+for _ in $(seq 1 20); do
+  EVENTS=$(curl -sf "$JANUS_URL/v1/tenants/$TENANT/tasks/$TASK_ID/events" 2>/dev/null || echo "[]")
+  EVENT_COUNT=$(echo "$EVENTS" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d) if isinstance(d, list) else len(d.get('events',[])))" 2>/dev/null || echo "0")
+  [ "$EVENT_COUNT" -gt 0 ] && break
+  sleep 1
+done
 check "Audit events exist ($EVENT_COUNT events)" "[ $EVENT_COUNT -gt 0 ]"
 
 echo ""

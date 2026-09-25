@@ -32,6 +32,8 @@ jobs:
       JANUS_NATS_URL: nats://localhost:4222
       JANUS_REDIS_ADDR: 127.0.0.1:6379
       JANUS_URL: http://localhost:8080
+      # psql probes in the smoke scripts authenticate over TCP with this.
+      PGPASSWORD: janus
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -61,7 +63,9 @@ jobs:
           pull redis:7-alpine
           docker run -d --name pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
             -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
-          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js
+          # -m 8222 enables the monitoring endpoint the smoke/chaos scripts
+          # probe via /jsz.
+          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
           docker run -d --name redis -p 6379:6379 redis:7-alpine
           for i in $(seq 1 90); do
             docker exec pg pg_isready -h 127.0.0.1 -U janus >/dev/null 2>&1 && break
