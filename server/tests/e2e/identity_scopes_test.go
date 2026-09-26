@@ -176,7 +176,7 @@ func TestE2E_IdentityScopes(t *testing.T) {
 	t.Run("revoked key rejected", func(t *testing.T) {
 		ctx := context.Background()
 		apiKeySvc := service.NewAPIKeyService(pgdriver.NewAPIKeyRepo(pool))
-		victimRaw := mustCreateScopedKey(t, apiKeySvc, "victim", nil)
+		victimRaw := mustCreateScopedKey(t, apiKeySvc, "victim", []string{auth.ScopeTaskRead})
 		resp, _ := do(http.MethodGet, "/v1/tenants/"+scopeTenant+"/agents", victimRaw, nil, "")
 		require.Equal(t, http.StatusOK, resp.StatusCode)
 
