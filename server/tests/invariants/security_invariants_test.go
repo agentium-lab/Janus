@@ -288,3 +288,68 @@ func TestSecurity_PlatformAdminManagesTenants(t *testing.T) {
 	assert.Equal(t, http.StatusOK, resp.StatusCode,
 		"platform:admin key must reach tenant list (empty path tenant passes the guard)")
 }
+
+func TestSecurity_EmptyScopeKeyCannotReachPlatformControlPlane(t *testing.T) {
+	tenantH := handler.NewTenantHandler(securityTenantSvc{})
+
+	// The forged key mirrors what a tenant admin could mint before the fix:
+	// an empty scope set that used to mean "full access".
+	validator := &fakeKeyValidator{keys: map[string]auth.Principal{
+		"key-empty-scopes": {TenantID: "tenant-a", Scopes: []string{}},
+	}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			tenantH.List(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	core := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(mux)))
+	ts := httptest.NewServer(core)
+	defer ts.Close()
+
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/v1/tenants", nil)
+	req.Header.Set("X-API-Key", "key-empty-scopes")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode,
+		"empty (legacy full-access) scopes must NEVER include platform authority")
+}
+
+type securityAPIKeyRepo struct {
+	created []core.APIKey
+}
+
+func (r *securityAPIKeyRepo) CreateAPIKey(_ context.Context, tenantID, keyHash, name, prefix string, scopes []string, boundAgentID string) (core.APIKey, error) {
+	k := core.APIKey{TenantID: tenantID, Name: name, Prefix: prefix, Scopes: scopes, BoundAgentID: boundAgentID}
+	r.created = append(r.created, k)
+	return k, nil
+}
+func (r *securityAPIKeyRepo) ListAPIKeys(_ context.Context, _ string) ([]core.APIKey, error) {
+	return r.created, nil
+}
+func (r *securityAPIKeyRepo) RevokeAPIKey(_ context.Context, _, _ string) (*core.APIKey, error) {
+	return nil, fmt.Errorf("not supported in test")
+}
+
+func TestSecurity_APIKeyCreationRejectsEmptyScopes(t *testing.T) {
+	repo := &securityAPIKeyRepo{}
+	svc := service.NewAPIKeyService(repo)
+
+	_, _, err := svc.Create(context.Background(), "tenant-a", "sneaky", nil, "")
+	require.Error(t, err, "minting an empty-scope key is a privilege escalation primitive")
+	assert.Contains(t, err.Error(), "at least one scope")
+
+	created, raw, err := svc.Create(context.Background(), "tenant-a", "scoped",
+		[]string{"task:write"}, "")
+	require.NoError(t, err)
+	assert.NotEmpty(t, raw)
+	assert.Equal(t, []string{"task:write"}, created.Scopes)
+
+	_, _, err = svc.Create(context.Background(), "tenant-a", "pwn",
+		[]string{"platform:admin"}, "")
+	require.Error(t, err, "platform:admin must not be mintable via the tenant API")
+	assert.Contains(t, err.Error(), "unknown scope")
+}

@@ -35,6 +35,13 @@ func (s *APIKeyService) Create(ctx context.Context, tenantID, name string, scope
 	if name == "" {
 		return core.APIKey{}, "", fmt.Errorf("name is required")
 	}
+	// An empty scope set means full data-plane access for legacy keys, so
+	// minting one would hand the caller a permission escalation primitive.
+	// Every new key must state its scopes explicitly; platform keys are
+	// provisioned out-of-band (seeded/audited), never via this endpoint.
+	if len(scopes) == 0 {
+		return core.APIKey{}, "", fmt.Errorf("at least one scope is required (legacy full-access keys cannot be minted anymore)")
+	}
 	cleaned := make([]string, 0, len(scopes))
 	for _, sc := range scopes {
 		if !validScope(sc) {

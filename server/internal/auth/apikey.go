@@ -62,8 +62,12 @@ func (p Principal) CheckAgentIdentity(claimedAgent string) error {
 }
 
 func (p Principal) HasScope(scope string) bool {
+	// Legacy keys minted before scopes existed carry an empty set and keep
+	// full DATA-PLANE access for compatibility — but they must NEVER
+	// exercise platform authority: a tenant admin could mint an empty-scope
+	// key and use it to reach the /v1/tenants control plane otherwise.
 	if len(p.Scopes) == 0 {
-		return true
+		return scope != ScopePlatformAdmin
 	}
 	for _, s := range p.Scopes {
 		if s == ScopeAdmin && scope != ScopePlatformAdmin {

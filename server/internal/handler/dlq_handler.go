@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"errors"
+
 	"context"
 	cryptorand "crypto/rand"
 	"encoding/json"
@@ -51,6 +53,10 @@ func (h *DLQHandler) Replay(w http.ResponseWriter, r *http.Request) {
 
 	result, err := h.svc.ReplayDLQ(r.Context(), tenantID, taskID)
 	if err != nil {
+		if errors.Is(err, postgres.ErrTaskNotReplayable) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

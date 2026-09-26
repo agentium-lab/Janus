@@ -39,6 +39,18 @@ if [ -z "$READY" ]; then
 fi
 PASS=$((PASS+1))
 
+echo "--- Phase 1b: Fixture setup (isolated tenant/agent/mailbox) ---"
+TENANT="ops-chaos"
+curl -sf -X POST "$JANUS_URL/v1/tenants" -H 'Content-Type: application/json' \
+  -d "{\"id\":\"$TENANT\",\"name\":\"Ops Chaos\"}" > /dev/null 2>&1 || true
+curl -sf -X POST "$JANUS_URL/v1/tenants/$TENANT/agents" -H 'Content-Type: application/json' \
+  -d '{"id":"agent-1","display_name":"Chaos Agent","protocol":"a2a"}' > /dev/null \
+  || { echo "FAIL: chaos fixture agent rejected"; exit 1; }
+curl -sf -X POST "$JANUS_URL/v1/tenants/$TENANT/mailboxes" -H 'Content-Type: application/json' \
+  -d '{"id":"mb-1","agent_id":"agent-1"}' > /dev/null \
+  || { echo "FAIL: chaos fixture mailbox rejected"; exit 1; }
+PASS=$((PASS+1))
+
 echo "--- Phase 2: Redis restart + heartbeat restore ---"
 echo "  Restarting Redis..."
 if [ -n "$REDIS_RESTART_CMD" ]; then
@@ -68,7 +80,7 @@ sleep 3
 
 PUB_DURING_OUTAGE=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks" \
   -H 'Content-Type: application/json' \
-  -d '{"id":"task-nats-outage","source_agent":"agent-1","target_type":"agent","target_value":"agent-1","envelope":{"janus_version":"0.3","task_id":"task-nats-outage","tenant_id":"ops-chaos","source_agent":"agent-1","target":{"type":"agent","value":"agent-1"},"payload":{"type":"test","content":"outage"},"trace":{"trace_id":"chaos-nats"}}}' \
+  -d '{"id":"task-nats-outage","source_agent":"agent-1","target_type":"mailbox","target_value":"mb-1","envelope":{"janus_version":"0.3","task_id":"task-nats-outage","tenant_id":"ops-chaos","source_agent":"agent-1","target":{"type":"mailbox","value":"mb-1"},"payload":{"type":"test","content":"outage"},"trace":{"trace_id":"chaos-nats"}}}' \
   2>/dev/null && echo "accepted" || echo "failed")
 check "Task accepted during NATS outage (outbox holds)" "[ '$PUB_DURING_OUTAGE' = 'accepted' ]"
 
@@ -95,6 +107,37 @@ check "PostgreSQL restarted and responding" "[ '$PG_OK' = '1' ]"
 
 TASK_AFTER_RESTART=$(curl -sf "$JANUS_URL/v1/tenants/ops-chaos/tasks/task-nats-outage" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))" 2>/dev/null || echo "")
 check "Task persisted across PG restart" "[ '$TASK_AFTER_RESTART' = 'task-nats-outage' ]"
+
+echo "--- Phase 4b: Outbox final delivery after outage ---"
+# The task was queued during the NATS outage; the outbox publisher must
+# deliver it once NATS is back. Poll the outbox row to 'published', then
+# prove end-to-end delivery by pulling from the target mailbox and acking.
+OUTBOX_PUBLISHED="no"
+for _ in $(seq 1 30); do
+  OB_STATUS=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -t -c \
+    "SELECT count(*) FROM outbox_events WHERE tenant_id='ops-chaos' AND kind='task_publish' AND status='published'" 2>/dev/null | tr -d ' ' || echo "0")
+  [ "${OB_STATUS:-0}" -ge 1 ] && { OUTBOX_PUBLISHED="yes"; break; }
+  sleep 1
+done
+check "Outbox task_publish reached 'published' after NATS recovery" "[ '$OUTBOX_PUBLISHED' = 'yes' ]"
+
+PULLED="no"; ACKED="no"
+for _ in $(seq 1 30); do
+  PULL_RESP=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/mailboxes/mb-1/pull" -H 'Content-Type: application/json' \
+    -d '{"agent_id":"agent-1"}' 2>/dev/null || echo "{}")
+  TASK_GOT=$(echo "$PULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
+  if [ "$TASK_GOT" = "task-nats-outage" ]; then
+    PULLED="yes"
+    LEASE_ID=$(echo "$PULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
+    ACK_RESP=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks/task-nats-outage/ack" -H 'Content-Type: application/json' \
+      -d "{\"lease_id\":\"$LEASE_ID\",\"result_ref\":\"smoke://chaos-ok\"}" 2>/dev/null && echo "ok" || echo "fail")
+    [ "$ACK_RESP" = "ok" ] && ACKED="yes"
+    break
+  fi
+  sleep 1
+done
+check "Consumer pulled the task after recovery" "[ '$PULLED' = 'yes' ]"
+check "Consumer acked (exactly-once business processing)" "[ '$ACKED' = 'yes' ]"
 
 echo "--- Phase 5: Readiness degradation recovery ---"
 READY_STATUS=$(curl -sf "$JANUS_URL/readyz" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "unknown")

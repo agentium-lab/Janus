@@ -82,15 +82,14 @@ func TestAPIKeyService_RevokeNotFound(t *testing.T) {
 	}
 }
 
-func TestAPIKeyService_EmptyScopesStayFullAccess(t *testing.T) {
+func TestAPIKeyService_EmptyScopesRejected(t *testing.T) {
 	repo := &fakeAPIKeyRepo{}
 	s := NewAPIKeyService(repo)
-	k, _, err := s.Create(context.Background(), "acme", "legacy-style", nil, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	p := auth.Principal{Scopes: k.Scopes}
-	if !p.HasScope(auth.ScopeAdmin) {
-		t.Fatal("empty stored scopes must keep full access")
+	// Minting an empty-scope key is a privilege escalation primitive
+	// (legacy empty sets read as full data-plane access); the service must
+	// refuse. Legacy keys that already exist keep working via HasScope.
+	_, _, err := s.Create(context.Background(), "acme", "legacy-style", nil, "")
+	if err == nil {
+		t.Fatal("empty-scope key creation must be rejected")
 	}
 }

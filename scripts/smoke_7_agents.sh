@@ -41,12 +41,16 @@ for i in $(seq 0 6); do
 done
 PASS=$((PASS+1))
 
-echo "4. Publish task to each mailbox"
+echo "4. Register the orchestrator, then publish a task to each mailbox"
+curl -sf -X POST "$JANUS_URL/v1/tenants/$TENANT/agents" -H 'Content-Type: application/json' \
+  -d '{"id":"orchestrator","display_name":"Orchestrator","protocol":"a2a","capabilities":[{"name":"orchestration"}]}' > /dev/null \
+  || { echo "FAIL: orchestrator registration rejected"; exit 1; }
 for i in $(seq 0 6); do
   MB_ID="mb-$(printf '%03d' $((i+1)))"
   TASK_ID="task-smoke-$((i+1))"
   curl -sf -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks" -H 'Content-Type: application/json' \
-    -d "{\"id\":\"$TASK_ID\",\"source_agent\":\"orchestrator\",\"target_type\":\"mailbox\",\"target_value\":\"$MB_ID\",\"envelope\":{\"janus_version\":\"0.3\",\"task_id\":\"$TASK_ID\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"orchestrator\",\"target\":{\"type\":\"mailbox\",\"value\":\"$MB_ID\"},\"payload\":{\"type\":\"smoke_test\",\"content\":\"test $i\"},\"trace\":{\"trace_id\":\"smoke-$TASK_ID\"}}}" > /dev/null
+    -d "{\"id\":\"$TASK_ID\",\"source_agent\":\"orchestrator\",\"target_type\":\"mailbox\",\"target_value\":\"$MB_ID\",\"envelope\":{\"janus_version\":\"0.3\",\"task_id\":\"$TASK_ID\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"orchestrator\",\"target\":{\"type\":\"mailbox\",\"value\":\"$MB_ID\"},\"payload\":{\"type\":\"smoke_test\",\"content\":\"test $i\"},\"trace\":{\"trace_id\":\"smoke-$TASK_ID\"}}}" > /dev/null \
+    || { echo "FAIL: publish $TASK_ID rejected — is source_agent registered?"; exit 1; }
 done
 PASS=$((PASS+1))
 
