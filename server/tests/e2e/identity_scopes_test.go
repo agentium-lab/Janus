@@ -114,7 +114,7 @@ func newIdentityStack(t *testing.T) *identityStack {
 	protected := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extract)(mux)))
 	server := httptest.NewServer(protected)
 
-	_, fullRaw, err := apiKeySvc.Create(ctx, scopeTenant, "full-access", nil, "")
+	_, fullRaw, err := apiKeySvc.Create(ctx, scopeTenant, "full-access", []string{auth.ScopeAdmin}, "")
 	require.NoError(t, err)
 	_, readerRaw, err := apiKeySvc.Create(ctx, scopeTenant, "reader", []string{auth.ScopeTaskRead}, "")
 	require.NoError(t, err)
