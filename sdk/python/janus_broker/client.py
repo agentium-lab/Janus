@@ -1,5 +1,5 @@
 import httpx
-from typing import Optional
+from typing import Dict, List, Optional
 
 from .models import (
     RegisterAgentRequest,
@@ -203,8 +203,13 @@ class JanusClient:
         resp = self._client.post(self._url(f"/dlq/{task_id}/discard"))
         self._check(resp)
 
-    def create_api_key(self, name: str) -> dict:
-        resp = self._client.post(self._url("/api-keys"), json={"name": name})
+    def create_api_key(self, name: str, scopes: Optional[List[str]] = None, bound_agent_id: str = "") -> dict:
+        """Create an API key. At least one scope is required, e.g.
+        scopes=["task:read"] or scopes=["admin"]."""
+        body: Dict[str, object] = {"name": name, "scopes": scopes or []}
+        if bound_agent_id:
+            body["bound_agent_id"] = bound_agent_id
+        resp = self._client.post(self._url("/api-keys"), json=body)
         self._check(resp)
         return resp.json()
 

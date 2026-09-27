@@ -868,12 +868,13 @@ func TestAgentService_ListByStatusValidation(t *testing.T) {
 }
 
 func TestAgentService_RegisterHeartbeatError(t *testing.T) {
+	// Best-effort redis mark: PG registration is durable, so redis-down
+	// must not fail registration (agents used to get stuck mid-register).
 	svc := NewAgentService(&mockAgentRepo{}, nil, &mockHeartbeatDriver{err: fmt.Errorf("redis down")}, &mockQueueDriver{})
 	err := svc.Register(context.Background(), core.Agent{
 		ID: "a1", TenantID: "acme", DisplayName: "A1", Protocol: core.ProtocolA2A,
 	})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "initial heartbeat")
+	assert.NoError(t, err)
 }
 
 func TestTaskService_GetValidation(t *testing.T) {

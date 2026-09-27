@@ -56,12 +56,13 @@ func (s *AgentService) Register(ctx context.Context, agent core.Agent) error {
 		}
 	}
 
-	// Defensive nil check: a typed-nil HeartbeatDriver (nil concrete pointer
-	// inside a non-nil interface) must not panic here. Registration proceeds
-	// without a heartbeat backend in degraded (PG-only) mode.
+	// The Redis presence mark is best-effort (mirrors Heartbeat): PG is the
+	// source of truth for both registration and liveness, so a Redis blip
+	// mid-registration must neither fail the request nor leave the agent
+	// stuck unregistered-online-less on a retry conflict.
 	if s.hbDriver != nil {
 		if err := s.hbDriver.Ping(ctx, agent.TenantID, agent.ID); err != nil {
-			return fmt.Errorf("initial heartbeat: %w", err)
+			log.Printf("agent %s/%s: initial redis mark failed (pg registration durable): %v", agent.TenantID, agent.ID, err)
 		}
 	}
 

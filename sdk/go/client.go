@@ -34,7 +34,9 @@ type APIKey struct {
 }
 
 type CreateAPIKeyRequest struct {
-	Name string `json:"name"`
+	Name         string   `json:"name"`
+	Scopes       []string `json:"scopes,omitempty"`
+	BoundAgentID string   `json:"bound_agent_id,omitempty"`
 }
 
 type CreatedAPIKey struct {

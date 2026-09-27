@@ -21,8 +21,20 @@ func NewAgentRepository(pool *pgxpool.Pool) *AgentRepository {
 
 func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error {
 	_, err := r.pool.Exec(ctx,
+		// Idempotent upsert: a registration retry after a partial failure
+		// (e.g. redis mark errored mid-flow) must not conflict on the row
+		// that already committed.
 		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 ON CONFLICT (tenant_id, id) DO UPDATE SET
+		   display_name = EXCLUDED.display_name,
+		   protocol = EXCLUDED.protocol,
+		   endpoint = EXCLUDED.endpoint,
+		   description = EXCLUDED.description,
+		   max_concurrency = EXCLUDED.max_concurrency,
+		   rpm = EXCLUDED.rpm,
+		   tpm = EXCLUDED.tpm,
+		   updated_at = now()`,
 		agent.ID, agent.TenantID, nilIfEmpty(agent.TeamID), agent.DisplayName, string(agent.Protocol),
 		nilIfEmpty(agent.Endpoint), string(agent.Status), nilIfEmpty(agent.Description),
 		agent.MaxConcurrency, nilIfZero(agent.RPM), nilIfZero(agent.TPM),

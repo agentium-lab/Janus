@@ -152,7 +152,19 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 check "Consumer pulled the task after recovery" "[ '$PULLED' = 'yes' ]"
-check "Consumer acked (exactly-once business processing)" "[ '$ACKED' = 'yes' ]"
+check "Consumer acked (business processing done)" "[ '$ACKED' = 'yes' ]"
+
+if [ "$ACKED" = "yes" ]; then
+  # Exactly-once: after the ack, another pull must not redeliver the same
+  # task, and the durable state must read completed.
+  sleep 2
+  REPULL_RESP=$(curl -sf --max-time 5 -X POST "$JANUS_URL/v1/tenants/ops-chaos/mailboxes/mb-1/pull" -H 'Content-Type: application/json' \
+    -d '{"agent_id":"agent-1"}' 2>/dev/null || echo "{}")
+  REPULL_ID=$(echo "$REPULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
+  check "No redelivery of the acked task (exactly-once)" "[ '$REPULL_ID' != 'task-nats-outage' ]"
+  FINAL_STATUS=$(curl -sf --max-time 5 "$JANUS_URL/v1/tenants/ops-chaos/tasks/task-nats-outage" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "")
+  check "Task terminal state is completed" "[ '$FINAL_STATUS' = 'completed' ]"
+fi
 
 echo "--- Phase 5: Readiness degradation recovery ---"
 READY_STATUS=$(curl -sf "$JANUS_URL/readyz" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "unknown")

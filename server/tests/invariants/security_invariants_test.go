@@ -330,8 +330,13 @@ func (r *securityAPIKeyRepo) CreateAPIKey(_ context.Context, tenantID, keyHash, 
 func (r *securityAPIKeyRepo) ListAPIKeys(_ context.Context, _ string) ([]core.APIKey, error) {
 	return r.created, nil
 }
-func (r *securityAPIKeyRepo) RevokeAPIKey(_ context.Context, _, _ string) (*core.APIKey, error) {
-	return nil, fmt.Errorf("not supported in test")
+func (r *securityAPIKeyRepo) RevokeAPIKey(_ context.Context, _, keyID string) (*core.APIKey, error) {
+	for i := range r.created {
+		if r.created[i].ID == keyID {
+			return &r.created[i], nil
+		}
+	}
+	return nil, fmt.Errorf("key not found")
 }
 
 func TestSecurity_APIKeyCreationRejectsEmptyScopes(t *testing.T) {
@@ -352,4 +357,58 @@ func TestSecurity_APIKeyCreationRejectsEmptyScopes(t *testing.T) {
 		[]string{"platform:admin"}, "")
 	require.Error(t, err, "platform:admin must not be mintable via the tenant API")
 	assert.Contains(t, err.Error(), "unknown scope")
+}
+
+func TestSecurity_APIKeyLifecycle_ScopedKeyEndToEnd(t *testing.T) {
+	repo := &securityAPIKeyRepo{}
+	keySvc := service.NewAPIKeyService(repo)
+	ctx := context.Background()
+
+	// Mint through the REAL service (the same path the SDK/CLI hit).
+	created, raw, err := keySvc.Create(ctx, "tenant-a", "sdk-style", []string{"task:write", "task:read"}, "")
+	require.NoError(t, err)
+	require.NotEmpty(t, raw)
+	assert.Equal(t, []string{"task:read", "task:write"}, created.Scopes, "scopes round-trip sorted")
+
+	// The minted key must authenticate and pass the production middleware
+	// chain for data-plane writes.
+	validator := &fakeKeyValidator{keys: map[string]auth.Principal{
+		raw: {TenantID: "tenant-a", Scopes: []string{"task:write", "task:read"}},
+	}}
+	taskRepo := newSecurityRepo()
+	taskSvc := service.NewTaskService(taskRepo, &securityQueue{}, nil, nil)
+	taskH := handler.NewTaskHandler(taskSvc)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost {
+			taskH.Create(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	})
+	core := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(mux)))
+	ts := httptest.NewServer(core)
+	defer ts.Close()
+
+	body := `{"id":"scoped-key-e2e","source_agent":"a1","target_type":"mailbox","target_value":"mb","envelope":{"janus_version":"1","task_id":"scoped-key-e2e","tenant_id":"tenant-a","source_agent":"a1","target":{"type":"mailbox","value":"mb"},"priority":"normal","payload":{"type":"text","content":"x"},"trace":{"trace_id":"ske1"}}}`
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/tenants/tenant-a/tasks", strings.NewReader(body))
+	req.Header.Set("X-API-Key", raw)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	resp.Body.Close()
+	assert.Equal(t, http.StatusCreated, resp.StatusCode, "scoped key must authorize task creation")
+
+	// Revoke through the same service, then confirm rejection.
+	got, err := keySvc.Revoke(ctx, "tenant-a", created.ID)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	delete(validator.keys, raw)
+	req2, _ := http.NewRequest(http.MethodPost, ts.URL+"/v1/tenants/tenant-a/tasks", strings.NewReader(body))
+	req2.Header.Set("X-API-Key", raw)
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	require.NoError(t, err)
+	resp2.Body.Close()
+	assert.Equal(t, http.StatusUnauthorized, resp2.StatusCode, "revoked key must be rejected")
 }

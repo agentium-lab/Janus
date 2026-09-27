@@ -6,11 +6,9 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
-	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
 type Sweeper struct {
-	hbDriver    HeartbeatScanner
 	agentStatus AgentStatusUpdater
 	interval    time.Duration
 	stopCh      chan struct{}
@@ -25,9 +23,10 @@ type AgentStatusUpdater interface {
 	ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error)
 }
 
-func NewSweeper(hbDriver HeartbeatScanner, agentStatus AgentStatusUpdater, interval time.Duration) *Sweeper {
+func NewSweeper(_ HeartbeatScanner, agentStatus AgentStatusUpdater, interval time.Duration) *Sweeper {
+	// The scanner parameter is retained for signature compatibility; the
+	// sweep decision is PG-based (see staleThreshold).
 	return &Sweeper{
-		hbDriver:    nilguard.Interface(hbDriver),
 		agentStatus: agentStatus,
 		interval:    interval,
 		stopCh:      make(chan struct{}),
@@ -54,10 +53,14 @@ func (s *Sweeper) Stop() {
 	close(s.stopCh)
 }
 
+// staleThreshold is how long an agent's durable PG heartbeat may age before
+// the sweeper marks it offline. PG is the source of truth: the Redis presence
+// keys are a best-effort cache and lose data on flush/restart, so liveness
+// must never be decided by them alone (a Redis wipe used to leave dead
+// agents online forever because ScanExpired returned nothing).
+const staleThreshold = 90 * time.Second
+
 func (s *Sweeper) sweep(ctx context.Context) {
-	if s.hbDriver == nil {
-		return
-	}
 	onlineAgents, err := s.agentStatus.ListAllByStatus(ctx, core.AgentStatusOnline)
 	if err != nil {
 		return
@@ -67,28 +70,16 @@ func (s *Sweeper) sweep(ctx context.Context) {
 		return
 	}
 
-	byTenant := make(map[string][]string)
 	for _, agent := range onlineAgents {
-		byTenant[agent.TenantID] = append(byTenant[agent.TenantID], agent.ID)
-	}
-
-	for tenantID, agentIDs := range byTenant {
-		expired, err := s.hbDriver.ScanExpired(ctx, tenantID)
-		if err != nil {
+		stale := agent.LastHeartbeatAt == nil ||
+			time.Since(*agent.LastHeartbeatAt) > staleThreshold
+		if !stale {
 			continue
 		}
-		expiredSet := make(map[string]struct{}, len(expired))
-		for _, id := range expired {
-			expiredSet[id] = struct{}{}
-		}
-		for _, agentID := range agentIDs {
-			if _, ok := expiredSet[agentID]; ok {
-				if err := s.agentStatus.UpdateStatus(ctx, tenantID, agentID, core.AgentStatusOffline); err != nil {
-					log.Printf("sweeper: failed to mark agent %s/%s offline: %v", tenantID, agentID, err)
-				} else {
-					log.Printf("sweeper: agent %s/%s marked offline (heartbeat expired)", tenantID, agentID)
-				}
-			}
+		if err := s.agentStatus.UpdateStatus(ctx, agent.TenantID, agent.ID, core.AgentStatusOffline); err != nil {
+			log.Printf("sweeper: failed to mark agent %s/%s offline: %v", agent.TenantID, agent.ID, err)
+		} else {
+			log.Printf("sweeper: agent %s/%s marked offline (pg heartbeat stale)", agent.TenantID, agent.ID)
 		}
 	}
 }

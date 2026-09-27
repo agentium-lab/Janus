@@ -345,7 +345,16 @@ func apiKeyCmd() *cobra.Command {
 			if name == "" {
 				return fmt.Errorf("--name is required")
 			}
-			key, err := client().CreateAPIKey(cmd.Context(), janus.CreateAPIKeyRequest{Name: name})
+			scopes, _ := cmd.Flags().GetStringSlice("scope")
+			if len(scopes) == 0 {
+				return fmt.Errorf("--scope is required at least once (e.g. --scope admin or --scope task:read --scope task:write)")
+			}
+			boundAgent, _ := cmd.Flags().GetString("bound-agent")
+			key, err := client().CreateAPIKey(cmd.Context(), janus.CreateAPIKeyRequest{
+				Name:         name,
+				Scopes:       scopes,
+				BoundAgentID: boundAgent,
+			})
 			if err != nil {
 				return err
 			}
@@ -354,6 +363,8 @@ func apiKeyCmd() *cobra.Command {
 		},
 	}
 	createCmd.Flags().String("name", "", "API key name")
+	createCmd.Flags().StringSlice("scope", nil, "scopes granted to the key (repeatable: admin, task:read, task:write, audit:read)")
+	createCmd.Flags().String("bound-agent", "", "bind the key to a single agent identity (optional)")
 
 	listCmd := &cobra.Command{
 		Use:   "list",

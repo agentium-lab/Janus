@@ -180,10 +180,11 @@ func TestCov_AgentService_Register_NestedErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "upsert capabilities")
 
+	// The redis mark at registration is best-effort (PG is the durable
+	// record): a redis-down driver no longer fails Register.
 	err = NewAgentService(&mockAgentRepo{}, nil, &mockHeartbeatDriver{err: errors.New("redis down")}, nil).
 		Register(ctx, agent)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "initial heartbeat")
+	require.NoError(t, err)
 
 	err = NewAgentService(&cbAgentRepo{statusErr: errors.New("status fail")}, nil, &mockHeartbeatDriver{}, nil).
 		Register(ctx, agent)

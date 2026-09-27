@@ -742,7 +742,7 @@ func TestAPIKeyCreate_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 	root := newTestRoot(srv)
-	out, err := executeCommand(root, "api-key", "create", "--name", "test-key")
+	out, err := executeCommand(root, "api-key", "create", "--name", "test-key", "--scope", "admin")
 	assert.NoError(t, err)
 	assert.Contains(t, out, "test-key")
 }

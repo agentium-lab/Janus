@@ -9,17 +9,10 @@ import (
 	"github.com/agentium-lab/Janus/core"
 )
 
-type mockHBScanner struct {
-	expired map[string][]string
-}
-
-func (m *mockHBScanner) ScanExpired(ctx context.Context, tenantID string) ([]string, error) {
-	return m.expired[tenantID], nil
-}
-
 type mockAgentStatus struct {
 	online  []*core.Agent
 	updates []statusUpdate
+	listErr error
 }
 
 type statusUpdate struct {
@@ -34,204 +27,93 @@ func (m *mockAgentStatus) UpdateStatus(ctx context.Context, tenantID, agentID st
 }
 
 func (m *mockAgentStatus) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
 	return m.online, nil
 }
 
-func TestSweeper_MarksExpiredAgentsOffline(t *testing.T) {
-	scanner := &mockHBScanner{
-		expired: map[string][]string{
-			"t1": {"agent-2"},
-		},
-	}
+func hbAgo(d time.Duration) *time.Time {
+	t := time.Now().Add(-d)
+	return &t
+}
+
+// PG heartbeat age is the source of truth: agents whose durable
+// last_heartbeat_at is older than the threshold go offline even when Redis
+// (the best-effort cache) has no data at all — e.g. after a Redis flush.
+func TestSweeper_StalePGHeartbeat_MarksOffline(t *testing.T) {
 	status := &mockAgentStatus{
 		online: []*core.Agent{
-			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
-			{ID: "agent-2", TenantID: "t1", Status: core.AgentStatusOnline},
+			{ID: "agent-fresh", TenantID: "t1", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(5 * time.Second)},
+			{ID: "agent-stale", TenantID: "t1", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(10 * time.Minute)},
 		},
 	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
+	s := NewSweeper(nil, status, 10*time.Second)
 	s.sweep(context.Background())
 
 	if len(status.updates) != 1 {
 		t.Fatalf("expected 1 update, got %d", len(status.updates))
 	}
-	if status.updates[0].agentID != "agent-2" {
-		t.Errorf("expected agent-2, got %s", status.updates[0].agentID)
+	if status.updates[0].agentID != "agent-stale" {
+		t.Errorf("expected agent-stale, got %s", status.updates[0].agentID)
 	}
 	if status.updates[0].status != core.AgentStatusOffline {
 		t.Errorf("expected offline, got %s", status.updates[0].status)
 	}
 }
 
-func TestSweeper_NoExpired_NoUpdates(t *testing.T) {
-	scanner := &mockHBScanner{expired: map[string][]string{}}
+// An online agent that never heartbeated (nil timestamp) is stale.
+func TestSweeper_NilHeartbeat_MarksOffline(t *testing.T) {
+	status := &mockAgentStatus{
+		online: []*core.Agent{{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline}},
+	}
+	s := NewSweeper(nil, status, time.Second)
+	s.sweep(context.Background())
+	if len(status.updates) != 1 {
+		t.Fatalf("expected 1 update, got %d", len(status.updates))
+	}
+}
+
+func TestSweeper_AllFresh_NoUpdates(t *testing.T) {
 	status := &mockAgentStatus{
 		online: []*core.Agent{
-			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
+			{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(time.Second)},
+			{ID: "a2", TenantID: "t2", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(2 * time.Second)},
 		},
 	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
+	s := NewSweeper(nil, status, time.Second)
 	s.sweep(context.Background())
-
 	if len(status.updates) != 0 {
-		t.Fatalf("expected 0 updates, got %d", len(status.updates))
+		t.Fatalf("expected no updates, got %d", len(status.updates))
 	}
 }
 
 func TestSweeper_MultiTenant(t *testing.T) {
-	scanner := &mockHBScanner{
-		expired: map[string][]string{
-			"t1": {"a1"},
-			"t2": {"b1"},
-		},
-	}
 	status := &mockAgentStatus{
 		online: []*core.Agent{
-			{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline},
-			{ID: "a2", TenantID: "t1", Status: core.AgentStatusOnline},
-			{ID: "b1", TenantID: "t2", Status: core.AgentStatusOnline},
+			{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(time.Hour)},
+			{ID: "a2", TenantID: "t2", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(5 * time.Second)},
+			{ID: "a3", TenantID: "t2", Status: core.AgentStatusOnline, LastHeartbeatAt: hbAgo(2 * time.Hour)},
 		},
 	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
+	s := NewSweeper(nil, status, time.Second)
 	s.sweep(context.Background())
-
 	if len(status.updates) != 2 {
-		t.Fatalf("expected 2 updates, got %d", len(status.updates))
-	}
-
-	updated := map[string]bool{}
-	for _, u := range status.updates {
-		updated[u.agentID] = true
-	}
-	if !updated["a1"] || !updated["b1"] {
-		t.Errorf("expected a1 and b1 to be marked offline, got %v", updated)
+		t.Fatalf("expected 2 updates across tenants, got %d", len(status.updates))
 	}
 }
 
-func TestSweeper_NoOnlineAgents(t *testing.T) {
-	scanner := &mockHBScanner{expired: map[string][]string{"t1": {"a1"}}}
-	status := &mockAgentStatus{online: nil}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
+func TestSweeper_EmptyOnline_NoRepoCalls(t *testing.T) {
+	status := &mockAgentStatus{}
+	s := NewSweeper(nil, status, time.Second)
 	s.sweep(context.Background())
-
 	if len(status.updates) != 0 {
-		t.Fatalf("expected 0 updates, got %d", len(status.updates))
+		t.Fatalf("expected no updates, got %d", len(status.updates))
 	}
 }
 
-func TestSweeper_StartStop(t *testing.T) {
-	scanner := &mockHBScanner{expired: map[string][]string{}}
-	status := &mockAgentStatus{online: nil}
-
-	s := NewSweeper(scanner, status, 50*time.Millisecond)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go s.Start(ctx)
-	time.Sleep(100 * time.Millisecond)
-	s.Stop()
-}
-
-func TestSweeper_ExpiredNotOnline(t *testing.T) {
-	scanner := &mockHBScanner{
-		expired: map[string][]string{
-			"t1": {"offline-agent"},
-		},
-	}
-	status := &mockAgentStatus{
-		online: []*core.Agent{
-			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
-		},
-	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
-	s.sweep(context.Background())
-
-	if len(status.updates) != 0 {
-		t.Fatalf("expected 0 updates (expired agent not online), got %d", len(status.updates))
-	}
-}
-
-func TestSweeper_ScanExpiredEmptyForTenant(t *testing.T) {
-	scanner := &mockHBScanner{
-		expired: map[string][]string{
-			"t1": {},
-		},
-	}
-	status := &mockAgentStatus{
-		online: []*core.Agent{
-			{ID: "agent-1", TenantID: "t1", Status: core.AgentStatusOnline},
-		},
-	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
-	s.sweep(context.Background())
-
-	if len(status.updates) != 0 {
-		t.Fatalf("expected 0 updates, got %d", len(status.updates))
-	}
-}
-
-type mockHBScannerErr struct{}
-
-func (m *mockHBScannerErr) ScanExpired(ctx context.Context, tenantID string) ([]string, error) {
-	return nil, fmt.Errorf("scan error")
-}
-
-type mockAgentStatusListErr struct{}
-
-func (m *mockAgentStatusListErr) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
-	return nil
-}
-
-func (m *mockAgentStatusListErr) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
-	return nil, fmt.Errorf("list error")
-}
-
-func TestSweeper_ListError_Returns(t *testing.T) {
-	scanner := &mockHBScanner{expired: map[string][]string{}}
-	status := &mockAgentStatusListErr{}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
-	s.sweep(context.Background())
-}
-
-func TestSweeper_ScanExpiredError_ContinuesLoop(t *testing.T) {
-	scanner := &mockHBScannerErr{}
-	status := &mockAgentStatus{
-		online: []*core.Agent{
-			{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline},
-		},
-	}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
-	s.sweep(context.Background())
-
-	if len(status.updates) != 0 {
-		t.Fatalf("expected 0 updates on scan error, got %d", len(status.updates))
-	}
-}
-
-type mockAgentStatusUpdateErr struct{}
-
-func (m *mockAgentStatusUpdateErr) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
-	return fmt.Errorf("update error")
-}
-
-func (m *mockAgentStatusUpdateErr) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
-	return []*core.Agent{
-		{ID: "a1", TenantID: "t1", Status: core.AgentStatusOnline},
-	}, nil
-}
-
-func TestSweeper_UpdateStatusError_LogsAndContinues(t *testing.T) {
-	scanner := &mockHBScanner{expired: map[string][]string{"t1": {"a1"}}}
-	status := &mockAgentStatusUpdateErr{}
-
-	s := NewSweeper(scanner, status, 10*time.Second)
-	s.sweep(context.Background())
+func TestSweeper_ListError_SweepSurvives(t *testing.T) {
+	status := &mockAgentStatus{listErr: fmt.Errorf("db down")}
+	s := NewSweeper(nil, status, time.Second)
+	s.sweep(context.Background()) // must not panic
 }

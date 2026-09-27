@@ -196,7 +196,7 @@ janus task publish --id task-001 --source product --target-value review-mb
 janus mailbox pull review-mb
 janus mailbox ack task-001 --lease <lease-id>
 
-janus api-key create --name ci-bot
+janus api-key create --name ci-bot --scope admin
 janus api-key list
 janus api-key revoke <key-id>
 

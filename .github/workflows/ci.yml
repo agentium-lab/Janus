@@ -51,7 +51,11 @@ jobs:
 
       - name: Setup Helm
         run: |
-          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          # Pinned download with checksum verification (no curl | bash).
+          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
 
       - name: Install Prometheus CRDs for template rendering
         run: |

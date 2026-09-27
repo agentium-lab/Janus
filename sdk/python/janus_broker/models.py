@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import Any, Optional
+from typing import Any, List, Optional
 from enum import Enum
 
 
@@ -262,6 +262,8 @@ class CreateAPIKey(BaseModel):
 
 class CreateAPIKeyRequest(BaseModel):
     name: str = ""
+    scopes: List[str] = Field(default_factory=list)
+    bound_agent_id: str = ""
 
 
 class APIKey(BaseModel):

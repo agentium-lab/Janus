@@ -219,6 +219,9 @@ export interface PolicyRule {
 
 export interface CreateAPIKeyRequest {
   name: string;
+  /** At least one scope is required (e.g. ["task:read"], ["admin"]). */
+  scopes?: string[];
+  bound_agent_id?: string;
 }
 
 export interface CreatedAPIKey {
