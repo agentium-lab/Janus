@@ -247,7 +247,15 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	}
 
 	leaseID := generateLeaseID()
-	expiresAt := time.Now().Add(300 * time.Second)
+	// The lease must expire on the mailbox's ack-wait clock (the same clock
+	// the lease scanner and the NATS consumer use), not a hardcoded 300s —
+	// agents were told their lease lasted 300s while a mailbox with a
+	// shorter ack_wait had already expired them.
+	leaseTTL := 300
+	if mb != nil && mb.ACKWaitSeconds > 0 {
+		leaseTTL = mb.ACKWaitSeconds
+	}
+	expiresAt := time.Now().Add(time.Duration(leaseTTL) * time.Second)
 
 	attempt := core.TaskAttempt{
 		TenantID:    tenantID,

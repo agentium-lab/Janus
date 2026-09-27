@@ -64,6 +64,21 @@ func normalizePath(path string) string {
 	return path
 }
 
-func RecordTaskLatency(duration time.Duration) {
-	metrics.TaskLatency.WithLabelValues().Observe(duration.Seconds())
+// RequestLatencyMiddleware records HTTP request latency into the
+// TaskLatency histogram (tenant-labeled). TaskLatency labels the tenant so
+// per-tenant SLO breakdowns are possible; un-attributable control-plane
+// paths land under "platform".
+func RequestLatencyMiddleware(tenantFromPath func(string) string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(sw, r)
+			tenant := tenantFromPath(r.URL.Path)
+			if tenant == "" {
+				tenant = "platform"
+			}
+			metrics.TaskLatency.WithLabelValues(tenant).Observe(time.Since(start).Seconds())
+		})
+	}
 }

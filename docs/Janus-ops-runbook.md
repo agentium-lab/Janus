@@ -192,3 +192,52 @@ sum(rate(janus_policy_denied_total[5m])) by (tenant_id)
 ```bash
 sum(rate(janus_budget_throttle_total[5m])) by (tenant_id, reason)
 ```
+
+## Outbox quarantine & dead-entry recovery
+
+### Symptoms
+
+- `janus_outbox_quarantined_total` increases: the running publisher found
+  outbox rows with a `kind` it does not understand (typical during a
+  rolling upgrade where a newer writer emits a new kind).
+- `janus_outbox_dead_total` increases: entries exhausted their retry
+  budget (`outbox.max_attempts`, default 5) — usually a NATS outage longer
+  than the retry window or a poison payload.
+
+Both states are **parked, not lost**: dead/quarantined rows are never
+auto-revived (a poison message would retry forever at a fixed cadence).
+
+### Diagnosis
+
+```bash
+# Which tenants/kinds are parked?
+psql -c "SELECT tenant_id, kind, status, count(*), min(created_at)
+         FROM outbox_events WHERE status IN ('dead','quarantine')
+         GROUP BY 1,2,3 ORDER BY 5 DESC;"
+
+# Why did they fail?
+psql -c "SELECT id, kind, last_error FROM outbox_events
+         WHERE status IN ('dead','quarantine') ORDER BY created_at LIMIT 20;"
+```
+
+### Recovery
+
+After deploying a version that understands the quarantined kind (or after
+fixing the broker outage), requeue ONE tenant at a time — recovery is
+tenant-scoped by design so one tenant's replay can never requeue another's:
+
+```bash
+POST /v1/tenants/{tenant}/outbox/retry-dead?limit=100   # requires admin scope
+```
+
+Verify: rows flip to `pending`, then `published`
+(`janus_outbox_quarantined_total` / `janus_outbox_dead_total` stop growing;
+`janus_outbox_publish_total` resumes).
+
+### Notes
+
+- The endpoint is rate-limited by `limit` (max 1000); repeat until it
+  returns `requeued: 0`.
+- Unknown-kind quarantine during a rolling upgrade is EXPECTED and
+  self-serves once the upgrade completes — only recover manually if rows
+  stay parked after all replicas run the new version.

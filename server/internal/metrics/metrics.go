@@ -97,10 +97,10 @@ var (
 		Name: "janus_audit_projection_errors_total",
 		Help: "Audit projection failures (malformed payload or write error)",
 	})
-	TerminalEventDrops = promauto.NewCounter(prometheus.CounterOpts{
+	TerminalEventDrops = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "janus_terminal_event_drops_total",
 		Help: "Terminal events dropped after bounded hand-off timeout (SSE/notification loss; task state remains durable)",
-	})
+	}, []string{"tenant_id"})
 	OutboxDead = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "janus_outbox_dead_total",
 		Help: "Outbox entries moved to dead status after exhausting retries",

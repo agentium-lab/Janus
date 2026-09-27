@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 // terminalDeliveryWindow bounds how long a terminal event will wait for a
@@ -82,22 +83,26 @@ func (b *FanoutBroadcaster) fanoutDirect(evt core.JanusEvent) {
 	b.fanoutLocked(evt)
 }
 
-// seenBefore records the event ID and reports whether it was already seen.
-// Events without an EventID always pass through (they cannot be deduped).
+// seenBefore records the (tenant, event ID) pair and reports whether it was
+// already seen. Tenant is part of the key: EventIDs are only unique within a
+// tenant, and a global key let one tenant's event silently drop another
+// tenant's event on an ID collision. Events without an EventID always pass
+// through (they cannot be deduped).
 func (b *FanoutBroadcaster) seenBefore(evt core.JanusEvent) bool {
 	if evt.EventID == "" {
 		return false
 	}
+	key := evt.TenantID + "/" + evt.EventID
 	b.dedupeMu.Lock()
 	defer b.dedupeMu.Unlock()
-	if _, dup := b.dedupeSeen[evt.EventID]; dup {
+	if _, dup := b.dedupeSeen[key]; dup {
 		return true
 	}
 	if old := b.dedupeRing[b.dedupePos]; old != "" {
 		delete(b.dedupeSeen, old)
 	}
-	b.dedupeRing[b.dedupePos] = evt.EventID
-	b.dedupeSeen[evt.EventID] = struct{}{}
+	b.dedupeRing[b.dedupePos] = key
+	b.dedupeSeen[key] = struct{}{}
 	b.dedupePos = (b.dedupePos + 1) % len(b.dedupeRing)
 	return false
 }
@@ -131,6 +136,7 @@ func (b *FanoutBroadcaster) fanoutLocked(event core.JanusEvent) {
 		default:
 			if terminal {
 				b.evictLocked(event.TenantID, ch)
+				metrics.TerminalEventDrops.WithLabelValues(event.TenantID).Inc()
 				log.Printf("broadcaster: evicted slow subscriber, terminal event for task %s undeliverable", event.TaskID)
 			}
 		}

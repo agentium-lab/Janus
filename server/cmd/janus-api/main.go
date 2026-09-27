@@ -37,6 +37,7 @@ import (
 	_ "github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/observability"
 	"github.com/agentium-lab/Janus/server/internal/outbox"
+	"github.com/agentium-lab/Janus/server/internal/tracing"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/agentium-lab/Janus/server/internal/expiry"
@@ -48,6 +49,20 @@ import (
 
 func main() {
 	cfg := config.Load()
+
+	// Wire the global tracer provider BEFORE any component starts, so the
+	// otel.Tracer spans in services/handlers export for real when
+	// tracing.enabled is set (they were silently no-op before).
+	flushTraces, err := tracing.Init(cfg.Tracing.Enabled, cfg.Tracing.OTLPEndpoint, cfg.Tracing.ServiceName)
+	if err != nil {
+		log.Printf("tracing init failed (continuing without traces): %v", err)
+	} else {
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = flushTraces(shutdownCtx)
+		}()
+	}
 
 	if cfg.Migration.Auto {
 		runMigration(cfg)
@@ -360,7 +375,7 @@ func main() {
 	var core http.Handler = protected
 	if cfg.Auth.Enabled {
 		guarded := auth.AgentIdentityMiddleware(core)
-		core = auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(guarded)))
+		core = observability.RequestLatencyMiddleware(extractTenantFromPath)(auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(guarded))))
 		log.Println("api key authentication enabled")
 	} else if !isLoopbackAddr(addr) {
 		log.Fatalf("authentication disabled but binding non-loopback %s — refusing to start; set JANUS_AUTH_ENABLED=true, or bind a loopback address via JANUS_HTTP_HOST=localhost for local development", addr)

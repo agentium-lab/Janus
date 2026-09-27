@@ -150,3 +150,21 @@ func TestDriver_Remove_ExistingAgent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, hb)
 }
+
+// A dead Redis must fail OPEN (PG budgets stay enforced; the throttle cache
+// is advisory), not masquerade as "limit exceeded".
+func TestDriver_CheckRPM_RedisDown_FailsOpen(t *testing.T) {
+	// Construct directly (NewDriver pings and would reject the dead addr);
+	// a 1s dial timeout keeps the test fast.
+	d := &Driver{rdb: go_redis.NewClient(&go_redis.Options{
+		Addr:        "127.0.0.1:59999",
+		DialTimeout: time.Second,
+	})}
+	defer d.Close()
+	if err := d.CheckRPM(context.Background(), "acme", "agent", "a1", 5); err != nil {
+		t.Fatalf("rpm check must degrade to allow on redis failure, got: %v", err)
+	}
+	if err := d.CheckTPM(context.Background(), "acme", "agent", "a1", 1000, 500); err != nil {
+		t.Fatalf("tpm check must degrade to allow on redis failure, got: %v", err)
+	}
+}
