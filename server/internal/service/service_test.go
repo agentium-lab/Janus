@@ -1058,10 +1058,12 @@ func TestAgentService_GetRepoError(t *testing.T) {
 }
 
 func TestAgentService_HeartbeatPingError(t *testing.T) {
+	// The Redis TTL mark is best-effort: PG is the durable heartbeat
+	// record, so a failed Ping right after a Redis restart must not fail
+	// the request (agents flapped 'rejected' during chaos recovery before).
 	svc := NewAgentService(&mockAgentRepo{}, nil, &mockHeartbeatDriver{err: fmt.Errorf("redis down")}, nil)
 	err := svc.Heartbeat(context.Background(), "acme", "a1")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "heartbeat")
+	assert.NoError(t, err)
 }
 
 func TestTenantService_GetRepoError(t *testing.T) {

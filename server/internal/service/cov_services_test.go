@@ -168,8 +168,7 @@ func TestCov_AgentService_Heartbeat_NilDriver(t *testing.T) {
 func TestCov_AgentService_Heartbeat_PingError(t *testing.T) {
 	svc := NewAgentService(&mockAgentRepo{}, nil, &mockHeartbeatDriver{err: errors.New("redis down")}, nil)
 	err := svc.Heartbeat(context.Background(), "acme", "a1")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "heartbeat")
+	require.NoError(t, err, "redis TTL mark is best-effort; the PG record is durable")
 }
 
 func TestCov_AgentService_Register_NestedErrors(t *testing.T) {

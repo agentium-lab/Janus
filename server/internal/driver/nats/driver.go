@@ -56,9 +56,14 @@ type tenantStreams struct {
 }
 
 func NewDriver(cfg Config) (*Driver, error) {
+	// Unlimited reconnects: a bounded MaxReconnects turns any broker outage
+	// longer than the retry window into a PERMANENTLY closed connection —
+	// the process never recovers without a restart (observed in the nightly
+	// chaos run: docker stop/start nats left the API degraded forever).
+	// A reconnecting client costs one SYN per interval.
 	nc, err := nats.Connect(cfg.URL,
 		nats.ReconnectWait(2*time.Second),
-		nats.MaxReconnects(60),
+		nats.MaxReconnects(-1),
 		nats.Timeout(5*time.Second),
 	)
 	if err != nil {

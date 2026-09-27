@@ -1,6 +1,8 @@
 package service
 
 import (
+	"log"
+
 	"context"
 	"fmt"
 
@@ -94,8 +96,13 @@ func (s *AgentService) Heartbeat(ctx context.Context, tenantID, agentID string) 
 	if s.hbDriver == nil {
 		return nil
 	}
+	// The Redis TTL mark is best-effort on top of the durable PG record:
+	// right after a Redis restart the client's pool is still rebuilding and
+	// Ping can fail transiently. Failing the whole request here would make
+	// every agent flap "heartbeat rejected" during dependency recovery —
+	// the exact window the chaos suite exercises.
 	if err := s.hbDriver.Ping(ctx, tenantID, agentID); err != nil {
-		return fmt.Errorf("heartbeat: %w", err)
+		log.Printf("agent %s/%s: redis heartbeat mark failed (pg record durable): %v", tenantID, agentID, err)
 	}
 	return nil
 }

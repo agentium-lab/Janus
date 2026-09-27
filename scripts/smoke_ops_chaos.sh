@@ -66,7 +66,14 @@ sleep 2
 REDIS_OK=$(redis-cli -h "${REDIS_ADDR%%:*}" -p "${REDIS_ADDR##*:}" PING 2>/dev/null || echo "")
 check "Redis restarted and responding" "[ '$REDIS_OK' = 'PONG' ]"
 
-HB=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/agents/agent-1/heartbeat" 2>/dev/null && echo "ok" || echo "fail")
+# The API's redis pool may still be rebuilding right after the restart;
+# PG is the durable record, so retry briefly instead of racing it.
+HB="fail"
+for _ in $(seq 1 10); do
+  HB=$(curl -sf --max-time 3 -X POST "$JANUS_URL/v1/tenants/ops-chaos/agents/agent-1/heartbeat" 2>/dev/null && echo "ok" || echo "fail")
+  [ "$HB" = "ok" ] && break
+  sleep 1
+done
 check "Heartbeat after Redis restore" "[ '$HB' = 'ok' ]"
 
 echo "--- Phase 3: NATS outage → outbox retry ---"
@@ -78,10 +85,14 @@ else
 fi
 sleep 3
 
-PUB_DURING_OUTAGE=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks" \
+PUB_BODY=$(curl -s --max-time 10 -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks" \
   -H 'Content-Type: application/json' \
   -d '{"id":"task-nats-outage","source_agent":"agent-1","target_type":"mailbox","target_value":"mb-1","envelope":{"janus_version":"0.3","task_id":"task-nats-outage","tenant_id":"ops-chaos","source_agent":"agent-1","target":{"type":"mailbox","value":"mb-1"},"payload":{"type":"test","content":"outage"},"trace":{"trace_id":"chaos-nats"}}}' \
-  2>/dev/null && echo "accepted" || echo "failed")
+  2>/dev/null || echo "")
+PUB_DURING_OUTAGE=$(echo "$PUB_BODY" | python3 -c "import sys,json; print('accepted' if json.load(sys.stdin).get('id') else 'failed')" 2>/dev/null || echo "failed")
+if [ "$PUB_DURING_OUTAGE" != "accepted" ]; then
+  echo "  diagnose: POST body during outage: $(echo "$PUB_BODY" | head -c 200)"
+fi
 check "Task accepted during NATS outage (outbox holds)" "[ '$PUB_DURING_OUTAGE' = 'accepted' ]"
 
 echo "  Restarting NATS..."
@@ -123,15 +134,19 @@ check "Outbox task_publish reached 'published' after NATS recovery" "[ '$OUTBOX_
 
 PULLED="no"; ACKED="no"
 for _ in $(seq 1 30); do
-  PULL_RESP=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/mailboxes/mb-1/pull" -H 'Content-Type: application/json' \
+  PULL_RESP=$(curl -sf --max-time 5 -X POST "$JANUS_URL/v1/tenants/ops-chaos/mailboxes/mb-1/pull" -H 'Content-Type: application/json' \
     -d '{"agent_id":"agent-1"}' 2>/dev/null || echo "{}")
   TASK_GOT=$(echo "$PULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
   if [ "$TASK_GOT" = "task-nats-outage" ]; then
     PULLED="yes"
     LEASE_ID=$(echo "$PULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
-    ACK_RESP=$(curl -sf -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks/task-nats-outage/ack" -H 'Content-Type: application/json' \
-      -d "{\"lease_id\":\"$LEASE_ID\",\"result_ref\":\"smoke://chaos-ok\"}" 2>/dev/null && echo "ok" || echo "fail")
-    [ "$ACK_RESP" = "ok" ] && ACKED="yes"
+    ACK_BODY=$(curl -s --max-time 10 -X POST "$JANUS_URL/v1/tenants/ops-chaos/tasks/task-nats-outage/ack" -H 'Content-Type: application/json' \
+      -d "{\"lease_id\":\"$LEASE_ID\",\"result_ref\":\"smoke://chaos-ok\"}" 2>/dev/null || echo "")
+    if echo "$ACK_BODY" | grep -q '"status"'; then
+      ACKED="yes"
+    else
+      echo "  diagnose: ack response: $(echo "$ACK_BODY" | head -c 200)"
+    fi
     break
   fi
   sleep 1
