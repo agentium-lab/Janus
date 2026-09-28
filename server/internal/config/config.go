@@ -22,11 +22,9 @@ type Config struct {
 	Auth      AuthConfig      `mapstructure:"auth"`
 	TLS       TLSConfig       `mapstructure:"tls"`
 	CORS      CORSConfig      `mapstructure:"cors"`
-	Log       LogConfig       `mapstructure:"log"`
 	Metrics   MetricsConfig   `mapstructure:"metrics"`
 	Tracing   TracingConfig   `mapstructure:"tracing"`
 	Outbox    OutboxConfig    `mapstructure:"outbox"`
-	Artifacts ArtifactsConfig `mapstructure:"artifacts"`
 	LLM       LLMConfig       `mapstructure:"llm"`
 }
 
@@ -114,11 +112,6 @@ type CORSConfig struct {
 	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
-type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
-}
-
 type MetricsConfig struct {
 	Enabled bool   `mapstructure:"enabled"`
 	Path    string `mapstructure:"path"`
@@ -135,11 +128,6 @@ type OutboxConfig struct {
 	BatchSize      int    `mapstructure:"batch_size"`
 	LeaseDuration  string `mapstructure:"lease_duration"`
 	MaxAttempts    int    `mapstructure:"max_attempts"`
-}
-
-type ArtifactsConfig struct {
-	StoreType string `mapstructure:"store_type"`
-	LocalDir  string `mapstructure:"local_dir"`
 }
 
 func Load() *Config {
@@ -196,8 +184,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.enabled", true)
 	v.SetDefault("tls.enabled", false)
 	v.SetDefault("tls.min_version", "1.2")
-	v.SetDefault("log.level", "info")
-	v.SetDefault("log.format", "json")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.path", "/metrics")
 	v.SetDefault("tracing.enabled", false)
@@ -207,8 +193,6 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("outbox.batch_size", 50)
 	v.SetDefault("outbox.lease_duration", "60s")
 	v.SetDefault("outbox.max_attempts", 10)
-	v.SetDefault("artifacts.store_type", "local")
-	v.SetDefault("artifacts.local_dir", "/tmp/janus-artifacts")
 
 	v.SetDefault("llm.enabled", false)
 	v.SetDefault("llm.provider", "openai")
@@ -247,8 +231,6 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_TLS_KEY_FILE":           "tls.key_file",
 		"JANUS_TLS_CLIENT_CA_FILE":     "tls.client_ca_file",
 		"JANUS_CORS_ALLOWED_ORIGINS":   "cors.allowed_origins",
-		"JANUS_LOG_LEVEL":              "log.level",
-		"JANUS_LOG_FORMAT":             "log.format",
 		"JANUS_METRICS_ENABLED":        "metrics.enabled",
 		"JANUS_METRICS_PATH":           "metrics.path",
 		"JANUS_TRACING_ENABLED":        "tracing.enabled",
@@ -258,8 +240,6 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_OUTBOX_BATCH_SIZE":      "outbox.batch_size",
 		"JANUS_OUTBOX_LEASE_DURATION":  "outbox.lease_duration",
 		"JANUS_OUTBOX_MAX_ATTEMPTS":    "outbox.max_attempts",
-		"JANUS_ARTIFACTS_STORE_TYPE":   "artifacts.store_type",
-		"JANUS_ARTIFACTS_LOCAL_DIR":    "artifacts.local_dir",
 		"JANUS_LLM_ENABLED":            "llm.enabled",
 		"JANUS_LLM_PROVIDER":           "llm.provider",
 		"JANUS_LLM_MODEL":              "llm.model",

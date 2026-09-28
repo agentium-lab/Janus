@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 type Sweeper struct {
@@ -23,6 +24,7 @@ type AgentStatusUpdater interface {
 	UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error
 	ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error)
 	MarkStaleOnline(ctx context.Context, threshold time.Duration) (int64, error)
+	CountOnlineByTenant(ctx context.Context) (map[string]int64, error)
 }
 
 func NewSweeper(_ HeartbeatScanner, agentStatus AgentStatusUpdater, interval time.Duration) *Sweeper {
@@ -78,5 +80,10 @@ func (s *Sweeper) sweep(ctx context.Context) {
 	}
 	if n > 0 {
 		log.Printf("sweeper: marked %d agent(s) offline (pg heartbeat stale)", n)
+	}
+	if counts, err := s.agentStatus.CountOnlineByTenant(ctx); err == nil {
+		for tenant, c := range counts {
+			metrics.AgentOnline.WithLabelValues(tenant).Set(float64(c))
+		}
 	}
 }

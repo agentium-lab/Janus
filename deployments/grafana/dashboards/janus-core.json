@@ -185,7 +185,7 @@
       "pluginVersion": "10.0.0",
       "targets": [
         {
-          "expr": "sum(janus_queue_backlog) by (tenant_id, mailbox_id)",
+          "expr": "sum(janus_outbox_pending)",
           "legendFormat": "{{tenant_id}} / {{mailbox_id}}",
           "refId": "A"
         }

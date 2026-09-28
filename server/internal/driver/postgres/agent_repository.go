@@ -168,6 +168,27 @@ func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, sta
 // than the threshold, in ONE guarded statement — the check and the write
 // are atomic, so a heartbeat landing between a list and an update can no
 // longer get a live agent marked offline (the old list-then-update TOCTOU).
+// CountOnlineByTenant returns the number of online agents per tenant for
+// the janus_agent_online gauge.
+func (r *AgentRepository) CountOnlineByTenant(ctx context.Context) (map[string]int64, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT tenant_id, count(*) FROM agents WHERE status = 'online' GROUP BY tenant_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]int64)
+	var t string
+	var n int64
+	for rows.Next() {
+		if err := rows.Scan(&t, &n); err != nil {
+			return nil, err
+		}
+		out[t] = n
+	}
+	return out, rows.Err()
+}
+
 func (r *AgentRepository) MarkStaleOnline(ctx context.Context, threshold time.Duration) (int64, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE agents SET status = 'offline', updated_at = now()

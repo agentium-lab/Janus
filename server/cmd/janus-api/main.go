@@ -344,7 +344,13 @@ func main() {
 	// health checkers and scrapers cannot present API keys, and blocking them
 	// makes every authenticated deployment fail its own readiness gate.
 	public := http.NewServeMux()
-	public.Handle("/metrics", promhttp.Handler())
+	if cfg.Metrics.Enabled {
+		metricsPath := cfg.Metrics.Path
+		if metricsPath == "" {
+			metricsPath = "/metrics"
+		}
+		public.Handle(metricsPath, promhttp.Handler())
+	}
 	public.Handle("/.well-known/agent.json", a2a.AgentCardHandler())
 	public.Handle("/.well-known/agent-card.json", a2a.AgentCardV1Handler())
 	public.Handle("/healthz", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

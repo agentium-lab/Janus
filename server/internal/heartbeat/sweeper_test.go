@@ -35,6 +35,16 @@ func (m *mockAgentStatus) ListAllByStatus(ctx context.Context, status core.Agent
 	return m.online, nil
 }
 
+func (m *mockAgentStatus) CountOnlineByTenant(ctx context.Context) (map[string]int64, error) {
+	out := make(map[string]int64)
+	for _, a := range m.online {
+		if a.Status == core.AgentStatusOnline {
+			out[a.TenantID]++
+		}
+	}
+	return out, nil
+}
+
 // MarkStaleOnline mirrors the guarded statement: every online agent whose
 // heartbeat is older than the threshold flips to offline in one call —
 // the write is conditional per row, so no TOCTOU window exists.

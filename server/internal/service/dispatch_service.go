@@ -133,6 +133,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, fmt.Errorf("policy check: %w", err)
 	}
 	if decision.Decision == core.PolicyDecisionDeny {
+		metrics.PolicyDenied.WithLabelValues(tenantID).Inc()
 		return nil, &core.BackpressureError{
 			Reason:  core.ReasonApprovalRequired,
 			Message: fmt.Sprintf("policy denied: %s", decision.Reason),
@@ -146,6 +147,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	}
 
 	s.ensureMailboxConsumer(ctx, tenantID, mailboxID)
+	metrics.PullRequests.WithLabelValues(tenantID, mailboxID).Inc()
 
 	deliveries, err := s.queueDriver.FetchTasks(ctx, tenantID, mailboxID, core.FetchOptions{
 		MaxMessages: 1,
@@ -208,6 +210,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		Resource: core.PolicyResource{Type: "task", Value: task.ID},
 	})
 	if dispatchErr == nil && dispatchDecision.Decision == core.PolicyDecisionDeny {
+		metrics.PolicyDenied.WithLabelValues(tenantID).Inc()
 		s.publishEvent(ctx, core.JanusEvent{
 			EventType: core.EventPolicyDenied,
 			TenantID:  tenantID, TaskID: task.ID,
@@ -458,6 +461,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 	}
 
 	metrics.TasksCompleted.WithLabelValues(tenantID).Inc()
+	metrics.AckTotal.WithLabelValues(tenantID).Inc()
 
 	// ACK NATS only after DB commit.
 	if attempt.DeliveryRef != "" {
@@ -575,6 +579,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	}
 	if attemptFinished {
 		_ = s.budgetSvc.Release(ctx, tenantID, attempt.AgentID)
+		metrics.NackTotal.WithLabelValues(tenantID).Inc()
 	}
 	if !committed {
 		return nil
