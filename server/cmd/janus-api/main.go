@@ -274,20 +274,23 @@ func main() {
 	go retrySched.Start(context.Background(), 1*time.Second)
 	defer retrySched.Stop()
 
-	scannerInterval := 30 * time.Second
-	if v := os.Getenv("JANUS_SCANNER_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			scannerInterval = d
-		} else {
-			log.Printf("invalid JANUS_SCANNER_INTERVAL %q, using 30s", v)
-		}
+	scannerInterval, err := time.ParseDuration(cfg.Heartbeat.SweeperInterval)
+	if err != nil || scannerInterval <= 0 {
+		scannerInterval = 30 * time.Second
+	}
+	// Agents get the TTL plus a grace window before the sweeper acts: the
+	// TTL is when presence goes stale, the grace absorbs clock jitter.
+	hbTTL, err := time.ParseDuration(cfg.Heartbeat.TTL)
+	if err != nil || hbTTL <= 0 {
+		hbTTL = 60 * time.Second
 	}
 
 	var hbScan heartbeat.HeartbeatScanner
 	if redisDrv != nil {
 		hbScan = redisDrv
 	}
-	hbSweeper := heartbeat.NewSweeper(hbScan, agentRepo, scannerInterval)
+	hbSweeper := heartbeat.NewSweeper(hbScan, agentRepo, scannerInterval).
+		WithStaleThreshold(hbTTL + 30*time.Second)
 	go hbSweeper.Start(context.Background())
 	defer hbSweeper.Stop()
 

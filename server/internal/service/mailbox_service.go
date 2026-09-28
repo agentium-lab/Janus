@@ -1,6 +1,8 @@
 package service
 
 import (
+	"log"
+
 	"context"
 	"fmt"
 
@@ -112,9 +114,32 @@ func (s *MailboxService) Resume(ctx context.Context, tenantID, mailboxID string)
 	return s.mailboxRepo.UpdateStatus(ctx, tenantID, mailboxID, core.MailboxStatusActive)
 }
 
+// consumerReconciler is implemented by queue drivers whose consumer config
+// can drift from PG (NATS). PG remains the source of truth; reconcile is
+// best-effort so drivers without reconcile support (pgqueue) stay valid.
+type consumerReconciler interface {
+	ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error
+}
+
 func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
 	if tenantID == "" || mailboxID == "" {
 		return fmt.Errorf("tenant id and mailbox id are required")
 	}
-	return s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds)
+	if err := s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds); err != nil {
+		return err
+	}
+	if rc, ok := s.queueDriver.(consumerReconciler); ok {
+		if err := rc.ReconcileConsumer(ctx, core.ConsumerSpec{
+			TenantID:       tenantID,
+			MailboxID:      mailboxID,
+			DurableName:    mailboxID,
+			ACKWaitSeconds: ackWaitSeconds,
+			MaxDeliver:     maxDeliver,
+		}); err != nil {
+			// The durable PG config is committed; broker lag is logged and
+			// will be reconciled on the next config change or reconnect.
+			log.Printf("mailbox %s/%s: consumer reconcile failed (pg config committed): %v", tenantID, mailboxID, err)
+		}
+	}
+	return nil
 }

@@ -33,6 +33,13 @@ type AuditReader interface {
 	FetchByRange(ctx context.Context, tenantID string, from, to time.Time, limit int) ([]postgres.OutboxEntry, error)
 }
 
+// tickLocker lets a reader serialize projector ticks across replicas
+// (pg_try_advisory_lock). Readers without it fall back to idempotent
+// concurrent projection (audit rows dedupe on (tenant_id, event_id)).
+type tickLocker interface {
+	AcquireTickLock(ctx context.Context, key string) (release func(), ok bool, err error)
+}
+
 type AuditProjector struct {
 	reader    AuditReader
 	writer    AuditWriter
@@ -75,6 +82,19 @@ func (p *AuditProjector) Start(ctx context.Context) {
 		case <-p.done:
 			return
 		case <-ticker.C:
+			if locker, ok := p.reader.(tickLocker); ok {
+				release, locked, err := locker.AcquireTickLock(ctx, "audit_projector")
+				if err != nil {
+					log.Printf("audit projector: tick lock: %v", err)
+					continue
+				}
+				if !locked {
+					continue // another replica owns this tick
+				}
+				p.projectBatch(ctx)
+				release()
+				continue
+			}
 			p.projectBatch(ctx)
 		}
 	}

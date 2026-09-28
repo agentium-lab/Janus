@@ -292,6 +292,31 @@ func (r *OutboxRepo) FetchUnprojected(ctx context.Context, limit int) ([]OutboxE
 	return scanOutboxEntries(rows)
 }
 
+// AcquireTickLock takes a non-blocking session advisory lock on a dedicated
+// pooled connection. Singleton-style workers (audit projector) use it so N
+// replicas do not each re-fetch and re-process the same rows; the loser
+// simply skips the tick. The returned release function also releases the
+// connection.
+func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release func(), ok bool, err error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, key).Scan(&locked); err != nil {
+		conn.Release()
+		return nil, false, err
+	}
+	if !locked {
+		conn.Release()
+		return nil, false, nil
+	}
+	return func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, key)
+		conn.Release()
+	}, true, nil
+}
+
 func scanOutboxEntries(rows pgx.Rows) ([]OutboxEntry, error) {
 	var entries []OutboxEntry
 	for rows.Next() {

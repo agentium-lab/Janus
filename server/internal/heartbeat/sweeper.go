@@ -9,9 +9,10 @@ import (
 )
 
 type Sweeper struct {
-	agentStatus AgentStatusUpdater
-	interval    time.Duration
-	stopCh      chan struct{}
+	agentStatus    AgentStatusUpdater
+	interval       time.Duration
+	staleThreshold time.Duration
+	stopCh         chan struct{}
 }
 
 type HeartbeatScanner interface {
@@ -21,16 +22,26 @@ type HeartbeatScanner interface {
 type AgentStatusUpdater interface {
 	UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error
 	ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error)
+	MarkStaleOnline(ctx context.Context, threshold time.Duration) (int64, error)
 }
 
 func NewSweeper(_ HeartbeatScanner, agentStatus AgentStatusUpdater, interval time.Duration) *Sweeper {
-	// The scanner parameter is retained for signature compatibility; the
-	// sweep decision is PG-based (see staleThreshold).
 	return &Sweeper{
-		agentStatus: agentStatus,
-		interval:    interval,
-		stopCh:      make(chan struct{}),
+		agentStatus:    agentStatus,
+		interval:       interval,
+		staleThreshold: defaultStaleThreshold,
+		stopCh:         make(chan struct{}),
 	}
+}
+
+// WithStaleThreshold sets how long an agent's durable PG heartbeat may age
+// before the sweeper marks it offline (derive it from the configured
+// heartbeat TTL plus a grace window).
+func (s *Sweeper) WithStaleThreshold(d time.Duration) *Sweeper {
+	if d > 0 {
+		s.staleThreshold = d
+	}
+	return s
 }
 
 func (s *Sweeper) Start(ctx context.Context) {
@@ -53,33 +64,19 @@ func (s *Sweeper) Stop() {
 	close(s.stopCh)
 }
 
-// staleThreshold is how long an agent's durable PG heartbeat may age before
-// the sweeper marks it offline. PG is the source of truth: the Redis presence
-// keys are a best-effort cache and lose data on flush/restart, so liveness
-// must never be decided by them alone (a Redis wipe used to leave dead
-// agents online forever because ScanExpired returned nothing).
-const staleThreshold = 90 * time.Second
+// defaultStaleThreshold is the fallback heartbeat staleness threshold
+// (the configured heartbeat TTL plus a grace window, when not provided).
+const defaultStaleThreshold = 90 * time.Second
 
 func (s *Sweeper) sweep(ctx context.Context) {
-	onlineAgents, err := s.agentStatus.ListAllByStatus(ctx, core.AgentStatusOnline)
+	// One guarded statement: check AND write are atomic per row, so a
+	// heartbeat landing mid-sweep cannot be overwritten with offline.
+	n, err := s.agentStatus.MarkStaleOnline(ctx, s.staleThreshold)
 	if err != nil {
+		log.Printf("sweeper: mark stale online: %v", err)
 		return
 	}
-
-	if len(onlineAgents) == 0 {
-		return
-	}
-
-	for _, agent := range onlineAgents {
-		stale := agent.LastHeartbeatAt == nil ||
-			time.Since(*agent.LastHeartbeatAt) > staleThreshold
-		if !stale {
-			continue
-		}
-		if err := s.agentStatus.UpdateStatus(ctx, agent.TenantID, agent.ID, core.AgentStatusOffline); err != nil {
-			log.Printf("sweeper: failed to mark agent %s/%s offline: %v", agent.TenantID, agent.ID, err)
-		} else {
-			log.Printf("sweeper: agent %s/%s marked offline (pg heartbeat stale)", agent.TenantID, agent.ID)
-		}
+	if n > 0 {
+		log.Printf("sweeper: marked %d agent(s) offline (pg heartbeat stale)", n)
 	}
 }

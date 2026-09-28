@@ -164,6 +164,23 @@ func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, sta
 	return scanAgents(rows)
 }
 
+// MarkStaleOnline offlines every agent whose durable PG heartbeat is older
+// than the threshold, in ONE guarded statement — the check and the write
+// are atomic, so a heartbeat landing between a list and an update can no
+// longer get a live agent marked offline (the old list-then-update TOCTOU).
+func (r *AgentRepository) MarkStaleOnline(ctx context.Context, threshold time.Duration) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE agents SET status = 'offline', updated_at = now()
+		 WHERE status = 'online'
+		   AND (last_heartbeat_at IS NULL OR last_heartbeat_at < now() - make_interval(secs => $1))`,
+		int64(threshold.Seconds()),
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,

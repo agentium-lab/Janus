@@ -10,9 +10,11 @@ import (
 )
 
 type mockAgentStatus struct {
-	online  []*core.Agent
-	updates []statusUpdate
-	listErr error
+	online      []*core.Agent
+	updates     []statusUpdate
+	listErr     error
+	staleCutoff time.Time
+	staleCalls  int
 }
 
 type statusUpdate struct {
@@ -31,6 +33,23 @@ func (m *mockAgentStatus) ListAllByStatus(ctx context.Context, status core.Agent
 		return nil, m.listErr
 	}
 	return m.online, nil
+}
+
+// MarkStaleOnline mirrors the guarded statement: every online agent whose
+// heartbeat is older than the threshold flips to offline in one call —
+// the write is conditional per row, so no TOCTOU window exists.
+func (m *mockAgentStatus) MarkStaleOnline(ctx context.Context, threshold time.Duration) (int64, error) {
+	m.staleCalls++
+	m.staleCutoff = time.Now().Add(-threshold)
+	n := int64(0)
+	for _, a := range m.online {
+		if a.LastHeartbeatAt == nil || a.LastHeartbeatAt.Before(m.staleCutoff) {
+			m.updates = append(m.updates, statusUpdate{a.TenantID, a.ID, core.AgentStatusOffline})
+			a.Status = core.AgentStatusOffline
+			n++
+		}
+	}
+	return n, nil
 }
 
 func hbAgo(d time.Duration) *time.Time {

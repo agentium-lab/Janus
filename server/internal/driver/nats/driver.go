@@ -362,10 +362,7 @@ func (d *Driver) EnsureConsumer(ctx context.Context, spec core.ConsumerSpec) err
 		ackWait = 300 * time.Second
 	}
 
-	maxDeliver := spec.MaxDeliver
-	if maxDeliver <= 0 {
-		maxDeliver = 5
-	}
+	maxDeliver := runawayBackstopDeliver(spec.MaxDeliver)
 
 	cons, err := d.js.CreateConsumer(ctx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
 		Durable:        cname,
@@ -378,6 +375,64 @@ func (d *Driver) EnsureConsumer(ctx context.Context, spec core.ConsumerSpec) err
 	})
 	if err != nil {
 		return fmt.Errorf("create consumer %s: %w", cname, err)
+	}
+	ts.consumers[cname] = cons
+	return nil
+}
+
+// runawayBackstopDeliver is the NATS MaxDeliver policy: PG
+// RetryPolicy.MaxAttempts is the single delivery-lifetime authority (the
+// lease scanner decides retry vs dead-letter), so NATS MaxDeliver is only a
+// runaway-redelivery backstop for crash loops and must sit well above the
+// mailbox's business retry budget — a small mailbox MaxDeliver used to
+// terminate deliveries in JetStream while PG was still legitimately
+// retrying.
+func runawayBackstopDeliver(mailboxMaxDeliver int) int {
+	if mailboxMaxDeliver <= 0 {
+		mailboxMaxDeliver = 5
+	}
+	if mailboxMaxDeliver < 100 {
+		return 100
+	}
+	return mailboxMaxDeliver
+}
+
+// ReconcileConsumer applies the CURRENT spec to an existing consumer.
+// EnsureConsumer deliberately no-ops when its in-process cache hits, so
+// mailbox config changes (ack_wait / max_deliver / max_ack_pending) never
+// reached NATS — PG and the broker drifted apart. UpdateConfig calls this
+// after persisting to PG.
+func (d *Driver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ts, ok := d.tenant[spec.TenantID]
+	if !ok {
+		return fmt.Errorf("tenant %s not initialized", spec.TenantID)
+	}
+	cname := consumerName(spec.TenantID, spec.MailboxID)
+
+	maxAckPending := spec.MaxACKPending
+	if maxAckPending <= 0 {
+		maxAckPending = 100
+	}
+	ackWait := time.Duration(spec.ACKWaitSeconds) * time.Second
+	if ackWait <= 0 {
+		ackWait = 300 * time.Second
+	}
+	maxDeliver := runawayBackstopDeliver(spec.MaxDeliver)
+
+	cons, err := d.js.CreateOrUpdateConsumer(ctx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
+		Durable:        cname,
+		FilterSubjects: []string{taskSubject(spec.TenantID, spec.MailboxID)},
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		AckWait:        ackWait,
+		MaxDeliver:     maxDeliver,
+		MaxAckPending:  maxAckPending,
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile consumer %s: %w", cname, err)
 	}
 	ts.consumers[cname] = cons
 	return nil
