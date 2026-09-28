@@ -69,11 +69,18 @@ check "Redis restarted and responding" "[ '$REDIS_OK' = 'PONG' ]"
 # The API's redis pool may still be rebuilding right after the restart;
 # PG is the durable record, so retry briefly instead of racing it.
 HB="fail"
+HB_BODY=""
 for _ in $(seq 1 10); do
-  HB=$(curl -sf --max-time 3 -X POST "$JANUS_URL/v1/tenants/ops-chaos/agents/agent-1/heartbeat" 2>/dev/null && echo "ok" || echo "fail")
-  [ "$HB" = "ok" ] && break
+  HB_BODY=$(curl -s --max-time 3 -X POST "$JANUS_URL/v1/tenants/ops-chaos/agents/agent-1/heartbeat" 2>/dev/null || echo "")
+  if echo "$HB_BODY" | grep -q '"ok"'; then
+    HB="ok"
+    break
+  fi
   sleep 1
 done
+if [ "$HB" != "ok" ]; then
+  echo "  diagnose: last heartbeat response: $(echo "$HB_BODY" | head -c 200)"
+fi
 check "Heartbeat after Redis restore" "[ '$HB' = 'ok' ]"
 
 echo "--- Phase 3: NATS outage → outbox retry ---"

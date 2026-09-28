@@ -1,6 +1,8 @@
 package service
 
 import (
+	"time"
+
 	"log"
 
 	"context"
@@ -61,7 +63,7 @@ func (s *AgentService) Register(ctx context.Context, agent core.Agent) error {
 	// mid-registration must neither fail the request nor leave the agent
 	// stuck unregistered-online-less on a retry conflict.
 	if s.hbDriver != nil {
-		if err := s.hbDriver.Ping(ctx, agent.TenantID, agent.ID); err != nil {
+		if err := pingMarkBounded(ctx, s.hbDriver, agent.TenantID, agent.ID); err != nil {
 			log.Printf("agent %s/%s: initial redis mark failed (pg registration durable): %v", agent.TenantID, agent.ID, err)
 		}
 	}
@@ -97,15 +99,23 @@ func (s *AgentService) Heartbeat(ctx context.Context, tenantID, agentID string) 
 	if s.hbDriver == nil {
 		return nil
 	}
-	// The Redis TTL mark is best-effort on top of the durable PG record:
-	// right after a Redis restart the client's pool is still rebuilding and
-	// Ping can fail transiently. Failing the whole request here would make
-	// every agent flap "heartbeat rejected" during dependency recovery —
-	// the exact window the chaos suite exercises.
-	if err := s.hbDriver.Ping(ctx, tenantID, agentID); err != nil {
+	// The Redis TTL mark is best-effort on top of the durable PG record.
+	// Best-effort must also be BOUNDED: during a broker restart the
+	// client's pool can hold half-open connections whose commands hang
+	// until the read timeout retries exhaust — far beyond a sane request
+	// latency. Cap the mark at 500ms; the PG record is what liveness uses.
+	if err := pingMarkBounded(ctx, s.hbDriver, tenantID, agentID); err != nil {
 		log.Printf("agent %s/%s: redis heartbeat mark failed (pg record durable): %v", tenantID, agentID, err)
 	}
 	return nil
+}
+
+// pingMarkBounded runs the best-effort redis presence mark under a hard
+// 500ms budget (context deadline, not just dial timeout).
+func pingMarkBounded(ctx context.Context, hb HeartbeatDriver, tenantID, agentID string) error {
+	markCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+	return hb.Ping(markCtx, tenantID, agentID)
 }
 
 func (s *AgentService) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
