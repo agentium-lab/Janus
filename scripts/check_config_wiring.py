@@ -36,22 +36,52 @@ def main() -> int:
     corpus = "\n".join(p.read_text() for p in CONSUMERS if not p.name.endswith("_test.go"))
 
     dead = []
+    leaf_dead = []
     for f in fields:
         if f in EXEMPT:
             continue
         if not re.search(rf"\bcfg\.{f}\b", corpus):
             dead.append(f)
+            continue
+        if f in PASS_THROUGH:
+            # struct is handed to a constructor whole; leaves are consumed
+            # under the callee's parameter name
+            continue
+        for sub in sub_fields(src, f):
+            if not re.search(rf"cfg\.{f}\.{sub}\b", corpus):
+                leaf_dead.append(f"{f}.{sub}")
 
-    if dead:
-        print("FAIL: config fields declared but never wired into the runtime:")
+    if dead or leaf_dead:
+        print("FAIL: config declared but never wired into the runtime:")
         for f in dead:
             print(f"  - Config.{f}  (set via config/env but has zero effect)")
+        for f in leaf_dead:
+            print(f"  - cfg.{f}  (leaf declared but never referenced)")
         print("Wire them in server/cmd/janus-api or delete the declaration")
         print("(and its SetDefault/bindEnv entries) — do not ship dead knobs.")
         return 1
 
-    print(f"OK: all {len(fields)} config fields are wired into the runtime")
+    print(f"OK: all {len(fields)} config fields (and their leaves) are wired")
     return 0
+
+
+def sub_fields(src: str, field: str) -> list[str]:
+    m = re.search(rf"\t{field} \w+ `mapstructure", src)
+    if not m:
+        return []
+    tm = re.search(rf"{field} (\w+) `", m.group(0))
+    if not tm:
+        return []
+    typ = tm.group(1)
+    sm = re.search(rf"type {typ} struct \{{(.*?)\n\}}", src, re.S)
+    if not sm:
+        return []
+    return re.findall(r"^\t(\w+)\s+\w+", sm.group(1), re.M)
+
+
+# Top-level structs handed whole to constructors: their leaves are read
+# under the callee's parameter name, so cfg.X.Leaf greps miss them.
+PASS_THROUGH = {"TLS": "buildTLSConfig(cfg.TLS) reads leaves as tlsCfg.X"}
 
 
 if __name__ == "__main__":

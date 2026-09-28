@@ -13,6 +13,7 @@ type Sweeper struct {
 	agentStatus    AgentStatusUpdater
 	interval       time.Duration
 	staleThreshold time.Duration
+	reportedOnline map[string]struct{}
 	stopCh         chan struct{}
 }
 
@@ -32,6 +33,7 @@ func NewSweeper(_ HeartbeatScanner, agentStatus AgentStatusUpdater, interval tim
 		agentStatus:    agentStatus,
 		interval:       interval,
 		staleThreshold: defaultStaleThreshold,
+		reportedOnline: make(map[string]struct{}),
 		stopCh:         make(chan struct{}),
 	}
 }
@@ -84,6 +86,17 @@ func (s *Sweeper) sweep(ctx context.Context) {
 	if counts, err := s.agentStatus.CountOnlineByTenant(ctx); err == nil {
 		for tenant, c := range counts {
 			metrics.AgentOnline.WithLabelValues(tenant).Set(float64(c))
+		}
+		// Tenants that HAD online agents but now have none must be reset
+		// to zero, otherwise the gauge keeps serving the stale count.
+		for tenant := range s.reportedOnline {
+			if _, still := counts[tenant]; !still {
+				metrics.AgentOnline.WithLabelValues(tenant).Set(0)
+				delete(s.reportedOnline, tenant)
+			}
+		}
+		for tenant := range counts {
+			s.reportedOnline[tenant] = struct{}{}
 		}
 	}
 }

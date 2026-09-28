@@ -23,9 +23,12 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 	_, err := r.pool.Exec(ctx,
 		// Idempotent upsert: a registration retry after a partial failure
 		// (e.g. redis mark errored mid-flow) must not conflict on the row
-		// that already committed.
-		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		// that already committed. last_heartbeat_at is stamped here too —
+		// registration counts as the first heartbeat, otherwise the sweeper
+		// (which offlines online agents with a NULL heartbeat) would kill
+		// every freshly registered agent on its next tick.
+		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm, last_heartbeat_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
 		 ON CONFLICT (tenant_id, id) DO UPDATE SET
 		   display_name = EXCLUDED.display_name,
 		   protocol = EXCLUDED.protocol,
@@ -34,7 +37,8 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 		   max_concurrency = EXCLUDED.max_concurrency,
 		   rpm = EXCLUDED.rpm,
 		   tpm = EXCLUDED.tpm,
-		   updated_at = now()`,
+		   updated_at = now(),
+		   last_heartbeat_at = now()`,
 		agent.ID, agent.TenantID, nilIfEmpty(agent.TeamID), agent.DisplayName, string(agent.Protocol),
 		nilIfEmpty(agent.Endpoint), string(agent.Status), nilIfEmpty(agent.Description),
 		agent.MaxConcurrency, nilIfZero(agent.RPM), nilIfZero(agent.TPM),

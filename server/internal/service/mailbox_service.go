@@ -1,7 +1,10 @@
 package service
 
 import (
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"log"
+	"sync"
+	"time"
 
 	"context"
 	"fmt"
@@ -12,6 +15,9 @@ import (
 type MailboxService struct {
 	mailboxRepo MailboxRepo
 	queueDriver QueueDriver
+
+	pendMu  sync.Mutex
+	pending []pendingReconcile
 }
 
 func NewMailboxService(mailboxRepo MailboxRepo, queueDriver QueueDriver) *MailboxService {
@@ -121,6 +127,12 @@ type consumerReconciler interface {
 	ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error
 }
 
+// pendingReconcile is a config change committed to PG whose NATS consumer
+// update failed; the retry loop keeps trying until the broker matches.
+type pendingReconcile struct {
+	spec core.ConsumerSpec
+}
+
 func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
 	if tenantID == "" || mailboxID == "" {
 		return fmt.Errorf("tenant id and mailbox id are required")
@@ -128,18 +140,64 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	if err := s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds); err != nil {
 		return err
 	}
+	spec := core.ConsumerSpec{
+		TenantID:       tenantID,
+		MailboxID:      mailboxID,
+		DurableName:    mailboxID,
+		ACKWaitSeconds: ackWaitSeconds,
+		MaxDeliver:     maxDeliver,
+	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
-		if err := rc.ReconcileConsumer(ctx, core.ConsumerSpec{
-			TenantID:       tenantID,
-			MailboxID:      mailboxID,
-			DurableName:    mailboxID,
-			ACKWaitSeconds: ackWaitSeconds,
-			MaxDeliver:     maxDeliver,
-		}); err != nil {
-			// The durable PG config is committed; broker lag is logged and
-			// will be reconciled on the next config change or reconnect.
-			log.Printf("mailbox %s/%s: consumer reconcile failed (pg config committed): %v", tenantID, mailboxID, err)
+		if err := rc.ReconcileConsumer(ctx, spec); err != nil {
+			// The durable PG config is committed; park the spec for the
+			// retry loop so the broker eventually converges instead of
+			// silently running stale ack_wait/max_deliver forever.
+			s.pendMu.Lock()
+			s.pending = append(s.pending, pendingReconcile{spec: spec})
+			s.pendMu.Unlock()
+			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed, will retry): %v", tenantID, mailboxID, err)
 		}
 	}
 	return nil
+}
+
+// StartReconcileRetryLoop drains pending consumer reconciles until the
+// broker accepts them. JanusMetric janus_mailbox_reconcile_pending tracks
+// the backlog so operators can alert on prolonged drift.
+func (s *MailboxService) StartReconcileRetryLoop(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.retryPending(ctx)
+			}
+		}
+	}()
+}
+
+func (s *MailboxService) retryPending(ctx context.Context) {
+	s.pendMu.Lock()
+	pending := s.pending
+	s.pending = nil
+	s.pendMu.Unlock()
+
+	rc, ok := s.queueDriver.(consumerReconciler)
+	if !ok {
+		return
+	}
+	for _, p := range pending {
+		if err := rc.ReconcileConsumer(ctx, p.spec); err != nil {
+			s.pendMu.Lock()
+			s.pending = append(s.pending, p)
+			s.pendMu.Unlock()
+		}
+	}
+	if n := len(s.pending); n > 0 {
+		log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
+	}
+	metrics.MailboxReconcilePending.Set(float64(len(s.pending)))
 }

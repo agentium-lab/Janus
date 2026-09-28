@@ -99,6 +99,11 @@ func main() {
 		return natsDrv.SubscribeEvents(ctx, ch)
 	}
 
+	// Redis is an optional accelerator (rate limiting, heartbeat presence
+	// marks) — PG is the source of truth for everything it does, and every
+	// consumer already degrades when it is absent. Degrading at startup in
+	// EVERY queue mode keeps the dependency semantics uniform: a Redis
+	// outage must never stop the data plane.
 	redisDrv, rerr := redisdriver.NewDriver(redisdriver.Config{
 		Addr:      cfg.Redis.Addr,
 		Password:  cfg.Redis.Password,
@@ -106,12 +111,8 @@ func main() {
 		EnableTLS: cfg.Redis.EnableTLS,
 	})
 	if rerr != nil {
-		if cfg.Queue.Driver == "pg" {
-			log.Printf("WARNING: redis unavailable (%v); pg-only mode continues without heartbeat/rate-limiter", rerr)
-			redisDrv = nil // nil-safe: AgentService/Sweeper/RateLimiter guard below
-		} else {
-			log.Fatalf("redis: %v", rerr)
-		}
+		log.Printf("WARNING: redis unavailable (%v); continuing without rate-limiter/heartbeat-marks (pg remains authoritative)", rerr)
+		redisDrv = nil // nil-safe: AgentService/Sweeper/RateLimiter guard below
 	} else {
 		defer redisDrv.Close()
 	}
@@ -167,6 +168,7 @@ func main() {
 	router := routing.NewRouter(lookupRepo, policyCheckerAdapter{svc: policySvc}, budgetCheckerAdapter{svc: budgetSvc})
 	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc).WithAttemptRepo(attemptRepo)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, queueDrv)
+	mailboxSvc.StartReconcileRetryLoop(context.Background(), 15*time.Second)
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 	pgLifecycle := service.NewPGLifecycle(pool)
 	taskSvc = taskSvc.WithLifecycle(pgLifecycle)
@@ -372,7 +374,16 @@ func main() {
 		})
 	}
 	if redisDrv != nil {
-		readyChecker.Add("redis", redisDrv.Ready)
+		// Readiness mirrors the dependency semantics: redis loss degrades
+		// (rate limits, presence marks) but never fails the probe — a 503 here
+		// would make Kubernetes remove every serving pod while the data plane
+		// was still fully functional.
+		readyChecker.Add("redis", func(ctx context.Context) error {
+			if err := redisDrv.Ready(ctx); err != nil {
+				log.Printf("readyz: redis degraded (non-fatal): %v", err)
+			}
+			return nil
+		})
 	}
 	public.Handle("/readyz", readyChecker.Handler())
 

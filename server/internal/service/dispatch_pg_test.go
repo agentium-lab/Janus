@@ -805,3 +805,46 @@ func TestTaskService_Replay_ConcurrentSingleDelivery(t *testing.T) {
 	assert.Equal(t, 1, taskPublish,
 		"concurrent replay must produce exactly one delivery, not one per racer")
 }
+
+func TestAgentService_Register_SweepLifecycle(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	agentSvc := NewAgentService(env.agentRepo, nil, nil, nil)
+	agent := core.Agent{
+		ID: "sweep-agent", TenantID: "acme", DisplayName: "Sweep Agent",
+		Protocol: core.ProtocolA2A,
+	}
+
+	// Registration must stamp the first heartbeat; the sweeper offlines
+	// online agents with a NULL heartbeat, which used to kill every
+	// freshly registered agent within one sweep tick.
+	require.NoError(t, agentSvc.Register(ctx, agent))
+
+	got, err := env.agentRepo.Get(ctx, "acme", "sweep-agent")
+	require.NoError(t, err)
+	assert.Equal(t, core.AgentStatusOnline, got.Status)
+	require.NotNil(t, got.LastHeartbeatAt, "registration must stamp last_heartbeat_at")
+	assert.WithinDuration(t, time.Now(), *got.LastHeartbeatAt, 10*time.Second)
+
+	// Within the TTL: a sweep must NOT touch the agent.
+	n, err := env.agentRepo.MarkStaleOnline(ctx, 90*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "fresh registration must survive the sweeper")
+
+	got, err = env.agentRepo.Get(ctx, "acme", "sweep-agent")
+	require.NoError(t, err)
+	assert.Equal(t, core.AgentStatusOnline, got.Status)
+
+	// Past the TTL (simulate by aging the heartbeat): sweep offlines it.
+	_, err = env.pool.Exec(ctx,
+		`UPDATE agents SET last_heartbeat_at = now() - interval '10 minutes' WHERE tenant_id = 'acme' AND id = 'sweep-agent'`)
+	require.NoError(t, err)
+	n, err = env.agentRepo.MarkStaleOnline(ctx, 90*time.Second)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, n, int64(1), "stale agent must be offlined")
+
+	got, err = env.agentRepo.Get(ctx, "acme", "sweep-agent")
+	require.NoError(t, err)
+	assert.Equal(t, core.AgentStatusOffline, got.Status)
+}

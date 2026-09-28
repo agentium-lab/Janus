@@ -99,6 +99,11 @@ var (
 	})
 )
 
+var MailboxReconcilePending = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "janus_mailbox_reconcile_pending",
+	Help: "Mailbox consumer configs committed in PG but not yet applied to the broker (drift backlog)",
+})
+
 var OutboxDeadRetried = promauto.NewCounter(prometheus.CounterOpts{
 	Name: "janus_outbox_dead_retried_total",
 	Help: "Dead outbox entries requeued for another retry cycle",

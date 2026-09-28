@@ -41,3 +41,6 @@ server/janus-api
 # capability matrix, runbooks) are tracked so clones pass scripts/check_ga_readiness.py
 docs/plans/
 docs/superpowers/
+
+# built CLI binary (never commit binaries)
+cli/cli

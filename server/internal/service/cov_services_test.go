@@ -499,3 +499,51 @@ func TestExtra_LifecycleService_ApplyTx_CommitError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "commit lifecycle tx")
 }
+
+// fakeReconcileDriver flips between failing and succeeding so the pending
+// drain can be observed.
+type fakeReconcileDriver struct {
+	mockQueueDriver
+	failuresLeft int
+	calls        int
+	specs        []core.ConsumerSpec
+}
+
+func (d *fakeReconcileDriver) ReconcileConsumer(_ context.Context, spec core.ConsumerSpec) error {
+	d.calls++
+	d.specs = append(d.specs, spec)
+	if d.failuresLeft > 0 {
+		d.failuresLeft--
+		return errors.New("broker down")
+	}
+	return nil
+}
+
+func TestMailboxService_UpdateConfig_PendingReconcileDrains(t *testing.T) {
+	drv := &fakeReconcileDriver{failuresLeft: 1}
+	repo := &mockMailboxRepo{}
+	svc := NewMailboxService(repo, drv)
+	ctx := context.Background()
+
+	// First attempt fails: PG commits, spec is parked.
+	require.NoError(t, svc.UpdateConfig(ctx, "acme", "mb-1", 4, 120, 5, 3600))
+	assert.Equal(t, 1, drv.calls)
+
+	svc.retryPending(ctx) // retry fails again (failuresLeft exhausted on 2nd? no: 0 left -> success)
+	// failuresLeft was 1 and consumed by the first call, so this retry succeeds.
+	assert.Equal(t, 2, drv.calls)
+
+	svc.pendMu.Lock()
+	pending := len(svc.pending)
+	svc.pendMu.Unlock()
+	assert.Equal(t, 0, pending, "spec must drain once the broker accepts it")
+	require.Len(t, drv.specs, 2)
+	assert.Equal(t, 120, drv.specs[0].ACKWaitSeconds)
+	assert.Equal(t, "mb-1", drv.specs[0].MailboxID)
+}
+
+func TestMailboxService_UpdateConfig_NoReconciler_NoPanic(t *testing.T) {
+	svc := NewMailboxService(&mockMailboxRepo{}, &mockQueueDriver{})
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 120, 5, 3600))
+	svc.retryPending(context.Background()) // must no-op cleanly
+}
