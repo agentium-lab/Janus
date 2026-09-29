@@ -167,6 +167,18 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
 		s.applyMu.Lock()
+		// Cross-instance interleave guard: re-read the durable version
+		// right before the broker write. Another replica may have committed
+		// a NEWER revision between our commit and this write — writing ours
+		// now would leave the broker on the older config with nothing
+		// pending (the newer replica's write already happened or will park
+		// itself). Skip; the newer revision owns convergence.
+		current, gerr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+		if gerr != nil || current == nil || current.ConfigVersion != version {
+			s.applyMu.Unlock()
+			log.Printf("mailbox %s/%s: skipping consumer sync for v%d (superseded or unreadable)", tenantID, mailboxID, version)
+			return nil
+		}
 		err := rc.ReconcileConsumer(ctx, spec)
 		if err == nil {
 			s.pendMu.Lock()
@@ -244,18 +256,25 @@ type parkedSpec struct {
 }
 
 // StartReconcileRetryLoop drains pending consumer reconciles until the
-// broker accepts them. JanusMetric janus_mailbox_reconcile_pending tracks
-// the backlog so operators can alert on prolonged drift.
-func (s *MailboxService) StartReconcileRetryLoop(ctx context.Context, interval time.Duration) {
+// broker accepts them, and periodically replays the durable PG configs
+// wholesale (reconcileInterval) as a convergence backstop — any drift the
+// version gates miss (e.g. a broker wipe) heals within one reconcile pass.
+// janus_mailbox_reconcile_pending tracks the backlog so operators can
+// alert on prolonged drift.
+func (s *MailboxService) StartReconcileRetryLoop(ctx context.Context, interval, reconcileInterval time.Duration) {
 	go func() {
 		ticker := time.NewTicker(interval)
+		reconcile := time.NewTicker(reconcileInterval)
 		defer ticker.Stop()
+		defer reconcile.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				s.retryPending(ctx)
+			case <-reconcile.C:
+				s.ReconcileAllConsumers(ctx)
 			}
 		}
 	}()
@@ -291,10 +310,18 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 		}
 		// Version gate: PG is the authority. If the durable version has
 		// moved past what this parked spec was read from, the spec is
-		// superseded — drop it instead of writing stale config back.
+		// superseded — drop it instead of writing stale config back. If PG
+		// cannot answer, SKIP: writing with an unknown version can put a
+		// stale config on the broker (leave parked for the next tick).
 		parts := strings.SplitN(key, "/", 2)
 		current, gerr := s.mailboxRepo.Get(ctx, parts[0], parts[1])
-		if gerr == nil && current.ConfigVersion > parked.version {
+		if gerr != nil {
+			s.pendMu.Unlock()
+			s.applyMu.Unlock()
+			s.reportPendingCount()
+			return
+		}
+		if current == nil || current.ConfigVersion > parked.version {
 			delete(s.pending, key)
 			s.pendMu.Unlock()
 			s.applyMu.Unlock()

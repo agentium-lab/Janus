@@ -525,7 +525,8 @@ func (d *fakeReconcileDriver) ReconcileConsumer(_ context.Context, spec core.Con
 
 func TestMailboxService_UpdateConfig_PendingReconcileDrains(t *testing.T) {
 	drv := &fakeReconcileDriver{failuresLeft: 1}
-	repo := &mockMailboxRepo{}
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 0)
 	svc := NewMailboxService(repo, drv)
 	ctx := context.Background()
 
@@ -613,7 +614,9 @@ func TestMailboxService_StalePendingDoesNotResurrectAfterSuccess(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewMailboxService(&mockMailboxRepo{}, drv)
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 0)
+	svc := NewMailboxService(repo, drv)
 	ctx := context.Background()
 
 	failNext = true
@@ -752,4 +755,137 @@ func TestMailboxService_ReconcileAllUsesFullConfig(t *testing.T) {
 	assert.Equal(t, 45, drv.specs[0].ACKWaitSeconds, "custom ack_wait must survive the replay")
 	assert.Equal(t, 7, drv.specs[0].MaxDeliver)
 	assert.Equal(t, 6, drv.specs[0].MaxACKPending)
+}
+
+// versionMailboxRepo records UpdateConfig versions and lets tests move the
+// durable version independently of the service call.
+type versionMailboxRepo struct {
+	mockMailboxRepo
+	mu          sync.Mutex
+	current     map[string]int
+	mailboxes   map[string]*core.Mailbox
+	getErr      map[string]error
+	getOverride map[string]*core.Mailbox
+}
+
+func (r *versionMailboxRepo) UpdateConfig(ctx context.Context, tenantID, mailboxID string, mc, aw, md, rs int) (int, error) {
+	r.mu.Lock()
+	k := tenantID + "/" + mailboxID
+	r.current[k]++
+	v := r.current[k]
+	if mb, ok := r.mailboxes[k]; ok {
+		mb.ConfigVersion = v
+		mb.MaxConcurrency = mc
+		mb.ACKWaitSeconds = aw
+		mb.MaxDeliver = md
+		mb.RetentionSeconds = rs
+	} else {
+		r.mailboxes[k] = &core.Mailbox{TenantID: tenantID, ID: mailboxID,
+			ConfigVersion: v, MaxConcurrency: mc, ACKWaitSeconds: aw, MaxDeliver: md, RetentionSeconds: rs}
+	}
+	r.mu.Unlock()
+	return v, nil
+}
+
+func (r *versionMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	k := tenantID + "/" + mailboxID
+	if err := r.getErr[k]; err != nil {
+		return nil, err
+	}
+	if mb, ok := r.getOverride[k]; ok {
+		return mb, nil
+	}
+	if mb, ok := r.mailboxes[k]; ok {
+		return mb, nil
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func newVersionRepo() *versionMailboxRepo {
+	return &versionMailboxRepo{
+		current:     map[string]int{},
+		mailboxes:   map[string]*core.Mailbox{},
+		getErr:      map[string]error{},
+		getOverride: map[string]*core.Mailbox{},
+	}
+}
+
+func (r *versionMailboxRepo) setMailbox(tenantID, mailboxID string, v int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.mailboxes[tenantID+"/"+mailboxID] = &core.Mailbox{
+		TenantID: tenantID, ID: mailboxID, ConfigVersion: v,
+		ACKWaitSeconds: 60, MaxConcurrency: 4,
+	}
+	r.current[tenantID+"/"+mailboxID] = v
+}
+
+// Cross-instance interleave: our write of an older revision must be
+// skipped when PG has moved on by the time the broker write happens.
+func TestMailboxService_UpdateConfig_SkipsWhenSuperseded(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 2) // a newer replica already committed v2
+	var applied []core.ConsumerSpec
+	var mu sync.Mutex
+	drv := &reconcileRecorder{apply: func(spec core.ConsumerSpec) error {
+		mu.Lock()
+		applied = append(applied, spec)
+		mu.Unlock()
+		return nil
+	}}
+	svc := NewMailboxService(repo, drv)
+
+	// Our commit bumps to v1; by the time the broker-write gate reads PG,
+	// a newer replica has committed v2 — the override simulates that
+	// interleave. Our v1 write must be skipped.
+	repo.setMailbox("acme", "mb-1", 0)
+	repo.mu.Lock()
+	repo.getOverride["acme/mb-1"] = &core.Mailbox{TenantID: "acme", ID: "mb-1", ConfigVersion: 2}
+	repo.mu.Unlock()
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 90, 5, 3600))
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Empty(t, applied, "a broker write for a superseded revision must be skipped")
+}
+
+// PG unreadable at write time => skip, do not write stale config.
+func TestMailboxService_UpdateConfig_SkipsWhenVersionUnreadable(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 1)
+	repo.mu.Lock()
+	repo.getErr["acme/mb-1"] = errors.New("db down")
+	repo.mu.Unlock()
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 90, 5, 3600))
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	assert.Empty(t, drv.specs, "version-unreadable broker writes must be skipped")
+}
+
+// Retry loop skips (leaves parked) when the version lookup fails.
+func TestMailboxService_RetrySkipsOnVersionLookupError(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 1)
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+	svc.pendMu.Lock()
+	svc.pending["acme/mb-1"] = parkedSpec{version: 1, spec: core.ConsumerSpec{TenantID: "acme", MailboxID: "mb-1"}}
+	svc.pendMu.Unlock()
+
+	repo.mu.Lock()
+	repo.getErr["acme/mb-1"] = errors.New("db down")
+	repo.mu.Unlock()
+	svc.retryPending(context.Background())
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	assert.Empty(t, drv.specs, "no broker write when the version gate cannot read PG")
+	svc.pendMu.Lock()
+	defer svc.pendMu.Unlock()
+	assert.Len(t, svc.pending, 1, "spec stays parked for the next tick")
 }

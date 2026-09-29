@@ -190,7 +190,7 @@ func main() {
 	router := routing.NewRouter(lookupRepo, policyCheckerAdapter{svc: policySvc}, budgetCheckerAdapter{svc: budgetSvc})
 	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc).WithAttemptRepo(attemptRepo)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, queueDrv)
-	mailboxSvc.StartReconcileRetryLoop(context.Background(), 15*time.Second)
+	mailboxSvc.StartReconcileRetryLoop(context.Background(), 15*time.Second, 5*time.Minute)
 	// Replay durable PG mailbox configs onto the broker at startup: the
 	// in-memory pending map does not survive restarts.
 	go mailboxSvc.ReconcileAllConsumers(context.Background())
