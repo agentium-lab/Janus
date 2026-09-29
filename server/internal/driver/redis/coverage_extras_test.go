@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"errors"
+
 	"context"
 	"testing"
 	"time"
@@ -153,7 +155,7 @@ func TestDriver_Remove_ExistingAgent(t *testing.T) {
 
 // A dead Redis must fail OPEN (PG budgets stay enforced; the throttle cache
 // is advisory), not masquerade as "limit exceeded".
-func TestDriver_CheckRPM_RedisDown_FailsOpen(t *testing.T) {
+func TestDriver_CheckRPM_RedisDown_Sentinel(t *testing.T) {
 	// Construct directly (NewDriver pings and would reject the dead addr);
 	// a 1s dial timeout keeps the test fast.
 	d := &Driver{rdb: go_redis.NewClient(&go_redis.Options{
@@ -161,10 +163,10 @@ func TestDriver_CheckRPM_RedisDown_FailsOpen(t *testing.T) {
 		DialTimeout: time.Second,
 	})}
 	defer d.Close()
-	if err := d.CheckRPM(context.Background(), "acme", "agent", "a1", 5); err != nil {
-		t.Fatalf("rpm check must degrade to allow on redis failure, got: %v", err)
+	if err := d.CheckRPM(context.Background(), "acme", "agent", "a1", 5); !errors.Is(err, ErrThrottleUnavailable) {
+		t.Fatalf("rpm check on dead redis must return ErrThrottleUnavailable, got: %v", err)
 	}
-	if err := d.CheckTPM(context.Background(), "acme", "agent", "a1", 1000, 500); err != nil {
-		t.Fatalf("tpm check must degrade to allow on redis failure, got: %v", err)
+	if err := d.CheckTPM(context.Background(), "acme", "agent", "a1", 1000, 500); !errors.Is(err, ErrThrottleUnavailable) {
+		t.Fatalf("tpm check on dead redis must return ErrThrottleUnavailable, got: %v", err)
 	}
 }

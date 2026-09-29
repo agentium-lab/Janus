@@ -149,7 +149,7 @@ func main() {
 	}
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, agentHb, queueDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
-	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(budgetRL)
+	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(budgetRL).WithThrottleFailureMode(cfg.Budget.RateLimitFailureMode)
 
 	var llmClient *llm.Client
 	if cfg.LLM.Enabled && cfg.LLM.APIKey != "" {
@@ -380,7 +380,7 @@ func main() {
 		// was still fully functional.
 		readyChecker.Add("redis", func(ctx context.Context) error {
 			if err := redisDrv.Ready(ctx); err != nil {
-				log.Printf("readyz: redis degraded (non-fatal): %v", err)
+				return observability.Degraded(err)
 			}
 			return nil
 		})

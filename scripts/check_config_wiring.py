@@ -76,7 +76,7 @@ def sub_fields(src: str, field: str) -> list[str]:
     sm = re.search(rf"type {typ} struct \{{(.*?)\n\}}", src, re.S)
     if not sm:
         return []
-    return re.findall(r"^\t(\w+)\s+\w+", sm.group(1), re.M)
+    return re.findall(r"^\t(\w+)\s+[^\t\s]", sm.group(1), re.M)
 
 
 # Top-level structs handed whole to constructors: their leaves are read

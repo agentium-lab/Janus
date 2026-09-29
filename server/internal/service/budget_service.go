@@ -2,9 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/redis"
+	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
@@ -20,10 +24,19 @@ type RateLimiter interface {
 	CheckTPM(ctx context.Context, tenantID, scopeType, scopeID string, limit, tokenCount int) error
 }
 
+// Throttle unavailable policy: fail-open keeps availability (Redis is an
+// accelerator, PG budgets still gate the hard spending caps), fail-closed
+// enforces RPM/TPM even at the cost of rejecting during a Redis outage.
+const (
+	ThrottleFailOpen   = "fail-open"
+	ThrottleFailClosed = "fail-closed"
+)
+
 type BudgetService struct {
-	repo        BudgetRepo
-	usageRepo   BudgetUsageRepo
-	rateLimiter RateLimiter
+	repo            BudgetRepo
+	usageRepo       BudgetUsageRepo
+	rateLimiter     RateLimiter
+	throttleFailure string
 }
 
 func NewBudgetService(repo BudgetRepo) *BudgetService {
@@ -32,6 +45,29 @@ func NewBudgetService(repo BudgetRepo) *BudgetService {
 
 func NewBudgetServiceWithUsage(repo BudgetRepo, usageRepo BudgetUsageRepo) *BudgetService {
 	return &BudgetService{repo: repo, usageRepo: usageRepo}
+}
+
+func (s *BudgetService) WithThrottleFailureMode(mode string) *BudgetService {
+	if mode == ThrottleFailClosed {
+		s.throttleFailure = ThrottleFailClosed
+	}
+	return s
+}
+
+// throttleUnavailable applies the configured policy when the redis-backed
+// rate limiter fails at the infrastructure level (distinct from an actual
+// over-limit verdict, which always rejects).
+func (s *BudgetService) throttleUnavailable(ctx context.Context, tenantID, kind string, err error) error {
+	if s.throttleFailure == ThrottleFailClosed {
+		metrics.BudgetThrottle.WithLabelValues(tenantID, kind+"_unavailable_blocked").Inc()
+		return &core.BackpressureError{
+			Reason:  core.ReasonModelRPMExceeded,
+			Message: fmt.Sprintf("%s limiter unavailable (fail-closed): %v", kind, err),
+		}
+	}
+	metrics.BudgetThrottle.WithLabelValues(tenantID, kind+"_degraded").Inc()
+	log.Printf("budget %s: %s limiter degraded (fail-open): %v", tenantID, kind, err)
+	return nil
 }
 
 func (s *BudgetService) WithRateLimiter(rl RateLimiter) *BudgetService {
@@ -78,22 +114,46 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 		agentBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
 		if agentBudget != nil {
 			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "agent", agentID, agentBudget.RPM); err != nil {
-				return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+				if errors.Is(err, redis.ErrThrottleUnavailable) {
+					if perr := s.throttleUnavailable(ctx, tenantID, "rpm", err); perr != nil {
+						return perr
+					}
+				} else {
+					return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+				}
 			}
 			if budget != nil {
 				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "agent", agentID, agentBudget.TPM, budget.MaxTokens); err != nil {
-					return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+					if errors.Is(err, redis.ErrThrottleUnavailable) {
+						if perr := s.throttleUnavailable(ctx, tenantID, "tpm", err); perr != nil {
+							return perr
+						}
+					} else {
+						return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+					}
 				}
 			}
 		}
 		tenantBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
 		if tenantBudget != nil {
 			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "tenant", tenantID, tenantBudget.RPM); err != nil {
-				return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+				if errors.Is(err, redis.ErrThrottleUnavailable) {
+					if perr := s.throttleUnavailable(ctx, tenantID, "rpm", err); perr != nil {
+						return perr
+					}
+				} else {
+					return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
+				}
 			}
 			if budget != nil {
 				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "tenant", tenantID, tenantBudget.TPM, budget.MaxTokens); err != nil {
-					return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+					if errors.Is(err, redis.ErrThrottleUnavailable) {
+						if perr := s.throttleUnavailable(ctx, tenantID, "tpm", err); perr != nil {
+							return perr
+						}
+					} else {
+						return &core.BackpressureError{Reason: core.ReasonTenantTPMExceeded, Message: err.Error()}
+					}
 				}
 			}
 		}

@@ -1,6 +1,8 @@
 package redis
 
 import (
+	"errors"
+
 	"context"
 	"crypto/tls"
 	"fmt"
@@ -10,7 +12,6 @@ import (
 	go_redis "github.com/redis/go-redis/v9"
 
 	"github.com/agentium-lab/Janus/core"
-	"github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
 const (
@@ -24,6 +25,10 @@ type Config struct {
 	DB        int
 	EnableTLS bool
 }
+
+// ErrThrottleUnavailable marks a rate-limit check that failed at the
+// infrastructure level (distinct from a genuine over-limit verdict).
+var ErrThrottleUnavailable = errors.New("rate limiter unavailable")
 
 type Driver struct {
 	rdb *go_redis.Client
@@ -119,12 +124,10 @@ func (d *Driver) CheckRPM(ctx context.Context, tenantID, scopeType, scopeID stri
 	count, err := d.rdb.Incr(ctx, key).Result()
 	if err != nil {
 		// Redis is a best-effort throttle cache; PG budgets stay enforced.
-		// An infrastructure failure must fail open (log + metric), not
-		// masquerade as "limit exceeded" and block every dispatch — that
-		// made a Redis blip take the whole data plane down.
-		metrics.BudgetThrottle.WithLabelValues(tenantID, "rpm_degraded").Inc()
-		log.Printf("redis rpm check degraded (fail-open) %s: %v", key, err)
-		return nil
+		// An infrastructure failure is reported as ErrThrottleUnavailable
+		// so callers can apply their fail-open/fail-closed policy instead
+		// of the error masquerading as "limit exceeded".
+		return fmt.Errorf("rpm check: %w: %w", ErrThrottleUnavailable, err)
 	}
 	if count == 1 {
 		if err := d.rdb.Expire(ctx, key, 2*time.Minute).Err(); err != nil {
@@ -144,9 +147,7 @@ func (d *Driver) CheckTPM(ctx context.Context, tenantID, scopeType, scopeID stri
 	key := fmt.Sprintf("ratelimit:tpm:%s:%s:%s", tenantID, scopeType, scopeID)
 	added, err := d.rdb.IncrBy(ctx, key, int64(tokenCount)).Result()
 	if err != nil {
-		metrics.BudgetThrottle.WithLabelValues(tenantID, "tpm_degraded").Inc()
-		log.Printf("redis tpm check degraded (fail-open) %s: %v", key, err)
-		return nil
+		return fmt.Errorf("tpm check: %w: %w", ErrThrottleUnavailable, err)
 	}
 	ttl, _ := d.rdb.TTL(ctx, key).Result()
 	if ttl < 0 {

@@ -17,13 +17,14 @@ type MailboxService struct {
 	queueDriver QueueDriver
 
 	pendMu  sync.Mutex
-	pending []pendingReconcile
+	pending map[string]core.ConsumerSpec
 }
 
 func NewMailboxService(mailboxRepo MailboxRepo, queueDriver QueueDriver) *MailboxService {
 	return &MailboxService{
 		mailboxRepo: mailboxRepo,
 		queueDriver: queueDriver,
+		pending:     make(map[string]core.ConsumerSpec),
 	}
 }
 
@@ -127,10 +128,11 @@ type consumerReconciler interface {
 	ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error
 }
 
-// pendingReconcile is a config change committed to PG whose NATS consumer
-// update failed; the retry loop keeps trying until the broker matches.
-type pendingReconcile struct {
-	spec core.ConsumerSpec
+// reconcileKey dedupes pending specs: a NEWER config change for the same
+// mailbox replaces the parked older one, so a stale retry can never
+// overwrite a newer revision that already applied.
+func reconcileKey(tenantID, mailboxID string) string {
+	return tenantID + "/" + mailboxID
 }
 
 func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
@@ -140,20 +142,29 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	if err := s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds); err != nil {
 		return err
 	}
+	// MaxAckPending must mirror the CREATE path (maxConcurrency*2); an
+	// unset value makes CreateOrUpdateConsumer fall back to 100, silently
+	// widening or narrowing the broker's in-flight window.
+	ackPending := maxConcurrency * 2
+	if ackPending <= 0 {
+		ackPending = 100
+	}
 	spec := core.ConsumerSpec{
 		TenantID:       tenantID,
 		MailboxID:      mailboxID,
 		DurableName:    mailboxID,
 		ACKWaitSeconds: ackWaitSeconds,
 		MaxDeliver:     maxDeliver,
+		MaxACKPending:  ackPending,
 	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
 		if err := rc.ReconcileConsumer(ctx, spec); err != nil {
-			// The durable PG config is committed; park the spec for the
-			// retry loop so the broker eventually converges instead of
-			// silently running stale ack_wait/max_deliver forever.
+			// The durable PG config is committed; park the spec (keyed so a
+			// newer revision replaces an older parked one) for the retry
+			// loop — the broker converges instead of silently running stale
+			// ack_wait/max_deliver forever.
 			s.pendMu.Lock()
-			s.pending = append(s.pending, pendingReconcile{spec: spec})
+			s.pending[reconcileKey(tenantID, mailboxID)] = spec
 			s.pendMu.Unlock()
 			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed, will retry): %v", tenantID, mailboxID, err)
 		}
@@ -180,24 +191,42 @@ func (s *MailboxService) StartReconcileRetryLoop(ctx context.Context, interval t
 }
 
 func (s *MailboxService) retryPending(ctx context.Context) {
-	s.pendMu.Lock()
-	pending := s.pending
-	s.pending = nil
-	s.pendMu.Unlock()
-
 	rc, ok := s.queueDriver.(consumerReconciler)
 	if !ok {
 		return
 	}
-	for _, p := range pending {
-		if err := rc.ReconcileConsumer(ctx, p.spec); err != nil {
+	// Retry against the LIVE map under one lock: a config change landing
+	// mid-retry is visible immediately and a newer revision replaces the
+	// entry even while its older retry is in flight.
+	s.pendMu.Lock()
+	keys := make([]string, 0, len(s.pending))
+	for k := range s.pending {
+		keys = append(keys, k)
+	}
+	s.pendMu.Unlock()
+
+	for _, k := range keys {
+		s.pendMu.Lock()
+		spec, still := s.pending[k]
+		s.pendMu.Unlock()
+		if !still {
+			continue // superseded or drained
+		}
+		if err := rc.ReconcileConsumer(ctx, spec); err == nil {
 			s.pendMu.Lock()
-			s.pending = append(s.pending, p)
+			// Only delete if not replaced by an even newer revision.
+			if cur, ok := s.pending[k]; ok && cur == spec {
+				delete(s.pending, k)
+			}
 			s.pendMu.Unlock()
 		}
 	}
-	if n := len(s.pending); n > 0 {
+
+	s.pendMu.Lock()
+	n := len(s.pending)
+	s.pendMu.Unlock()
+	if n > 0 {
 		log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
 	}
-	metrics.MailboxReconcilePending.Set(float64(len(s.pending)))
+	metrics.MailboxReconcilePending.Set(float64(n))
 }

@@ -25,6 +25,7 @@ type Config struct {
 	Metrics   MetricsConfig   `mapstructure:"metrics"`
 	Tracing   TracingConfig   `mapstructure:"tracing"`
 	Outbox    OutboxConfig    `mapstructure:"outbox"`
+	Budget    BudgetConfig    `mapstructure:"budget"`
 	LLM       LLMConfig       `mapstructure:"llm"`
 }
 
@@ -123,6 +124,12 @@ type TracingConfig struct {
 	ServiceName  string `mapstructure:"service_name"`
 }
 
+type BudgetConfig struct {
+	// fail-open keeps dispatch flowing when the redis-backed rate limiter
+	// is unavailable; fail-closed rejects budget-gated requests instead.
+	RateLimitFailureMode string `mapstructure:"rate_limit_failure_mode"`
+}
+
 type OutboxConfig struct {
 	WorkerInterval string `mapstructure:"worker_interval"`
 	BatchSize      int    `mapstructure:"batch_size"`
@@ -162,7 +169,6 @@ func Load() *Config {
 
 func setDefaults(v *viper.Viper) {
 	v.SetDefault("http_port", 8080)
-	v.SetDefault("http_port", 8080)
 	v.SetDefault("http_host", "")
 	v.SetDefault("queue.driver", "nats")
 	v.SetDefault("grpc_port", 9090)
@@ -183,13 +189,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", true)
 	v.SetDefault("tls.enabled", false)
-	v.SetDefault("tls.min_version", "1.2")
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.path", "/metrics")
 	v.SetDefault("tracing.enabled", false)
 	v.SetDefault("tracing.otlp_endpoint", "localhost:4317")
 	v.SetDefault("tracing.service_name", "janus-api")
 	v.SetDefault("outbox.worker_interval", "500ms")
+	v.SetDefault("budget.rate_limit_failure_mode", "fail-open")
 	v.SetDefault("outbox.batch_size", 50)
 	v.SetDefault("outbox.lease_duration", "60s")
 	v.SetDefault("outbox.max_attempts", 10)
@@ -204,49 +210,50 @@ func setDefaults(v *viper.Viper) {
 
 func bindEnvVars(v *viper.Viper) {
 	envBindings := map[string]string{
-		"JANUS_HTTP_PORT":              "http_port",
-		"JANUS_HTTP_HOST":              "http_host",
-		"JANUS_GRPC_PORT":              "grpc_port",
-		"JANUS_PG_HOST":                "postgres.host",
-		"JANUS_PG_PORT":                "postgres.port",
-		"JANUS_PG_USER":                "postgres.user",
-		"JANUS_PG_PASSWORD":            "postgres.password",
-		"JANUS_PG_DATABASE":            "postgres.database",
-		"JANUS_PG_MAX_CONNS":           "postgres.max_conns",
-		"JANUS_PG_SSLMODE":             "postgres.sslmode",
-		"PGSSLMODE":                    "postgres.sslmode",
-		"JANUS_NATS_URL":               "nats.url",
-		"JANUS_REDIS_ADDR":             "redis.addr",
-		"JANUS_REDIS_PASSWORD":         "redis.password",
-		"JANUS_REDIS_DB":               "redis.db",
-		"JANUS_REDIS_ENABLE_TLS":       "redis.enable_tls",
-		"JANUS_QUEUE_DRIVER":           "queue.driver",
-		"JANUS_MIGRATION_AUTO":         "migration.auto",
-		"JANUS_MIGRATION_PATH":         "migration.path",
-		"JANUS_HB_SWEEPER_INTERVAL":    "heartbeat.sweeper_interval",
-		"JANUS_HB_TTL":                 "heartbeat.ttl",
-		"JANUS_AUTH_ENABLED":           "auth.enabled",
-		"JANUS_TLS_ENABLED":            "tls.enabled",
-		"JANUS_TLS_CERT_FILE":          "tls.cert_file",
-		"JANUS_TLS_KEY_FILE":           "tls.key_file",
-		"JANUS_TLS_CLIENT_CA_FILE":     "tls.client_ca_file",
-		"JANUS_CORS_ALLOWED_ORIGINS":   "cors.allowed_origins",
-		"JANUS_METRICS_ENABLED":        "metrics.enabled",
-		"JANUS_METRICS_PATH":           "metrics.path",
-		"JANUS_TRACING_ENABLED":        "tracing.enabled",
-		"JANUS_TRACING_OTLP_ENDPOINT":  "tracing.otlp_endpoint",
-		"JANUS_TRACING_SERVICE_NAME":   "tracing.service_name",
-		"JANUS_OUTBOX_WORKER_INTERVAL": "outbox.worker_interval",
-		"JANUS_OUTBOX_BATCH_SIZE":      "outbox.batch_size",
-		"JANUS_OUTBOX_LEASE_DURATION":  "outbox.lease_duration",
-		"JANUS_OUTBOX_MAX_ATTEMPTS":    "outbox.max_attempts",
-		"JANUS_LLM_ENABLED":            "llm.enabled",
-		"JANUS_LLM_PROVIDER":           "llm.provider",
-		"JANUS_LLM_MODEL":              "llm.model",
-		"JANUS_LLM_API_KEY":            "llm.api_key",
-		"JANUS_LLM_BASE_URL":           "llm.base_url",
-		"JANUS_LLM_MAX_TOKENS":         "llm.max_tokens",
-		"JANUS_LLM_TIMEOUT_SECONDS":    "llm.timeout_seconds",
+		"JANUS_HTTP_PORT":                      "http_port",
+		"JANUS_HTTP_HOST":                      "http_host",
+		"JANUS_GRPC_PORT":                      "grpc_port",
+		"JANUS_PG_HOST":                        "postgres.host",
+		"JANUS_PG_PORT":                        "postgres.port",
+		"JANUS_PG_USER":                        "postgres.user",
+		"JANUS_PG_PASSWORD":                    "postgres.password",
+		"JANUS_PG_DATABASE":                    "postgres.database",
+		"JANUS_PG_MAX_CONNS":                   "postgres.max_conns",
+		"JANUS_PG_SSLMODE":                     "postgres.sslmode",
+		"PGSSLMODE":                            "postgres.sslmode",
+		"JANUS_NATS_URL":                       "nats.url",
+		"JANUS_REDIS_ADDR":                     "redis.addr",
+		"JANUS_REDIS_PASSWORD":                 "redis.password",
+		"JANUS_REDIS_DB":                       "redis.db",
+		"JANUS_REDIS_ENABLE_TLS":               "redis.enable_tls",
+		"JANUS_QUEUE_DRIVER":                   "queue.driver",
+		"JANUS_MIGRATION_AUTO":                 "migration.auto",
+		"JANUS_MIGRATION_PATH":                 "migration.path",
+		"JANUS_HB_SWEEPER_INTERVAL":            "heartbeat.sweeper_interval",
+		"JANUS_HB_TTL":                         "heartbeat.ttl",
+		"JANUS_AUTH_ENABLED":                   "auth.enabled",
+		"JANUS_TLS_ENABLED":                    "tls.enabled",
+		"JANUS_TLS_CERT_FILE":                  "tls.cert_file",
+		"JANUS_TLS_KEY_FILE":                   "tls.key_file",
+		"JANUS_TLS_CLIENT_CA_FILE":             "tls.client_ca_file",
+		"JANUS_CORS_ALLOWED_ORIGINS":           "cors.allowed_origins",
+		"JANUS_METRICS_ENABLED":                "metrics.enabled",
+		"JANUS_METRICS_PATH":                   "metrics.path",
+		"JANUS_TRACING_ENABLED":                "tracing.enabled",
+		"JANUS_TRACING_OTLP_ENDPOINT":          "tracing.otlp_endpoint",
+		"JANUS_TRACING_SERVICE_NAME":           "tracing.service_name",
+		"JANUS_OUTBOX_WORKER_INTERVAL":         "outbox.worker_interval",
+		"JANUS_BUDGET_RATE_LIMIT_FAILURE_MODE": "budget.rate_limit_failure_mode",
+		"JANUS_OUTBOX_BATCH_SIZE":              "outbox.batch_size",
+		"JANUS_OUTBOX_LEASE_DURATION":          "outbox.lease_duration",
+		"JANUS_OUTBOX_MAX_ATTEMPTS":            "outbox.max_attempts",
+		"JANUS_LLM_ENABLED":                    "llm.enabled",
+		"JANUS_LLM_PROVIDER":                   "llm.provider",
+		"JANUS_LLM_MODEL":                      "llm.model",
+		"JANUS_LLM_API_KEY":                    "llm.api_key",
+		"JANUS_LLM_BASE_URL":                   "llm.base_url",
+		"JANUS_LLM_MAX_TOKENS":                 "llm.max_tokens",
+		"JANUS_LLM_TIMEOUT_SECONDS":            "llm.timeout_seconds",
 	}
 
 	v.SetEnvPrefix("")

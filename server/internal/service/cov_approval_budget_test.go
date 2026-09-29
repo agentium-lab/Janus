@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/redis"
 )
 
 // Approval + budget behavior coverage.
@@ -235,4 +236,31 @@ func TestExtra_BudgetService_Reserve_AgentUnderLimitThenError(t *testing.T) {
 	err := svc.Reserve(ctx, "acme", "agent-1", nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reserve fail")
+}
+
+// throttleErrRL always fails at the infrastructure level.
+type throttleErrRL struct{}
+
+func (throttleErrRL) CheckRPM(context.Context, string, string, string, int) error {
+	return redis.ErrThrottleUnavailable
+}
+func (throttleErrRL) CheckTPM(context.Context, string, string, string, int, int) error {
+	return redis.ErrThrottleUnavailable
+}
+
+func TestBudgetReserve_ThrottleUnavailable_FailOpenVsClosed(t *testing.T) {
+	ctx := context.Background()
+
+	spec := &core.BudgetSpec{TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", RPM: 10}
+	repo := &cbBudgetSpecRepo{specs: []*core.BudgetSpec{spec}}
+
+	open := NewBudgetService(repo).WithRateLimiter(throttleErrRL{})
+	err := open.Reserve(ctx, "acme", "agent-1", nil)
+	assert.NoError(t, err, "fail-open must keep dispatch flowing when the limiter is unavailable")
+
+	closed := NewBudgetService(repo).WithRateLimiter(throttleErrRL{}).WithThrottleFailureMode(ThrottleFailClosed)
+	err = closed.Reserve(ctx, "acme", "agent-1", nil)
+	require.Error(t, err, "fail-closed must enforce RPM/TPM during limiter unavailability")
+	var bp *core.BackpressureError
+	require.ErrorAs(t, err, &bp)
 }
