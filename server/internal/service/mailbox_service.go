@@ -285,16 +285,24 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 				delete(s.pending, key)
 			}
 		}
-		n := len(s.pending)
 		s.pendMu.Unlock()
 		s.applyMu.Unlock()
 		if err != nil {
-			s.pendMu.Lock()
-			n = len(s.pending)
-			s.pendMu.Unlock()
-			log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
-			metrics.MailboxReconcilePending.Set(float64(n))
+			s.reportPendingCount()
 			return
 		}
 	}
+}
+
+// reportPendingCount logs and exports the pending-consumer backlog size
+// under the pending lock (the gauge read must never race a parked/cleared
+// entry).
+func (s *MailboxService) reportPendingCount() {
+	s.pendMu.Lock()
+	n := len(s.pending)
+	s.pendMu.Unlock()
+	if n > 0 {
+		log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
+	}
+	metrics.MailboxReconcilePending.Set(float64(n))
 }
