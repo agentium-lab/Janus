@@ -238,8 +238,8 @@ func (m *cbMailboxRepo) UpdateStatus(_ context.Context, _, _ string, _ core.Mail
 	return nil
 }
 
-func (m *cbMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
-	return nil
+func (m *cbMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) (int, error) {
+	return 1, nil
 }
 
 type cbCtxRefRepo struct {

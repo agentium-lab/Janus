@@ -39,13 +39,13 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 	err := r.pool.QueryRow(ctx,
 		`SELECT tenant_id, id, agent_id, status, priority, max_concurrency,
 		        ack_wait_seconds, max_deliver, retention_seconds, retry_policy,
-		        created_at, updated_at
+		        created_at, updated_at, config_version
 		 FROM mailboxes WHERE tenant_id = $1 AND id = $2`,
 		tenantID, mailboxID,
 	).Scan(
 		&mb.TenantID, &mb.ID, &mb.AgentID, &status, &priority, &mb.MaxConcurrency,
 		&mb.ACKWaitSeconds, &mb.MaxDeliver, &mb.RetentionSeconds, &retryJSON,
-		&mb.CreatedAt, &mb.UpdatedAt,
+		&mb.CreatedAt, &mb.UpdatedAt, &mb.ConfigVersion,
 	)
 	if err != nil {
 		return nil, err
@@ -64,7 +64,7 @@ func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error
 	// defaults on each boot.
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, agent_id, status, max_concurrency,
-		        ack_wait_seconds, max_deliver, retry_policy
+		        ack_wait_seconds, max_deliver, retry_policy, config_version
 		 FROM mailboxes ORDER BY tenant_id, id`)
 	if err != nil {
 		return nil, err
@@ -76,7 +76,7 @@ func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error
 		var status string
 		var retryJSON []byte
 		if err := rows.Scan(&m.TenantID, &m.ID, &m.AgentID, &status, &m.MaxConcurrency,
-			&m.ACKWaitSeconds, &m.MaxDeliver, &retryJSON); err != nil {
+			&m.ACKWaitSeconds, &m.MaxDeliver, &retryJSON, &m.ConfigVersion); err != nil {
 			return nil, err
 		}
 		m.Status = core.MailboxStatus(status)
@@ -140,12 +140,21 @@ func (r *MailboxRepository) UpdateStatus(ctx context.Context, tenantID, mailboxI
 	return err
 }
 
-func (r *MailboxRepository) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
-	_, err := r.pool.Exec(ctx,
+// UpdateConfig applies new settings and returns the new config_version —
+// callers embed it in parked reconcile specs so retries can refuse to
+// apply a superseded revision.
+func (r *MailboxRepository) UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) (int, error) {
+	var version int
+	err := r.pool.QueryRow(ctx,
 		`UPDATE mailboxes SET max_concurrency = $3, ack_wait_seconds = $4,
-		        max_deliver = $5, retention_seconds = $6, updated_at = now()
-		 WHERE tenant_id = $1 AND id = $2`,
+		        max_deliver = $5, retention_seconds = $6, updated_at = now(),
+		        config_version = config_version + 1
+		 WHERE tenant_id = $1 AND id = $2
+		 RETURNING config_version`,
 		tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds,
-	)
-	return err
+	).Scan(&version)
+	if err != nil {
+		return 0, err
+	}
+	return version, nil
 }

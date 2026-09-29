@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS mailboxes (
     ack_wait_seconds integer NOT NULL DEFAULT 300,
     max_deliver integer NOT NULL DEFAULT 5,
     retention_seconds integer NOT NULL DEFAULT 604800,
+    config_version integer NOT NULL DEFAULT 0,
     retry_policy jsonb NOT NULL DEFAULT '{"max_attempts":5,"backoff_type":"exponential","initial_seconds":10,"max_seconds":900,"jitter":true}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),

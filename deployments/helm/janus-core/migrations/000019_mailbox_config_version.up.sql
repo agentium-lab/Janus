@@ -1,0 +1,1 @@
+ALTER TABLE mailboxes ADD COLUMN config_version INT NOT NULL DEFAULT 0;

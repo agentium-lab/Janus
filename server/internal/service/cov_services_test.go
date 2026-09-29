@@ -731,8 +731,8 @@ func (r *listAllMailboxRepo) Backlog(context.Context, string, string) (int, erro
 func (r *listAllMailboxRepo) UpdateStatus(context.Context, string, string, core.MailboxStatus) error {
 	return nil
 }
-func (r *listAllMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) error {
-	return nil
+func (r *listAllMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) (int, error) {
+	return 1, nil
 }
 
 // The startup replay must carry the mailbox's REAL config, not zero

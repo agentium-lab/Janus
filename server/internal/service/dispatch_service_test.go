@@ -236,8 +236,8 @@ func (m *mockDispatchMailboxRepo) UpdateStatus(_ context.Context, tenantID, mail
 	return nil
 }
 
-func (m *mockDispatchMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
-	return nil
+func (m *mockDispatchMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) (int, error) {
+	return 1, nil
 }
 
 func newTestDispatchSvc() (*DispatchService, *mockDispatchQueueDriver, *mockDispatchTaskRepo, *mockDispatchAttemptRepo) {

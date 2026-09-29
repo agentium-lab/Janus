@@ -92,8 +92,8 @@ func (r *stubMailboxRepo) Backlog(_ context.Context, _, _ string) (int, error) {
 func (r *stubMailboxRepo) UpdateStatus(_ context.Context, _, _ string, _ core.MailboxStatus) error {
 	return nil
 }
-func (r *stubMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
-	return nil
+func (r *stubMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) (int, error) {
+	return 1, nil
 }
 
 type stubBudgetRepo struct{}

@@ -99,6 +99,16 @@ func main() {
 		return natsDrv.SubscribeEvents(ctx, ch)
 	}
 
+	switch cfg.Budget.RateLimitFailureMode {
+	case "", service.ThrottleFailOpen:
+		// default
+	case service.ThrottleFailClosed:
+		// strict mode
+	default:
+		log.Fatalf("budget.rate_limit_failure_mode: unknown value %q (want %q or %q) — refusing to start with a silently-wrong throttle policy",
+			cfg.Budget.RateLimitFailureMode, service.ThrottleFailOpen, service.ThrottleFailClosed)
+	}
+
 	// Redis is an optional accelerator (rate limiting, heartbeat presence
 	// marks) — PG is the source of truth for everything it does, and every
 	// consumer already degrades when it is absent. Degrading at startup in

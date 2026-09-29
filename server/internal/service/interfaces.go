@@ -49,7 +49,7 @@ type MailboxRepo interface {
 	ListAll(ctx context.Context) ([]*core.Mailbox, error)
 	Backlog(ctx context.Context, tenantID, mailboxID string) (int, error)
 	UpdateStatus(ctx context.Context, tenantID, mailboxID string, status core.MailboxStatus) error
-	UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error
+	UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) (int, error)
 }
 
 type TaskAttemptRepo interface {

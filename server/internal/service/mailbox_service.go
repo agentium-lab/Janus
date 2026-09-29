@@ -1,6 +1,8 @@
 package service
 
 import (
+	"strings"
+
 	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"log"
 	"sync"
@@ -17,7 +19,7 @@ type MailboxService struct {
 	queueDriver QueueDriver
 
 	pendMu  sync.Mutex
-	pending map[string]core.ConsumerSpec
+	pending map[string]parkedSpec
 	// applyMu serializes every broker consumer write (config change AND
 	// retry): a retry holding a stale spec and a concurrent UpdateConfig
 	// used to race, letting the STALE spec land last and overwrite the
@@ -29,7 +31,7 @@ func NewMailboxService(mailboxRepo MailboxRepo, queueDriver QueueDriver) *Mailbo
 	return &MailboxService{
 		mailboxRepo: mailboxRepo,
 		queueDriver: queueDriver,
-		pending:     make(map[string]core.ConsumerSpec),
+		pending:     make(map[string]parkedSpec),
 	}
 }
 
@@ -144,7 +146,8 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	if tenantID == "" || mailboxID == "" {
 		return fmt.Errorf("tenant id and mailbox id are required")
 	}
-	if err := s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds); err != nil {
+	version, err := s.mailboxRepo.UpdateConfig(ctx, tenantID, mailboxID, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds)
+	if err != nil {
 		return err
 	}
 	// MaxAckPending must mirror the CREATE path (maxConcurrency*2); an
@@ -169,18 +172,17 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 			s.pendMu.Lock()
 			delete(s.pending, reconcileKey(tenantID, mailboxID))
 			s.pendMu.Unlock()
+		} else {
+			// The durable PG config is committed; park the spec WITH its PG
+			// version for the retry loop — the broker converges instead of
+			// silently running stale ack_wait/max_deliver forever, and the
+			// version check refuses to resurrect superseded revisions.
+			s.pendMu.Lock()
+			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
+			s.pendMu.Unlock()
+			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed v%d, will retry): %v", tenantID, mailboxID, version, err)
 		}
 		s.applyMu.Unlock()
-		if err != nil {
-			// The durable PG config is committed; park the spec (keyed so a
-			// newer revision replaces an older parked one) for the retry
-			// loop — the broker converges instead of silently running stale
-			// ack_wait/max_deliver forever.
-			s.pendMu.Lock()
-			s.pending[reconcileKey(tenantID, mailboxID)] = spec
-			s.pendMu.Unlock()
-			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed, will retry): %v", tenantID, mailboxID, err)
-		}
 	}
 	return nil
 }
@@ -205,7 +207,7 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 		s.applyMu.Unlock()
 		if err != nil {
 			s.pendMu.Lock()
-			s.pending[reconcileKey(mb.TenantID, mb.ID)] = spec
+			s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
 			s.pendMu.Unlock()
 		}
 	}
@@ -230,6 +232,15 @@ func consumerSpecFor(mb core.Mailbox) core.ConsumerSpec {
 		MaxDeliver:     mb.MaxDeliver,
 		MaxACKPending:  ackPending,
 	}
+}
+
+// parkedSpec couples a failed reconcile with the PG config_version it was
+// read from: retries verify the version BEFORE applying so a superseded
+// revision can never be written back to the broker (multi-instance safe —
+// the version lives in PG, not in process memory).
+type parkedSpec struct {
+	version int
+	spec    core.ConsumerSpec
 }
 
 // StartReconcileRetryLoop drains pending consumer reconciles until the
@@ -263,9 +274,9 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 		s.applyMu.Lock()
 		s.pendMu.Lock()
 		var key string
-		var spec core.ConsumerSpec
+		var parked parkedSpec
 		for k, v := range s.pending {
-			key, spec = k, v
+			key, parked = k, v
 			break
 		}
 		if key == "" {
@@ -278,10 +289,20 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 			metrics.MailboxReconcilePending.Set(float64(n))
 			return
 		}
-		err := rc.ReconcileConsumer(ctx, spec)
+		// Version gate: PG is the authority. If the durable version has
+		// moved past what this parked spec was read from, the spec is
+		// superseded — drop it instead of writing stale config back.
+		parts := strings.SplitN(key, "/", 2)
+		current, gerr := s.mailboxRepo.Get(ctx, parts[0], parts[1])
+		if gerr == nil && current.ConfigVersion > parked.version {
+			delete(s.pending, key)
+			s.pendMu.Unlock()
+			s.applyMu.Unlock()
+			continue
+		}
+		err := rc.ReconcileConsumer(ctx, parked.spec)
 		if err == nil {
-			// Delete only if not replaced by an even newer revision.
-			if cur, ok := s.pending[key]; ok && cur == spec {
+			if cur, ok := s.pending[key]; ok && cur == parked {
 				delete(s.pending, key)
 			}
 		}

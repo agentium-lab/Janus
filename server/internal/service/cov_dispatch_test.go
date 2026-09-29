@@ -423,6 +423,6 @@ func (r *errMailboxRepo) Backlog(context.Context, string, string) (int, error) {
 func (r *errMailboxRepo) UpdateStatus(context.Context, string, string, core.MailboxStatus) error {
 	return nil
 }
-func (r *errMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) error {
-	return nil
+func (r *errMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) (int, error) {
+	return 1, nil
 }

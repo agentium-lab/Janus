@@ -94,8 +94,9 @@ func TestMailboxRepo_UpdateConfig(t *testing.T) {
 	pool.Exec(ctx, `INSERT INTO agents (id, tenant_id, display_name, protocol, status) VALUES ($1,$2,$3,$4,$5)`, "a1", "uc", "A", "a2a", "online")
 	repo.Create(ctx, core.Mailbox{ID: "mb-uc", TenantID: "uc", AgentID: "a1", Status: "active"})
 
-	err := repo.UpdateConfig(ctx, "uc", "mb-uc", 10, 60, 5, 3600)
+	version, err := repo.UpdateConfig(ctx, "uc", "mb-uc", 10, 60, 5, 3600)
 	require.NoError(t, err)
+	require.Equal(t, 1, version, "config_version must start at 1 after the first update")
 
 	mb, _ := repo.Get(ctx, "uc", "mb-uc")
 	assert.Equal(t, 10, mb.MaxConcurrency)

@@ -58,6 +58,7 @@ type Mailbox struct {
 	MaxConcurrency   int           `json:"max_concurrency"`
 	ACKWaitSeconds   int           `json:"ack_wait_seconds"`
 	MaxDeliver       int           `json:"max_deliver"`
+	ConfigVersion    int           `json:"config_version"`
 	RetentionSeconds int           `json:"retention_seconds"`
 	RetryPolicy      RetryPolicy   `json:"retry_policy"`
 	CreatedAt        time.Time     `json:"created_at"`

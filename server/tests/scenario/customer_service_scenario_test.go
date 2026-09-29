@@ -347,8 +347,8 @@ func (r *memMailboxRepo) UpdateStatus(_ context.Context, _, _ string, _ core.Mai
 	return nil
 }
 
-func (r *memMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) error {
-	return nil
+func (r *memMailboxRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) (int, error) {
+	return 1, nil
 }
 
 type memBudgetRepo struct{}

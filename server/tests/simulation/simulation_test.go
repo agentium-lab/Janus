@@ -345,8 +345,8 @@ func (r *simMailboxRepo) UpdateStatus(_ context.Context, tenantID, mailboxID str
 	return nil
 }
 
-func (r *simMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
-	return nil
+func (r *simMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) (int, error) {
+	return 1, nil
 }
 
 type simApprovalRepo struct {

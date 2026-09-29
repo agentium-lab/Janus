@@ -391,8 +391,11 @@ func (m *mockMailboxRepo) UpdateStatus(_ context.Context, tenantID, mailboxID st
 	return m.err
 }
 
-func (m *mockMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error {
-	return m.err
+func (m *mockMailboxRepo) UpdateConfig(_ context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) (int, error) {
+	if m.err != nil {
+		return 0, m.err
+	}
+	return 1, nil
 }
 
 type mockTaskRepo struct {
