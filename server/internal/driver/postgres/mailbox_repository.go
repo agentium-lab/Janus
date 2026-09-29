@@ -57,6 +57,23 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 	return &mb, nil
 }
 
+func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error) {
+	rows, err := r.pool.Query(ctx, `SELECT tenant_id, id, agent_id, status FROM mailboxes ORDER BY tenant_id, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*core.Mailbox
+	for rows.Next() {
+		var m core.Mailbox
+		if err := rows.Scan(&m.TenantID, &m.ID, &m.AgentID, &m.Status); err != nil {
+			return nil, err
+		}
+		out = append(out, &m)
+	}
+	return out, rows.Err()
+}
+
 func (r *MailboxRepository) ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT tenant_id, id, agent_id, status, priority, max_concurrency,

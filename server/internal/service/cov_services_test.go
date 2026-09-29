@@ -1,6 +1,9 @@
 package service
 
 import (
+	"sync"
+	"sync/atomic"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
+	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 )
 
 // Remaining service behavior coverage: API keys, agents, tenants,
@@ -546,4 +550,187 @@ func TestMailboxService_UpdateConfig_NoReconciler_NoPanic(t *testing.T) {
 	svc := NewMailboxService(&mockMailboxRepo{}, &mockQueueDriver{})
 	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 120, 5, 3600))
 	svc.retryPending(context.Background()) // must no-op cleanly
+}
+
+func TestReconnectingLimiter_ReportsUnavailableUntilPromoted(t *testing.T) {
+	// The dead-address config never connects; every check must surface the
+	// sentinel so a fail-closed policy actually applies.
+	u := NewReconnectingLimiter(redisdriver.Config{Addr: "127.0.0.1:59999"}, nil)
+	err := u.CheckRPM(context.Background(), "acme", "agent", "a1", 5)
+	require.ErrorIs(t, err, redisdriver.ErrThrottleUnavailable)
+	err = u.CheckTPM(context.Background(), "acme", "agent", "a1", 100, 10)
+	require.ErrorIs(t, err, redisdriver.ErrThrottleUnavailable)
+}
+
+func TestBudgetReserve_FailClosedWithUnreachableLimiter(t *testing.T) {
+	spec := &core.BudgetSpec{TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", RPM: 10, TPM: 100}
+	repo := &cbBudgetSpecRepo{specs: []*core.BudgetSpec{spec}}
+	svc := NewBudgetService(repo).
+		WithRateLimiter(NewReconnectingLimiter(redisdriver.Config{Addr: "127.0.0.1:59999"}, nil)).
+		WithThrottleFailureMode(ThrottleFailClosed)
+	err := svc.Reserve(context.Background(), "acme", "agent-1", nil)
+	var bp *core.BackpressureError
+	require.ErrorAs(t, err, &bp, "fail-closed + startup-unreachable limiter must reject, not skip")
+}
+
+func TestBudgetReserve_UnbudgetedTaskStillCountsTPM(t *testing.T) {
+	// TPM admission counts a minimal unit for un-budgeted tasks: a caller
+	// omitting max_tokens must not bypass the tenant TPM cap.
+	calls := 0
+	var lastTokens int
+	rl := &recordingTPM{calls: &calls, last: &lastTokens}
+	spec := &core.BudgetSpec{TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", RPM: 10, TPM: 100}
+	repo := &cbBudgetSpecRepo{specs: []*core.BudgetSpec{spec}}
+	svc := NewBudgetService(repo).WithRateLimiter(rl)
+	require.NoError(t, svc.Reserve(context.Background(), "acme", "agent-1", nil))
+	assert.Greater(t, *rl.last, 0, "admission estimate must be >= 1 even without a task budget")
+}
+
+type recordingTPM struct {
+	calls *int
+	last  *int
+}
+
+func (r *recordingTPM) CheckRPM(context.Context, string, string, string, int) error { return nil }
+func (r *recordingTPM) CheckTPM(_ context.Context, _ string, _ string, _ string, _ int, tokens int) error {
+	*r.calls++
+	*r.last = tokens
+	return nil
+}
+
+func TestMailboxService_StalePendingDoesNotResurrectAfterSuccess(t *testing.T) {
+	// A fails and parks; B (newer revision for the same mailbox) applies
+	// successfully; the retry loop must NOT write A back over B.
+	var failNext bool
+	traffic := 0
+	drv := &reconcileRecorder{
+		apply: func(spec core.ConsumerSpec) error {
+			traffic++
+			if failNext {
+				failNext = false
+				return errors.New("broker down")
+			}
+			return nil
+		},
+	}
+	svc := NewMailboxService(&mockMailboxRepo{}, drv)
+	ctx := context.Background()
+
+	failNext = true
+	require.NoError(t, svc.UpdateConfig(ctx, "acme", "mb-1", 4, 111, 5, 3600)) // A parks
+	svc.pendMu.Lock()
+	require.Len(t, svc.pending, 1)
+	svc.pendMu.Unlock()
+
+	require.NoError(t, svc.UpdateConfig(ctx, "acme", "mb-1", 8, 222, 9, 3600)) // B applies
+	svc.pendMu.Lock()
+	require.Empty(t, svc.pending, "successful apply must clear the stale parked spec")
+	svc.pendMu.Unlock()
+
+	svc.retryPending(ctx) // nothing parked: no stale A resurrection possible
+	assert.Equal(t, 2, traffic)
+
+	var last core.ConsumerSpec
+	drv.mu.Lock()
+	if len(drv.specs) > 0 {
+		last = drv.specs[len(drv.specs)-1]
+	}
+	drv.mu.Unlock()
+	assert.Equal(t, 222, last.ACKWaitSeconds, "newest revision must win")
+	assert.Equal(t, 16, last.MaxACKPending, "maxConcurrency*2 parity on updates")
+}
+
+type reconcileRecorder struct {
+	mu    sync.Mutex
+	specs []core.ConsumerSpec
+	apply func(core.ConsumerSpec) error
+}
+
+func (d *reconcileRecorder) PublishTask(context.Context, core.TaskMessage) error { return nil }
+func (d *reconcileRecorder) PublishEvent(context.Context, core.JanusEvent) error { return nil }
+func (d *reconcileRecorder) EnsureTenant(context.Context, string) error          { return nil }
+func (d *reconcileRecorder) EnsureMailbox(context.Context, core.MailboxSpec) error {
+	return nil
+}
+func (d *reconcileRecorder) EnsureConsumer(context.Context, core.ConsumerSpec) error { return nil }
+func (d *reconcileRecorder) Close() error                                            { return nil }
+func (d *reconcileRecorder) FetchTasks(context.Context, string, string, core.FetchOptions) ([]core.TaskDelivery, error) {
+	return nil, nil
+}
+func (d *reconcileRecorder) AckTask(context.Context, string, core.DeliveryRef) error { return nil }
+func (d *reconcileRecorder) NackTask(context.Context, string, core.DeliveryRef, core.NackReason) error {
+	return nil
+}
+func (d *reconcileRecorder) PublishDLQ(context.Context, core.TaskMessage, []byte) error { return nil }
+func (d *reconcileRecorder) ReplayEvents(context.Context, core.EventReplayFilter) (core.EventIterator, error) {
+	return nil, nil
+}
+func (d *reconcileRecorder) SubscribeEvents(context.Context, chan<- core.JanusEvent) error {
+	return nil
+}
+func (d *reconcileRecorder) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error {
+	d.mu.Lock()
+	d.specs = append(d.specs, spec)
+	d.mu.Unlock()
+	return d.apply(spec)
+}
+
+func TestMailboxService_ReconcileAllConsumers(t *testing.T) {
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	repo := &listAllMailboxRepo{mailboxes: []*core.Mailbox{
+		{TenantID: "acme", ID: "mb-1", AgentID: "a1", ACKWaitSeconds: 60, MaxDeliver: 5, MaxConcurrency: 4},
+		{TenantID: "b", ID: "mb-2", AgentID: "a2", ACKWaitSeconds: 120, MaxDeliver: 9, MaxConcurrency: 8},
+	}}
+	svc := NewMailboxService(repo, drv)
+	svc.ReconcileAllConsumers(context.Background())
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	require.Len(t, drv.specs, 2, "every durable mailbox config replays onto the broker")
+	assert.Equal(t, 60, drv.specs[0].ACKWaitSeconds)
+	assert.Equal(t, 8, drv.specs[0].MaxACKPending, "maxConcurrency*2 parity")
+	assert.Equal(t, 120, drv.specs[1].ACKWaitSeconds)
+}
+
+// Failing entries park for the retry loop; a list error is logged, not fatal.
+func TestMailboxService_ReconcileAllConsumers_ParksFailures(t *testing.T) {
+	var calls int32
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			return errors.New("broker down")
+		}
+		return nil
+	}}
+	repo := &listAllMailboxRepo{mailboxes: []*core.Mailbox{
+		{TenantID: "acme", ID: "mb-1", AgentID: "a1", ACKWaitSeconds: 60, MaxConcurrency: 4},
+		{TenantID: "acme", ID: "mb-2", AgentID: "a1", ACKWaitSeconds: 90, MaxConcurrency: 4},
+	}}
+	svc := NewMailboxService(repo, drv)
+	svc.ReconcileAllConsumers(context.Background())
+
+	svc.pendMu.Lock()
+	defer svc.pendMu.Unlock()
+	assert.Len(t, svc.pending, 1, "the failed spec is parked, the successful one is not")
+}
+
+type listAllMailboxRepo struct{ mailboxes []*core.Mailbox }
+
+func (r *listAllMailboxRepo) Create(context.Context, core.Mailbox) error { return nil }
+func (r *listAllMailboxRepo) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
+	return nil, errors.New("unused")
+}
+func (r *listAllMailboxRepo) ListByAgent(context.Context, string, string) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+func (r *listAllMailboxRepo) ListAll(context.Context) ([]*core.Mailbox, error) {
+	return r.mailboxes, nil
+}
+func (r *listAllMailboxRepo) Backlog(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+func (r *listAllMailboxRepo) UpdateStatus(context.Context, string, string, core.MailboxStatus) error {
+	return nil
+}
+func (r *listAllMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) error {
+	return nil
 }

@@ -146,6 +146,17 @@ func main() {
 	if redisDrv != nil {
 		agentHb = redisDrv
 		budgetRL = redisDrv
+	} else if cfg.Budget.RateLimitFailureMode == service.ThrottleFailClosed {
+		// A nil limiter would SKIP every RPM/TPM check — silently turning
+		// the configured fail-closed policy into fail-open. Keep reporting
+		// the limiter as unavailable (policy applies, requests reject)
+		// until the background reconnect promotes a live driver.
+		budgetRL = service.NewReconnectingLimiter(redisdriver.Config{
+			Addr:      cfg.Redis.Addr,
+			Password:  cfg.Redis.Password,
+			DB:        cfg.Redis.DB,
+			EnableTLS: cfg.Redis.EnableTLS,
+		}, nil)
 	}
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, agentHb, queueDrv)
 	policySvc := service.NewPolicyService(policyRuleRepo)
@@ -169,6 +180,9 @@ func main() {
 	taskSvc := service.NewTaskService(taskRepo, queueDrv, pool, outboxRepo).WithPolicy(policySvc).WithRouter(router).WithIntentResolver(&intentAdapter{r: intentResolver}).WithAgentExistence(agentExistenceAdapter{agentRepo}).WithContextRefService(contextRefSvc).WithAttemptRepo(attemptRepo)
 	mailboxSvc := service.NewMailboxService(mailboxRepo, queueDrv)
 	mailboxSvc.StartReconcileRetryLoop(context.Background(), 15*time.Second)
+	// Replay durable PG mailbox configs onto the broker at startup: the
+	// in-memory pending map does not survive restarts.
+	go mailboxSvc.ReconcileAllConsumers(context.Background())
 	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
 	pgLifecycle := service.NewPGLifecycle(pool)
 	taskSvc = taskSvc.WithLifecycle(pgLifecycle)

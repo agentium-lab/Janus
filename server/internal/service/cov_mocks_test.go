@@ -224,6 +224,10 @@ func (m *cbMailboxRepo) ListByAgent(_ context.Context, _, _ string) ([]*core.Mai
 	return nil, nil
 }
 
+func (m *cbMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+
 func (m *cbMailboxRepo) Backlog(_ context.Context, _, _ string) (int, error) { return 0, nil }
 
 func (m *cbMailboxRepo) UpdateStatus(_ context.Context, _, _ string, _ core.MailboxStatus) error {

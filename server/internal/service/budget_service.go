@@ -10,6 +10,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/driver/redis"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"github.com/agentium-lab/Janus/server/internal/nilguard"
+	"github.com/jackc/pgx/v5"
 )
 
 type BudgetUsageRepo interface {
@@ -109,9 +110,26 @@ func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID 
 	return nil
 }
 
+// admissionTokens is the TPM admission estimate for a dispatch: the task's
+// declared max_tokens when present, otherwise a minimal unit so that
+// un-budgeted tasks still COUNT against TPM (a zero estimate used to let
+// callers opt out of the tenant TPM cap entirely). True consumption is
+// settled from ACK-reported usage against the durable PG budget.
+func admissionTokens(budget *core.Budget) int {
+	if budget != nil && budget.MaxTokens > 0 {
+		return budget.MaxTokens
+	}
+	return 1
+}
+
 func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, budget *core.Budget) error {
 	if s.rateLimiter != nil {
-		agentBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+		agentBudget, budgetErr := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+		if budgetErr != nil && !errors.Is(budgetErr, pgx.ErrNoRows) {
+			// PG is the budget source of truth: a lookup failure must not
+			// read as 'no budget configured' (that skipped enforcement).
+			return fmt.Errorf("agent budget lookup: %w", budgetErr)
+		}
 		if agentBudget != nil {
 			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "agent", agentID, agentBudget.RPM); err != nil {
 				if errors.Is(err, redis.ErrThrottleUnavailable) {
@@ -122,8 +140,9 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 					return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
 				}
 			}
-			if budget != nil {
-				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "agent", agentID, agentBudget.TPM, budget.MaxTokens); err != nil {
+			{
+				estimate := admissionTokens(budget)
+				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "agent", agentID, agentBudget.TPM, estimate); err != nil {
 					if errors.Is(err, redis.ErrThrottleUnavailable) {
 						if perr := s.throttleUnavailable(ctx, tenantID, "tpm", err); perr != nil {
 							return perr
@@ -134,7 +153,10 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 				}
 			}
 		}
-		tenantBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+		tenantBudget, tenantBudgetErr := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+		if tenantBudgetErr != nil && !errors.Is(tenantBudgetErr, pgx.ErrNoRows) {
+			return fmt.Errorf("tenant budget lookup: %w", tenantBudgetErr)
+		}
 		if tenantBudget != nil {
 			if err := s.rateLimiter.CheckRPM(ctx, tenantID, "tenant", tenantID, tenantBudget.RPM); err != nil {
 				if errors.Is(err, redis.ErrThrottleUnavailable) {
@@ -145,8 +167,9 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 					return &core.BackpressureError{Reason: core.ReasonModelRPMExceeded, Message: err.Error()}
 				}
 			}
-			if budget != nil {
-				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "tenant", tenantID, tenantBudget.TPM, budget.MaxTokens); err != nil {
+			{
+				estimate := admissionTokens(budget)
+				if err := s.rateLimiter.CheckTPM(ctx, tenantID, "tenant", tenantID, tenantBudget.TPM, estimate); err != nil {
 					if errors.Is(err, redis.ErrThrottleUnavailable) {
 						if perr := s.throttleUnavailable(ctx, tenantID, "tpm", err); perr != nil {
 							return perr

@@ -46,6 +46,7 @@ type MailboxRepo interface {
 	Create(ctx context.Context, mailbox core.Mailbox) error
 	Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error)
 	ListByAgent(ctx context.Context, tenantID, agentID string) ([]*core.Mailbox, error)
+	ListAll(ctx context.Context) ([]*core.Mailbox, error)
 	Backlog(ctx context.Context, tenantID, mailboxID string) (int, error)
 	UpdateStatus(ctx context.Context, tenantID, mailboxID string, status core.MailboxStatus) error
 	UpdateConfig(ctx context.Context, tenantID, mailboxID string, maxConcurrency, ackWaitSeconds, maxDeliver, retentionSeconds int) error

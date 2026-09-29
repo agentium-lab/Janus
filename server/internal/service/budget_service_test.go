@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/jackc/pgx/v5"
+
 	"context"
 	"fmt"
 	"testing"
@@ -33,12 +35,12 @@ func (m *mockBudgetRepo) Get(_ context.Context, tenantID string, scopeType core.
 		return nil, m.err
 	}
 	if m.budgets == nil {
-		return nil, fmt.Errorf("not found")
+		return nil, pgx.ErrNoRows
 	}
 	key := tenantID + ":" + string(scopeType) + ":" + scopeID
 	spec, ok := m.budgets[key]
 	if !ok {
-		return nil, fmt.Errorf("not found")
+		return nil, pgx.ErrNoRows
 	}
 	return spec, nil
 }

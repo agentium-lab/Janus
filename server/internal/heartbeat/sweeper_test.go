@@ -146,3 +146,11 @@ func TestSweeper_ListError_SweepSurvives(t *testing.T) {
 	s := NewSweeper(nil, status, time.Second)
 	s.sweep(context.Background()) // must not panic
 }
+
+func TestSweeper_StartStopLifecycle(t *testing.T) {
+	status := &mockAgentStatus{}
+	s := NewSweeper(nil, status, 20*time.Millisecond)
+	s.WithStaleThreshold(50 * time.Millisecond)
+	go s.Start(context.Background())
+	s.Stop() // must not panic or deadlock
+}

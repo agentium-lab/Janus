@@ -335,6 +335,10 @@ func (r *memMailboxRepo) ListByAgent(_ context.Context, _, _ string) ([]*core.Ma
 	return nil, nil
 }
 
+func (r *memMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+
 func (r *memMailboxRepo) Backlog(_ context.Context, _, _ string) (int, error) { return 0, nil }
 
 func (r *memMailboxRepo) UpdateStatus(_ context.Context, _, _ string, _ core.MailboxStatus) error {

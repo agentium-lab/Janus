@@ -376,6 +376,10 @@ func (m *mockMailboxRepo) ListByAgent(_ context.Context, tenantID, agentID strin
 	return result, nil
 }
 
+func (m *mockMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+
 func (m *mockMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
 	if m.err != nil {
 		return 0, m.err

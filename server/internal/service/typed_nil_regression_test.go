@@ -122,3 +122,5 @@ func (r *heartbeatRecordingRepo) UpdateHeartbeat(_ context.Context, _, _ string)
 	r.calls++
 	return nil
 }
+
+func (r *stubMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) { return nil, nil }

@@ -222,6 +222,10 @@ func (m *mockDispatchMailboxRepo) ListByAgent(_ context.Context, tenantID, agent
 	return nil, nil
 }
 
+func (m *mockDispatchMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+
 func (m *mockDispatchMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
 	return 0, nil
 }

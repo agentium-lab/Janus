@@ -167,9 +167,61 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 			s.pending[reconcileKey(tenantID, mailboxID)] = spec
 			s.pendMu.Unlock()
 			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed, will retry): %v", tenantID, mailboxID, err)
+		} else {
+			// A successful apply is the newest revision by definition: drop
+			// any older spec parked for this mailbox, or its retry would
+			// later overwrite what just landed (A-fails -> B-applies ->
+			// A-retries must not resurrect A).
+			s.pendMu.Lock()
+			delete(s.pending, reconcileKey(tenantID, mailboxID))
+			s.pendMu.Unlock()
 		}
 	}
 	return nil
+}
+
+// ReconcileAllConsumers re-applies every mailbox's durable PG config to
+// the broker. Called at startup: the in-memory pending map does not
+// survive restarts, so PG (the source of truth) is replayed wholesale.
+func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
+	rc, ok := s.queueDriver.(consumerReconciler)
+	if !ok {
+		return
+	}
+	mailboxes, err := s.mailboxRepo.ListAll(ctx)
+	if err != nil {
+		log.Printf("mailbox reconcile-all: list: %v", err)
+		return
+	}
+	for _, mb := range mailboxes {
+		spec := consumerSpecFor(*mb)
+		if err := rc.ReconcileConsumer(ctx, spec); err != nil {
+			s.pendMu.Lock()
+			s.pending[reconcileKey(mb.TenantID, mb.ID)] = spec
+			s.pendMu.Unlock()
+		}
+	}
+	s.pendMu.Lock()
+	n := len(s.pending)
+	s.pendMu.Unlock()
+	if n > 0 {
+		log.Printf("mailbox reconcile-all: %d consumer config(s) parked for retry", n)
+	}
+}
+
+func consumerSpecFor(mb core.Mailbox) core.ConsumerSpec {
+	ackPending := mb.MaxConcurrency * 2
+	if ackPending <= 0 {
+		ackPending = 100
+	}
+	return core.ConsumerSpec{
+		TenantID:       mb.TenantID,
+		MailboxID:      mb.ID,
+		DurableName:    mb.ID,
+		ACKWaitSeconds: mb.ACKWaitSeconds,
+		MaxDeliver:     mb.MaxDeliver,
+		MaxACKPending:  ackPending,
+	}
 }
 
 // StartReconcileRetryLoop drains pending consumer reconciles until the

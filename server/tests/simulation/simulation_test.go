@@ -331,6 +331,10 @@ func (r *simMailboxRepo) ListByAgent(_ context.Context, tenantID, agentID string
 	return nil, nil
 }
 
+func (r *simMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+
 func (r *simMailboxRepo) Backlog(_ context.Context, tenantID, mailboxID string) (int, error) {
 	return 0, nil
 }
