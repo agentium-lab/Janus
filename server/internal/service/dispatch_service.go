@@ -99,6 +99,29 @@ func (s *DispatchService) WithTxPath(lc Lifecycle, outbox OutboxDedupeWriter, le
 	return s
 }
 
+// activeTaskCounts returns tenant- and agent-scoped in-flight counts
+// (claimed + running). The tenant side sums both statuses (CountByStatus
+// is single-status); the agent side already covers both via
+// CountRunningByAgent's attempt query. Counting only 'running' on the
+// tenant side missed the pull-to-claimed window: N agents could all claim
+// under a cap and then StartTask past it. Count errors propagate — they
+// used to read as zero (unlimited).
+func (s *DispatchService) activeTaskCounts(ctx context.Context, tenantID, agentID string) (tenant, agent int, err error) {
+	tClaimed, err := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusClaimed)
+	if err != nil {
+		return 0, 0, fmt.Errorf("tenant claimed count: %w", err)
+	}
+	tRunning, err := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
+	if err != nil {
+		return 0, 0, fmt.Errorf("tenant running count: %w", err)
+	}
+	aActive, err := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("agent active count: %w", err)
+	}
+	return tClaimed + tRunning, aActive, nil
+}
+
 // errAgentAtCapacity marks the in-transaction capacity recheck inside the
 // claim transaction; the delivery is requeued rather than lost.
 var errAgentAtCapacity = errors.New("agent at capacity")
@@ -140,9 +163,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		}
 	}
 
-	tenantRunning, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
-	agentRunning, _ := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
-	if err := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, agentRunning, tenantRunning); err != nil {
+	tenantActive, agentActive, cerr := s.activeTaskCounts(ctx, tenantID, agentID)
+	if cerr != nil {
+		return nil, cerr
+	}
+	if err := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, agentActive, tenantActive); err != nil {
 		return nil, err
 	}
 
@@ -275,9 +300,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	// agent with a capacity re-check under the lock (closes the race between
 	// the pre-fetch count check and attempt creation).
 	err = s.lifecycle.ApplyTxLocked(ctx, tenantID+":"+agentID, func(tx pgx.Tx) error {
-		tRunning, _ := s.taskRepo.CountByStatus(ctx, tenantID, core.TaskStatusRunning)
-		aRunning, _ := s.taskRepo.CountRunningByAgent(ctx, tenantID, agentID)
-		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aRunning, tRunning); cerr != nil {
+		tActive, aActive, cerr2 := s.activeTaskCounts(ctx, tenantID, agentID)
+		if cerr := cerr2; cerr != nil {
+			return fmt.Errorf("concurrency recheck: %w", cerr)
+		}
+		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aActive, tActive); cerr != nil {
 			return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
 		}
 		if cerr := s.attemptTx.CreateTx(ctx, tx, attempt); cerr != nil {

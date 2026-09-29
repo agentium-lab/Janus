@@ -184,12 +184,15 @@ func TestBudgetService_GetLimits_NoAgentID(t *testing.T) {
 }
 
 func TestBudgetService_CheckConcurrency_RepoError(t *testing.T) {
+	// Budget lookups propagate: reading a DB failure as 'no budget'
+	// silently disabled the concurrency cap.
 	repo := &mockBudgetRepo{err: fmt.Errorf("db down")}
 	svc := NewBudgetService(repo)
 	ctx := context.Background()
 
 	err := svc.CheckConcurrency(ctx, "acme", "agent-1", 0, 0)
-	assert.NoError(t, err)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "budget lookup")
 }
 
 type mockRateLimiter struct {

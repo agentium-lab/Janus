@@ -146,11 +146,12 @@ func main() {
 	if redisDrv != nil {
 		agentHb = redisDrv
 		budgetRL = redisDrv
-	} else if cfg.Budget.RateLimitFailureMode == service.ThrottleFailClosed {
-		// A nil limiter would SKIP every RPM/TPM check — silently turning
-		// the configured fail-closed policy into fail-open. Keep reporting
-		// the limiter as unavailable (policy applies, requests reject)
-		// until the background reconnect promotes a live driver.
+	} else {
+		// A nil limiter would SKIP every RPM/TPM check forever (even in
+		// fail-open mode, redis never re-attaches after a startup
+		// failure). Inject the reconnecting limiter in BOTH modes: it
+		// reports unavailable (fail-closed rejects, fail-open degrades)
+		// and promotes a live driver once Redis is reachable.
 		budgetRL = service.NewReconnectingLimiter(redisdriver.Config{
 			Addr:      cfg.Redis.Addr,
 			Password:  cfg.Redis.Password,

@@ -1,6 +1,8 @@
 package postgres
 
 import (
+	"errors"
+
 	"context"
 	"fmt"
 	"time"
@@ -68,7 +70,14 @@ func (r *BudgetUsageRepo) GetDailyUsage(ctx context.Context, tenantID, scopeType
 		tenantID, scopeType, scopeID, periodKey,
 	).Scan(&tokens, &costUSD, &taskCount)
 	if err != nil {
-		return 0, 0, 0, nil
+		if errors.Is(err, pgx.ErrNoRows) {
+			// No usage row yet == genuinely zero usage.
+			return 0, 0, 0, nil
+		}
+		// Infrastructure failures must NOT masquerade as zero usage: the
+		// daily budget gate read 0 and let everything through during DB
+		// degradations.
+		return 0, 0, 0, err
 	}
 	return
 }

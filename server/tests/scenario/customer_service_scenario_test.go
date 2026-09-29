@@ -1,6 +1,8 @@
 package scenario
 
 import (
+	"github.com/jackc/pgx/v5"
+
 	"bufio"
 	"bytes"
 	"context"
@@ -50,7 +52,7 @@ func (r *memTaskRepo) Get(_ context.Context, tenantID, taskID string) (*core.Tas
 }
 
 func (r *memTaskRepo) GetByIdempotencyKey(_ context.Context, _, _ string) (*core.Task, error) {
-	return nil, fmt.Errorf("not found")
+	return nil, pgx.ErrNoRows
 }
 
 func (r *memTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID string, status core.TaskStatus, attempt int) error {
@@ -353,7 +355,7 @@ type memBudgetRepo struct{}
 
 func (r *memBudgetRepo) Upsert(_ context.Context, _ core.BudgetSpec) error { return nil }
 func (r *memBudgetRepo) Get(_ context.Context, _ string, _ core.BudgetScopeType, _ string) (*core.BudgetSpec, error) {
-	return nil, fmt.Errorf("not found")
+	return nil, pgx.ErrNoRows
 }
 func (r *memBudgetRepo) ListByTenant(_ context.Context, _ string) ([]*core.BudgetSpec, error) {
 	return nil, nil

@@ -734,3 +734,22 @@ func (r *listAllMailboxRepo) UpdateStatus(context.Context, string, string, core.
 func (r *listAllMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) error {
 	return nil
 }
+
+// The startup replay must carry the mailbox's REAL config, not zero
+// values: a partial ListAll read used to reset every custom
+// ack_wait/max_deliver to the defaults on each boot.
+func TestMailboxService_ReconcileAllUsesFullConfig(t *testing.T) {
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	repo := &listAllMailboxRepo{mailboxes: []*core.Mailbox{
+		{TenantID: "acme", ID: "mb-custom", AgentID: "a1",
+			ACKWaitSeconds: 45, MaxDeliver: 7, MaxConcurrency: 3},
+	}}
+	svc := NewMailboxService(repo, drv)
+	svc.ReconcileAllConsumers(context.Background())
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	require.Len(t, drv.specs, 1)
+	assert.Equal(t, 45, drv.specs[0].ACKWaitSeconds, "custom ack_wait must survive the replay")
+	assert.Equal(t, 7, drv.specs[0].MaxDeliver)
+	assert.Equal(t, 6, drv.specs[0].MaxACKPending)
+}

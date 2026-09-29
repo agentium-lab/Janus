@@ -58,7 +58,14 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 }
 
 func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error) {
-	rows, err := r.pool.Query(ctx, `SELECT tenant_id, id, agent_id, status FROM mailboxes ORDER BY tenant_id, id`)
+	// Must read the FULL config: the startup reconcile replays these rows
+	// onto the NATS consumers, and a partial read replays zero values —
+	// resetting every custom ack_wait/max_deliver/max_concurrency to the
+	// defaults on each boot.
+	rows, err := r.pool.Query(ctx,
+		`SELECT tenant_id, id, agent_id, status, max_concurrency,
+		        ack_wait_seconds, max_deliver, retry_policy
+		 FROM mailboxes ORDER BY tenant_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -66,9 +73,14 @@ func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error
 	var out []*core.Mailbox
 	for rows.Next() {
 		var m core.Mailbox
-		if err := rows.Scan(&m.TenantID, &m.ID, &m.AgentID, &m.Status); err != nil {
+		var status string
+		var retryJSON []byte
+		if err := rows.Scan(&m.TenantID, &m.ID, &m.AgentID, &status, &m.MaxConcurrency,
+			&m.ACKWaitSeconds, &m.MaxDeliver, &retryJSON); err != nil {
 			return nil, err
 		}
+		m.Status = core.MailboxStatus(status)
+		_ = json.Unmarshal(retryJSON, &m.RetryPolicy)
 		out = append(out, &m)
 	}
 	return out, rows.Err()

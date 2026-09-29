@@ -85,8 +85,12 @@ func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID 
 		return fmt.Errorf("tenant id is required")
 	}
 
-	// Agent-scoped limit first (more specific).
+	// Agent-scoped limit first (more specific). Lookup failures propagate:
+	// reading them as 'no budget' silently disabled the cap.
 	agentBudget, err := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("agent budget lookup: %w", err)
+	}
 	if err == nil && agentBudget.MaxConcurrency > 0 {
 		if agentRunning >= agentBudget.MaxConcurrency {
 			return &core.BackpressureError{
@@ -96,8 +100,11 @@ func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID 
 		}
 	}
 
-	// Tenant-scoped limit.
+	// Tenant-scoped limit. Same error policy as above.
 	tenantBudget, err := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("tenant budget lookup: %w", err)
+	}
 	if err == nil && tenantBudget.MaxConcurrency > 0 {
 		if tenantRunning >= tenantBudget.MaxConcurrency {
 			return &core.BackpressureError{

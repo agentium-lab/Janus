@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/jackc/pgx/v5"
+
 	"context"
 	"testing"
 
@@ -98,7 +100,7 @@ type stubBudgetRepo struct{}
 
 func (r *stubBudgetRepo) Upsert(_ context.Context, _ core.BudgetSpec) error { return nil }
 func (r *stubBudgetRepo) Get(_ context.Context, _ string, _ core.BudgetScopeType, _ string) (*core.BudgetSpec, error) {
-	return nil, context.DeadlineExceeded
+	return nil, pgx.ErrNoRows
 }
 func (r *stubBudgetRepo) ListByTenant(_ context.Context, _ string) ([]*core.BudgetSpec, error) {
 	return nil, nil

@@ -1,6 +1,8 @@
 package simulation
 
 import (
+	"github.com/jackc/pgx/v5"
+
 	"bytes"
 	"context"
 	"encoding/json"
@@ -147,7 +149,7 @@ func (r *simTaskRepo) GetByIdempotencyKey(_ context.Context, tenantID, key strin
 			return t, nil
 		}
 	}
-	return nil, fmt.Errorf("not found")
+	return nil, pgx.ErrNoRows
 }
 
 func (r *simTaskRepo) UpdateStatus(_ context.Context, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error {
@@ -423,7 +425,7 @@ type simBudgetRepo struct{}
 
 func (r *simBudgetRepo) Upsert(_ context.Context, spec core.BudgetSpec) error { return nil }
 func (r *simBudgetRepo) Get(_ context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error) {
-	return nil, fmt.Errorf("not found")
+	return nil, pgx.ErrNoRows
 }
 func (r *simBudgetRepo) ListByTenant(_ context.Context, tenantID string) ([]*core.BudgetSpec, error) {
 	return nil, nil
