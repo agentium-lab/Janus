@@ -139,8 +139,18 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, fmt.Errorf("tenant id, mailbox id, and agent id are required")
 	}
 
+	// Ownership is a hard gate: a failed or missing mailbox lookup must
+	// REJECT, not fall through — with the check skipped, any agent could
+	// pull another agent's mail out of an existing consumer while the
+	// ownership store was degraded.
 	mb, mbErr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
-	if mbErr == nil && mb != nil && mb.AgentID != "" && mb.AgentID != agentID {
+	if mbErr != nil {
+		return nil, fmt.Errorf("mailbox ownership lookup: %w", mbErr)
+	}
+	if mb == nil {
+		return nil, fmt.Errorf("mailbox %s not found", mailboxID)
+	}
+	if mb.AgentID != "" && mb.AgentID != agentID {
 		return nil, fmt.Errorf("agent %s is not the owner of mailbox %s", agentID, mailboxID)
 	}
 
@@ -299,7 +309,11 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	// Attempt create + task claim + claimed event in one tx, serialized per
 	// agent with a capacity re-check under the lock (closes the race between
 	// the pre-fetch count check and attempt creation).
-	err = s.lifecycle.ApplyTxLocked(ctx, tenantID+":"+agentID, func(tx pgx.Tx) error {
+	// Tenant-scoped serialization: locking tenant:agent let two agents
+	// read the same in-flight count and each claim past the TENANT cap.
+	// Serializing per tenant keeps the capacity recheck correct at a
+	// modest throughput cost (the claim transaction is milliseconds).
+	err = s.lifecycle.ApplyTxLocked(ctx, tenantID+":concurrency", func(tx pgx.Tx) error {
 		tActive, aActive, cerr2 := s.activeTaskCounts(ctx, tenantID, agentID)
 		if cerr := cerr2; cerr != nil {
 			return fmt.Errorf("concurrency recheck: %w", cerr)

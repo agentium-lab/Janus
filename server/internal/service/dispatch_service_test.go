@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/jackc/pgx/v5"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -214,7 +216,7 @@ func (m *mockDispatchMailboxRepo) Get(_ context.Context, tenantID, mailboxID str
 	key := tenantID + ":" + mailboxID
 	mb, ok := m.mailboxes[key]
 	if !ok {
-		return nil, fmt.Errorf("not found")
+		return nil, pgx.ErrNoRows
 	}
 	return mb, nil
 }
@@ -242,7 +244,11 @@ func newTestDispatchSvc() (*DispatchService, *mockDispatchQueueDriver, *mockDisp
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}
 	aRepo := &mockDispatchAttemptRepo{}
-	mRepo := &mockDispatchMailboxRepo{mailboxes: make(map[string]*core.Mailbox)}
+	// mb-1 exists and is unowned: the ownership gate rejects missing
+	// mailboxes outright now.
+	mRepo := &mockDispatchMailboxRepo{mailboxes: map[string]*core.Mailbox{
+		"acme:mb-1": {TenantID: "acme", ID: "mb-1"},
+	}}
 	policySvc := NewPolicyService(&mockPolicyRuleRepo{})
 	budgetSvc := NewBudgetService(&mockBudgetRepo{})
 	svc := NewDispatchService(tRepo, aRepo, mRepo, qDrv, policySvc, budgetSvc)
@@ -632,7 +638,9 @@ func TestDispatchService_PullTask_BudgetDenied_DelayedNACK(t *testing.T) {
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}
 	aRepo := &mockDispatchAttemptRepo{}
-	mRepo := &mockDispatchMailboxRepo{mailboxes: make(map[string]*core.Mailbox)}
+	mRepo := &mockDispatchMailboxRepo{mailboxes: map[string]*core.Mailbox{
+		"acme:mb-1": {TenantID: "acme", ID: "mb-1"},
+	}}
 	policySvc := NewPolicyService(&mockPolicyRuleRepo{})
 	budgetRepo := &mockBudgetRepo{
 		budgets: map[string]*core.BudgetSpec{

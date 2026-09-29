@@ -208,14 +208,18 @@ func (m *cbTaskRepo) ResetForReplay(_ context.Context, _, _ string) error { retu
 
 type cbMailboxRepo struct {
 	mailboxes map[string]*core.Mailbox
+	getErr    error
 }
 
 func (m *cbMailboxRepo) Create(_ context.Context, _ core.Mailbox) error { return nil }
 
 func (m *cbMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	if m.getErr != nil {
+		return nil, m.getErr
+	}
 	mb, ok := m.mailboxes[cbKey(tenantID, mailboxID)]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, pgx.ErrNoRows
 	}
 	return mb, nil
 }
@@ -435,7 +439,11 @@ func newCovDispatchSvc() (*DispatchService, *cbQueueDriver, *cbTaskRepo, *mockDi
 	qDrv := &cbQueueDriver{}
 	tRepo := &cbTaskRepo{tasks: map[string]*core.Task{}}
 	aRepo := &mockDispatchAttemptRepo{}
-	mRepo := &cbMailboxRepo{mailboxes: map[string]*core.Mailbox{}}
+	// mb-1 exists and is unowned (any agent may pull); the ownership gate
+	// rejects missing mailboxes outright now.
+	mRepo := &cbMailboxRepo{mailboxes: map[string]*core.Mailbox{
+		"acme:mb-1": {TenantID: "acme", ID: "mb-1"},
+	}}
 	svc := NewDispatchService(tRepo, aRepo, mRepo, qDrv, NewPolicyService(&mockPolicyRuleRepo{}), NewBudgetService(&mockBudgetRepo{}))
 	return svc, qDrv, tRepo, aRepo, mRepo
 }

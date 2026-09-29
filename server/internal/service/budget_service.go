@@ -193,7 +193,10 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 		return nil
 	}
 
-	tenantBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+	tenantBudget, tbErr := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
+	if tbErr != nil && !errors.Is(tbErr, pgx.ErrNoRows) {
+		return fmt.Errorf("tenant budget lookup: %w", tbErr)
+	}
 	if tenantBudget != nil && tenantBudget.DailyCostUSD > 0 {
 		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeTenant), tenantID)
 		if err != nil {
@@ -207,7 +210,10 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 		}
 	}
 
-	agentBudget, _ := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+	agentBudget, abErr := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
+	if abErr != nil && !errors.Is(abErr, pgx.ErrNoRows) {
+		return fmt.Errorf("agent budget lookup: %w", abErr)
+	}
 	if agentBudget != nil && agentBudget.DailyCostUSD > 0 {
 		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeAgent), agentID)
 		if err != nil {

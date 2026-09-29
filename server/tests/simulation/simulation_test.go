@@ -324,7 +324,7 @@ func (r *simMailboxRepo) Create(_ context.Context, mb core.Mailbox) error {
 func (r *simMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
 	mb, ok := r.mailboxes[tenantID+":"+mailboxID]
 	if !ok {
-		return nil, fmt.Errorf("not found")
+		return nil, pgx.ErrNoRows
 	}
 	return mb, nil
 }
@@ -563,6 +563,11 @@ func TestAgentToAgentPipeline(t *testing.T) {
 	var codeFixCount atomic.Int64
 
 	makeAgent := func(id, mailboxID string, onComplete func(ctx context.Context, a *simAgent, orig core.Task)) *simAgent {
+		// Mailbox ownership is a hard gate now — every simulated agent
+		// registers its mailbox explicitly (agent-owned).
+		_ = mailboxRepo.Create(ctx, core.Mailbox{
+			TenantID: tenantID, ID: mailboxID, AgentID: id,
+		})
 		return &simAgent{
 			id:          id,
 			mailboxID:   mailboxID,
@@ -789,6 +794,7 @@ func TestAgentToAgentWithApprovalGate(t *testing.T) {
 	tenantID := "acme"
 	ctx := context.Background()
 
+	_ = mailboxRepo.Create(ctx, core.Mailbox{TenantID: tenantID, ID: "code-mb", AgentID: "code-agent"})
 	codeAgent := &simAgent{
 		id: "code-agent", mailboxID: "code-mb",
 		dispatcher: dispatchSvc, taskSvc: taskSvc, taskRepo: taskRepo, attemptRepo: attemptRepo, tenantID: tenantID,
@@ -816,6 +822,7 @@ func TestAgentToAgentWithApprovalGate(t *testing.T) {
 	})
 
 	t.Run("step2_review_agent_pulls_and_blocks", func(t *testing.T) {
+		_ = mailboxRepo.Create(ctx, core.Mailbox{TenantID: tenantID, ID: "review-mb", AgentID: "review-agent"})
 		reviewAgent := &simAgent{
 			id: "review-agent", mailboxID: "review-mb",
 			dispatcher: dispatchSvc, taskSvc: taskSvc, taskRepo: taskRepo, attemptRepo: attemptRepo, tenantID: tenantID,

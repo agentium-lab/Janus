@@ -165,6 +165,11 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
 		s.applyMu.Lock()
 		err := rc.ReconcileConsumer(ctx, spec)
+		if err == nil {
+			s.pendMu.Lock()
+			delete(s.pending, reconcileKey(tenantID, mailboxID))
+			s.pendMu.Unlock()
+		}
 		s.applyMu.Unlock()
 		if err != nil {
 			// The durable PG config is committed; park the spec (keyed so a
@@ -175,14 +180,6 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 			s.pending[reconcileKey(tenantID, mailboxID)] = spec
 			s.pendMu.Unlock()
 			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed, will retry): %v", tenantID, mailboxID, err)
-		} else {
-			// A successful apply is the newest revision by definition: drop
-			// any older spec parked for this mailbox, or its retry would
-			// later overwrite what just landed (A-fails -> B-applies ->
-			// A-retries must not resurrect A).
-			s.pendMu.Lock()
-			delete(s.pending, reconcileKey(tenantID, mailboxID))
-			s.pendMu.Unlock()
 		}
 	}
 	return nil
@@ -258,41 +255,46 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 	if !ok {
 		return
 	}
-	// Retry against the LIVE map under one lock: a config change landing
-	// mid-retry is visible immediately and a newer revision replaces the
-	// entry even while its older retry is in flight.
-	s.pendMu.Lock()
-	keys := make([]string, 0, len(s.pending))
-	for k := range s.pending {
-		keys = append(keys, k)
-	}
-	s.pendMu.Unlock()
-
-	for _, k := range keys {
-		s.pendMu.Lock()
-		spec, still := s.pending[k]
-		s.pendMu.Unlock()
-		if !still {
-			continue // superseded or drained
-		}
+	// The read-apply-clear sequence runs entirely under applyMu: reading
+	// the spec outside the lock let a concurrent UpdateConfig apply a
+	// NEWER revision and clear the entry while this retry held the older
+	// spec — the stale apply then landed last on the broker.
+	for {
 		s.applyMu.Lock()
-		err := rc.ReconcileConsumer(ctx, spec)
-		s.applyMu.Unlock()
-		if err == nil {
-			s.pendMu.Lock()
-			// Only delete if not replaced by an even newer revision.
-			if cur, ok := s.pending[k]; ok && cur == spec {
-				delete(s.pending, k)
-			}
+		s.pendMu.Lock()
+		var key string
+		var spec core.ConsumerSpec
+		for k, v := range s.pending {
+			key, spec = k, v
+			break
+		}
+		if key == "" {
+			n := len(s.pending)
 			s.pendMu.Unlock()
+			s.applyMu.Unlock()
+			if n > 0 {
+				log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
+			}
+			metrics.MailboxReconcilePending.Set(float64(n))
+			return
+		}
+		err := rc.ReconcileConsumer(ctx, spec)
+		if err == nil {
+			// Delete only if not replaced by an even newer revision.
+			if cur, ok := s.pending[key]; ok && cur == spec {
+				delete(s.pending, key)
+			}
+		}
+		n := len(s.pending)
+		s.pendMu.Unlock()
+		s.applyMu.Unlock()
+		if err != nil {
+			s.pendMu.Lock()
+			n = len(s.pending)
+			s.pendMu.Unlock()
+			log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
+			metrics.MailboxReconcilePending.Set(float64(n))
+			return
 		}
 	}
-
-	s.pendMu.Lock()
-	n := len(s.pending)
-	s.pendMu.Unlock()
-	if n > 0 {
-		log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
-	}
-	metrics.MailboxReconcilePending.Set(float64(n))
 }

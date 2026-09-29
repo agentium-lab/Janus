@@ -260,7 +260,9 @@ func TestExtra_PullTask_BudgetReserveError(t *testing.T) {
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}
 	aRepo := &mockDispatchAttemptRepo{}
-	mRepo := &mockDispatchMailboxRepo{mailboxes: make(map[string]*core.Mailbox)}
+	mRepo := &mockDispatchMailboxRepo{mailboxes: map[string]*core.Mailbox{
+		"acme:mb-1": {TenantID: "acme", ID: "mb-1"},
+	}}
 	policySvc := NewPolicyService(&mockPolicyRuleRepo{})
 	budgetSvc := NewBudgetServiceWithUsage(&mockBudgetRepo{}, &mockBudgetUsageRepo{reserveErr: fmt.Errorf("reserve fail")})
 	svc := NewDispatchService(tRepo, aRepo, mRepo, qDrv, policySvc, budgetSvc)
@@ -390,4 +392,37 @@ func TestExtra_NackTaskDirect_UpdateStatusError(t *testing.T) {
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", false, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "dead letter")
+}
+
+// A failed ownership lookup must REJECT the pull: with the check skipped,
+// any agent could drain another agent's mailbox while the store was
+// degraded.
+func TestPullTask_MailboxLookupError_Rejects(t *testing.T) {
+	svc, _, _, _, mRepo := newCovDispatchSvc()
+	svc = svc.WithTxPath(NewMemoryLifecycle(), nil, nil)
+	mRepo.getErr = errors.New("db down")
+
+	_, err := svc.PullTask(context.Background(), "acme", "mb-1", "agent-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ownership lookup")
+}
+
+type errMailboxRepo struct{ err error }
+
+func (r *errMailboxRepo) Create(context.Context, core.Mailbox) error { return nil }
+func (r *errMailboxRepo) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
+	return nil, r.err
+}
+func (r *errMailboxRepo) ListByAgent(context.Context, string, string) ([]*core.Mailbox, error) {
+	return nil, nil
+}
+func (r *errMailboxRepo) ListAll(context.Context) ([]*core.Mailbox, error) { return nil, nil }
+func (r *errMailboxRepo) Backlog(context.Context, string, string) (int, error) {
+	return 0, nil
+}
+func (r *errMailboxRepo) UpdateStatus(context.Context, string, string, core.MailboxStatus) error {
+	return nil
+}
+func (r *errMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) error {
+	return nil
 }
