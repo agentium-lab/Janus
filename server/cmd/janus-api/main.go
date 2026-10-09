@@ -139,9 +139,7 @@ func main() {
 	// retrying in the background; without this their mailboxes stayed
 	// permanently unusable on this instance.
 	var bootstrapDone <-chan struct{}
-	var bootstrapFailingSince time.Time
 	if len(bootResult.FailedTenants) > 0 {
-		bootstrapFailingSince = time.Now()
 		bootstrapDone = bootstrap.RetryLoop(context.Background(), bootstrap.Options{
 			TenantLister: tenantRepo,
 			QueueEnsurer: queueDrv,
@@ -327,11 +325,9 @@ func main() {
 		hbTTL = 60 * time.Second
 	}
 
-	var hbScan heartbeat.HeartbeatScanner
-	if redisDrv != nil {
-		hbScan = redisDrv
-	}
-	hbSweeper := heartbeat.NewSweeper(hbScan, agentRepo, scannerInterval).
+	// The sweeper reads PG only (liveness source of truth); the redis
+	// presence scanner parameter is retained for signature compatibility.
+	hbSweeper := heartbeat.NewSweeper(nil, agentRepo, scannerInterval).
 		WithStaleThreshold(hbTTL + 30*time.Second)
 	go hbSweeper.Start(context.Background())
 	defer hbSweeper.Stop()
@@ -409,14 +405,13 @@ func main() {
 		case <-bootstrapDone:
 			return nil
 		default:
-			// Grace window: transient broker restarts degrade (pods keep
-			// serving healthy tenants). Beyond the grace period the probe
-			// FAILS — per-tenant traffic isolation is not possible at the
-			// probe level, so persistent bootstrap failure must pull the
-			// instance out of rotation instead of accepting doomed traffic.
-			if time.Since(bootstrapFailingSince) > 5*time.Minute {
-				return fmt.Errorf("tenant bootstrap failed for over 5m (%d tenant(s) pending)", len(bootResult.FailedTenants))
-			}
+			// Tenant-level bootstrap failures stay DEGRADED forever — never
+			// fail the probe. Every replica bootstraps the same PG tenant
+			// list, so escalating (as this once did after 5 minutes) turned
+			// ANY shared failure or single bad tenant into a fleet-wide 503:
+			// HPA removed every pod at once. Broker-wide outages are already
+			// caught by the dedicated nats/postgres checks; doomed per-tenant
+			// traffic fails fast at the pull path with a clear error.
 			return observability.Degraded(fmt.Errorf("tenant bootstrap retry in progress (%d tenant(s) pending)", len(bootResult.FailedTenants)))
 		}
 	})

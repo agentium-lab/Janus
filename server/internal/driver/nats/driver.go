@@ -530,7 +530,21 @@ func (d *Driver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) 
 	}
 	maxDeliver := runawayBackstopDeliver(spec.MaxDeliver)
 
-	cons, err := d.js.CreateOrUpdateConsumer(ctx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
+	// The periodic reconcile calls this for EVERY mailbox; skipping the
+	// broker write when the durable config already matches turns the pass
+	// into read-only verification instead of N unconditional consumer
+	// updates serialized on the driver mutex (write amplification).
+	if cons, ok := ts.consumers[cname]; ok {
+		if info, err := cons.Info(ctx); err == nil && consumerConfigMatches(info.Config, cname, spec.TenantID, spec.MailboxID, ackWait, maxDeliver, maxAckPending) {
+			return nil
+		}
+	}
+
+	// Bound the broker write: a hung call would otherwise hold this
+	// goroutine (and any advisory lock the caller took) indefinitely.
+	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cons, err := d.js.CreateOrUpdateConsumer(writeCtx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
 		Durable:        cname,
 		FilterSubjects: []string{taskSubject(spec.TenantID, spec.MailboxID)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
@@ -544,6 +558,15 @@ func (d *Driver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) 
 	}
 	ts.consumers[cname] = cons
 	return nil
+}
+
+func consumerConfigMatches(cfg jetstream.ConsumerConfig, cname, tenantID, mailboxID string, ackWait time.Duration, maxDeliver, maxAckPending int) bool {
+	return cfg.Durable == cname &&
+		cfg.AckWait == ackWait &&
+		cfg.MaxDeliver == maxDeliver &&
+		cfg.MaxAckPending == maxAckPending &&
+		len(cfg.FilterSubjects) == 1 &&
+		cfg.FilterSubjects[0] == taskSubject(tenantID, mailboxID)
 }
 
 func (d *Driver) Close() error {

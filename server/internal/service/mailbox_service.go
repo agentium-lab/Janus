@@ -22,10 +22,9 @@ type MailboxService struct {
 
 	pendMu  sync.Mutex
 	pending map[string]parkedSpec
-	// applyMu serializes every broker consumer write (config change AND
-	// retry): a retry holding a stale spec and a concurrent UpdateConfig
-	// used to race, letting the STALE spec land last and overwrite the
-	// newer revision on the broker.
+	// applyMu is the IN-PROCESS fallback for repos without cross-replica
+	// advisory locks (unit tests). In production the per-mailbox PG
+	// advisory lock is the serializer; this mutex never runs there.
 	applyMu sync.Mutex
 }
 

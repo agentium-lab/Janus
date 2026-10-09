@@ -78,7 +78,7 @@ jobs:
           until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
           until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
 
-      - name: Migrate + start Janus API
+      - name: Migrate + start Janus API (two replicas)
         run: |
           go build -o /tmp/janus-api ./server/cmd/janus-api
           JANUS_QUEUE_DRIVER=nats \
@@ -91,6 +91,19 @@ jobs:
             JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8080 \
             /tmp/janus-api > /tmp/janus-api.log 2>&1 &
           echo $! > /tmp/janus-api.pid
+          # Replica B: same PG/NATS, second port. Exercises the cross-replica
+          # advisory locks and config-version convergence paths that a single
+          # instance never touches.
+          JANUS_QUEUE_DRIVER=nats \
+            JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
+            JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
+            JANUS_NATS_URL=nats://localhost:4222 \
+            JANUS_REDIS_ADDR=127.0.0.1:6379 \
+            JANUS_MIGRATION_AUTO=false \
+            JANUS_AUTH_ENABLED=false \
+            JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8081 \
+            /tmp/janus-api > /tmp/janus-api-b.log 2>&1 &
+          echo $! > /tmp/janus-api-b.pid
           for i in $(seq 1 60); do
             curl -sf "$JANUS_URL/readyz" >/dev/null 2>&1 && break
             sleep 1
@@ -102,6 +115,12 @@ jobs:
 
       - name: Seven-agent scenario (lifecycle + fanout + idempotency)
         run: JANUS_URL=$JANUS_URL bash scripts/smoke_7_agents.sh
+
+      - name: Two-replica convergence (advisory locks + config version)
+        run: |
+          JANUS_URL_A=http://localhost:8080 JANUS_URL_B=http://localhost:8081 \
+          JANUS_PG_HOST=localhost JANUS_PG_USER=janus PGPASSWORD=janus JANUS_PG_DBNAME=janus_test \
+          bash scripts/smoke_two_replica_convergence.sh
 
       - name: Ops chaos (dependency restarts + state persistence)
         env:
@@ -134,6 +153,7 @@ jobs:
           retention-days: 90
           path: |
             /tmp/janus-api.log
+            /tmp/janus-api-b.log
             /tmp/load-baseline.log
 
       - name: Dump dependency logs on failure
@@ -143,6 +163,8 @@ jobs:
           echo "::group::nats"; docker logs --tail 100 nats; echo "::endgroup::"
           echo "::group::redis"; docker logs --tail 100 redis; echo "::endgroup::"
 
-      - name: Stop Janus API
+      - name: Stop Janus API replicas
         if: always()
-        run: kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true
+        run: |
+          kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true
+          kill "$(cat /tmp/janus-api-b.pid)" 2>/dev/null || true

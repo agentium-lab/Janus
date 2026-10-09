@@ -302,8 +302,9 @@ func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release f
 	if err != nil {
 		return nil, false, err
 	}
+	lockKey := advisoryLockKey64(key)
 	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, key).Scan(&locked); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&locked); err != nil {
 		conn.Release()
 		return nil, false, err
 	}
@@ -312,7 +313,7 @@ func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release f
 		return nil, false, nil
 	}
 	return func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, key)
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
 		conn.Release()
 	}, true, nil
 }

@@ -67,8 +67,14 @@ func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, ma
 	if err != nil {
 		return nil, false, err
 	}
+	// FNV-1a over the logical key, cast to the 64-bit advisory-lock space.
+	// hashtext() was 32-bit (rare cross-mailbox false contention) and NOT
+	// stable across PG major versions — during a mixed-version rolling
+	// upgrade old and new replicas computed DIFFERENT lock keys for the
+	// same mailbox, silently reopening the lost-update window.
+	lockKey := advisoryLockKey64("mailbox:" + tenantID + ":" + mailboxID)
 	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, "mailbox:"+tenantID+":"+mailboxID).Scan(&locked); err != nil {
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&locked); err != nil {
 		conn.Release()
 		return nil, false, err
 	}
@@ -77,9 +83,25 @@ func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, ma
 		return nil, false, nil
 	}
 	return func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, "mailbox:"+tenantID+":"+mailboxID)
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
 		conn.Release()
 	}, true, nil
+}
+
+// advisoryLockKey64 maps a logical lock name to a stable 64-bit key for
+// pg_try_advisory_lock(bigint). FNV-1a is deterministic across PG versions.
+func advisoryLockKey64(name string) int64 {
+	const (
+		offset64 = 14695981039346656037
+		prime64  = 1099511628211
+	)
+	h := uint64(offset64)
+	for _, b := range []byte(name) {
+		h ^= uint64(b)
+		h *= prime64
+	}
+	// pg advisory bigint locks treat the value as signed; map to non-negative.
+	return int64(h & 0x7fffffffffffffff)
 }
 
 func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error) {
