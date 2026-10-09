@@ -272,11 +272,19 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	// re-created.
 	ts, ok := d.tenant[tenantID]
 	if !ok {
+		// Build on a LOCAL entry and publish it to the map only after all
+		// required streams are confirmed — publishing an empty/partial
+		// entry first made EnsureTenant report success via cache hit even
+		// when stream creation failed midway (readyz false-green).
 		ts = &tenantStreams{
 			dlqStreams: make(map[string]jetstream.Stream),
 			consumers:  make(map[string]jetstream.Consumer),
 		}
-		d.tenant[tenantID] = ts
+		defer func() {
+			if ts.taskStream != nil && ts.eventStream != nil && ts.retryStream != nil {
+				d.tenant[tenantID] = ts
+			}
+		}()
 	}
 	fix := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
 		if st, err := d.js.Stream(ctx, name); err == nil {
@@ -381,6 +389,41 @@ func (d *Driver) EnsureTenant(ctx context.Context, tenantID string) error {
 		dlqStreams:  make(map[string]jetstream.Stream),
 		consumers:   make(map[string]jetstream.Consumer),
 	}
+	return nil
+}
+
+// ReconcileMailboxDLQ verifies the mailbox's DLQ stream exists on the
+// broker and recreates it when lost; the dlqStreams cache makes
+// EnsureMailbox a no-op once seen, so a runtime stream loss would never
+// heal and dead-letter publishes would fail forever.
+func (d *Driver) ReconcileMailboxDLQ(ctx context.Context, tenantID, mailboxID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ts, ok := d.tenant[tenantID]
+	if !ok {
+		return nil // tenant reconcile owns initialization
+	}
+	name := streamName(tenantID, "DLQ_"+sanitize(mailboxID))
+	if _, err := d.js.Stream(ctx, name); err == nil {
+		if st, err := d.js.Stream(ctx, name); err == nil {
+			ts.dlqStreams[mailboxID] = st
+			return nil
+		}
+	}
+	st, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:      name,
+		Subjects:  []string{dlqSubject(tenantID, mailboxID)},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    30 * 24 * time.Hour,
+		MaxMsgs:   10000,
+		Storage:   jetstream.FileStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile DLQ stream for mailbox %s: %w", mailboxID, err)
+	}
+	ts.dlqStreams[mailboxID] = st
+	log.Printf("nats: recreated missing DLQ stream %s", name)
 	return nil
 }
 

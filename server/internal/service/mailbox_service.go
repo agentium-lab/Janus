@@ -167,9 +167,11 @@ func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxI
 }
 
 // tenantReconciler restores broker-level tenant resources (streams) that
-// were lost at runtime; implemented by the NATS driver.
+// were lost at runtime; implemented by the NATS driver. ReconcileMailboxDLQ
+// heals per-mailbox DLQ streams the same way.
 type tenantReconciler interface {
 	ReconcileTenant(ctx context.Context, tenantID string) error
+	ReconcileMailboxDLQ(ctx context.Context, tenantID, mailboxID string) error
 }
 
 // ReconcileAllTenants verifies/recreates every tenant's broker streams.
@@ -186,9 +188,15 @@ func (s *MailboxService) ReconcileAllTenants(ctx context.Context) {
 			tenants[mb.TenantID] = struct{}{}
 		}
 	}
-	for tenantID := range tenants {
-		if err := tr.ReconcileTenant(ctx, tenantID); err != nil {
-			log.Printf("tenant reconcile: %s: %v", tenantID, err)
+	if mbs, err := s.mailboxRepo.ListAll(ctx); err == nil {
+		for _, mb := range mbs {
+			if err := tr.ReconcileTenant(ctx, mb.TenantID); err != nil {
+				log.Printf("tenant reconcile: %s: %v", mb.TenantID, err)
+				continue
+			}
+			if err := tr.ReconcileMailboxDLQ(ctx, mb.TenantID, mb.ID); err != nil {
+				log.Printf("mailbox dlq reconcile: %s/%s: %v", mb.TenantID, mb.ID, err)
+			}
 		}
 	}
 }
