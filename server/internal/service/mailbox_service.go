@@ -136,14 +136,16 @@ type mailboxWriteLocker interface {
 	AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (release func(), ok bool, err error)
 }
 
-// withMailboxLock runs fn under the strongest available per-mailbox lock:
-// cross-replica advisory when the repo supports it, otherwise applyMu.
 // ErrMailboxLockBusy reports a broker write skipped because another
-// replica holds the per-mailbox cross-instance lock. The write MUST NOT
-// degrade to an unlocked write — that reintroduces exactly the interleave
-// the lock exists to prevent; callers park/defer instead.
+// replica holds the per-mailbox cross-instance lock; callers park/defer
+// instead of writing without mutual exclusion.
 var ErrMailboxLockBusy = errors.New("mailbox write lock held by another replica")
 
+// withMailboxLock runs fn under the strongest available per-mailbox lock:
+// cross-replica advisory when the repo supports it, otherwise applyMu. A
+// busy or failed lock returns without running fn — the write must not
+// degrade to an unlocked write (that reintroduces the stale-write
+// interleave the lock exists to prevent).
 func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxID string, fn func()) error {
 	if locker, ok := s.mailboxRepo.(mailboxWriteLocker); ok {
 		release, locked, err := locker.AcquireMailboxLock(ctx, tenantID, mailboxID)
