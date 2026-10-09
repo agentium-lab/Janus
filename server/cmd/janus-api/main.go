@@ -128,10 +128,23 @@ func main() {
 	}
 
 	tenantRepo := pgdriver.NewTenantRepository(pool)
-	bootstrap.Run(context.Background(), bootstrap.Options{
+	bootResult, berr := bootstrap.Run(context.Background(), bootstrap.Options{
 		TenantLister: tenantRepo,
 		QueueEnsurer: queueDrv,
 	})
+	if berr != nil {
+		log.Fatalf("bootstrap: %v", berr)
+	}
+	// Tenants that failed EnsureTenant (e.g. broker down at boot) keep
+	// retrying in the background; without this their mailboxes stayed
+	// permanently unusable on this instance.
+	var bootstrapDone <-chan struct{}
+	if len(bootResult.FailedTenants) > 0 {
+		bootstrapDone = bootstrap.RetryLoop(context.Background(), bootstrap.Options{
+			TenantLister: tenantRepo,
+			QueueEnsurer: queueDrv,
+		}, bootResult.FailedTenants, 15*time.Second)
+	}
 
 	agentRepo := pgdriver.NewAgentRepository(pool)
 	taskRepo := pgdriver.NewTaskRepository(pool)
@@ -386,6 +399,17 @@ func main() {
 	}))
 	readyChecker := observability.NewReadyChecker()
 	readyChecker.Add("postgres", func(ctx context.Context) error { return pool.Ping(ctx) })
+	readyChecker.Add("bootstrap", func(ctx context.Context) error {
+		if bootstrapDone == nil {
+			return nil // no failed tenants
+		}
+		select {
+		case <-bootstrapDone:
+			return nil
+		default:
+			return observability.Degraded(fmt.Errorf("tenant bootstrap retry in progress (%d tenant(s) pending)", len(bootResult.FailedTenants)))
+		}
+	})
 	if natsDrv != nil {
 		readyChecker.Add("nats", func(ctx context.Context) error {
 			done := make(chan error, 1)

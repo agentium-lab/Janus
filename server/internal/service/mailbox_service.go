@@ -174,9 +174,20 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 		// pending (the newer replica's write already happened or will park
 		// itself). Skip; the newer revision owns convergence.
 		current, gerr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
-		if gerr != nil || current == nil || current.ConfigVersion != version {
+		if gerr != nil {
+			// Version unreadable: park for the retry loop (which also skips
+			// while unreadable) instead of returning success with nothing
+			// queued — that left the broker permanently unconverged.
+			s.pendMu.Lock()
+			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
+			s.pendMu.Unlock()
 			s.applyMu.Unlock()
-			log.Printf("mailbox %s/%s: skipping consumer sync for v%d (superseded or unreadable)", tenantID, mailboxID, version)
+			log.Printf("mailbox %s/%s: consumer sync deferred for v%d (version unreadable, parked)", tenantID, mailboxID, version)
+			return nil
+		}
+		if current == nil || current.ConfigVersion != version {
+			s.applyMu.Unlock()
+			log.Printf("mailbox %s/%s: skipping consumer sync for v%d (superseded)", tenantID, mailboxID, version)
 			return nil
 		}
 		err := rc.ReconcileConsumer(ctx, spec)
@@ -215,6 +226,21 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 	for _, mb := range mailboxes {
 		spec := consumerSpecFor(*mb)
 		s.applyMu.Lock()
+		// Write-time version gate: the ListAll snapshot can be stale by the
+		// time we write; re-read the durable version and skip if a newer
+		// revision has landed (writing the snapshot would roll the broker
+		// back until the next successful replay).
+		current, gerr := s.mailboxRepo.Get(ctx, mb.TenantID, mb.ID)
+		if gerr != nil || current == nil || current.ConfigVersion != mb.ConfigVersion {
+			s.applyMu.Unlock()
+			if gerr == nil && current != nil && current.ConfigVersion > mb.ConfigVersion {
+				// Re-park with the CURRENT version so convergence continues.
+				s.pendMu.Lock()
+				s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)}
+				s.pendMu.Unlock()
+			}
+			continue
+		}
 		err := rc.ReconcileConsumer(ctx, spec)
 		s.applyMu.Unlock()
 		if err != nil {

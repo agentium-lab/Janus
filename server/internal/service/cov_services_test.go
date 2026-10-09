@@ -3,6 +3,7 @@ package service
 import (
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"context"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/bootstrap"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 )
 
@@ -719,8 +721,13 @@ func TestMailboxService_ReconcileAllConsumers_ParksFailures(t *testing.T) {
 type listAllMailboxRepo struct{ mailboxes []*core.Mailbox }
 
 func (r *listAllMailboxRepo) Create(context.Context, core.Mailbox) error { return nil }
-func (r *listAllMailboxRepo) Get(_ context.Context, _, _ string) (*core.Mailbox, error) {
-	return nil, errors.New("unused")
+func (r *listAllMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	for _, mb := range r.mailboxes {
+		if mb.TenantID == tenantID && mb.ID == mailboxID {
+			return mb, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
 }
 func (r *listAllMailboxRepo) ListByAgent(context.Context, string, string) ([]*core.Mailbox, error) {
 	return nil, nil
@@ -801,6 +808,16 @@ func (r *versionMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) 
 		return mb, nil
 	}
 	return nil, pgx.ErrNoRows
+}
+
+func (r *versionMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*core.Mailbox, 0, len(r.mailboxes))
+	for _, mb := range r.mailboxes {
+		out = append(out, mb)
+	}
+	return out, nil
 }
 
 func newVersionRepo() *versionMailboxRepo {
@@ -888,4 +905,89 @@ func TestMailboxService_RetrySkipsOnVersionLookupError(t *testing.T) {
 	svc.pendMu.Lock()
 	defer svc.pendMu.Unlock()
 	assert.Len(t, svc.pending, 1, "spec stays parked for the next tick")
+}
+
+// Startup-failure self-heal: bootstrap RetryLoop converges failed tenants.
+func TestBootstrap_RetryLoop_ConvergesFailedTenants(t *testing.T) {
+	fail := map[string]bool{"t1": true, "t2": true}
+	var mu sync.Mutex
+	var ensured []string
+	lister := &retryLister{ids: []string{"t1", "t2"}}
+	ensurer := &retryEnsurer{fail: fail, mu: &mu, ensured: &ensured}
+
+	done := bootstrap.RetryLoop(context.Background(), bootstrap.Options{
+		TenantLister: lister, QueueEnsurer: ensurer,
+	}, []string{"t1", "t2"}, 5*time.Millisecond)
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("retry loop did not converge")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	require.Contains(t, ensured, "t1")
+	require.Contains(t, ensured, "t2")
+}
+
+type retryLister struct{ ids []string }
+
+func (r *retryLister) ListIDs(context.Context) ([]string, error) { return r.ids, nil }
+
+type retryEnsurer struct {
+	fail    map[string]bool
+	mu      *sync.Mutex
+	ensured *[]string
+}
+
+func (r *retryEnsurer) EnsureTenant(_ context.Context, tenantID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	*r.ensured = append(*r.ensured, tenantID)
+	if r.fail[tenantID] {
+		r.fail[tenantID] = false // heal after the first failure
+		return errors.New("broker down")
+	}
+	return nil
+}
+
+// Replay write-time gate: a stale snapshot must not roll the broker back.
+func TestMailboxService_ReplaySkipsStaleSnapshot(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 1)
+	// Snapshot reads v1; PG moves to v5 before the write (override).
+	repo.mu.Lock()
+	repo.getOverride["acme/mb-1"] = &core.Mailbox{TenantID: "acme", ID: "mb-1",
+		ConfigVersion: 5, ACKWaitSeconds: 300, MaxConcurrency: 8}
+	repo.mu.Unlock()
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	svc.ReconcileAllConsumers(context.Background())
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	assert.Empty(t, drv.specs, "stale snapshot replay must be skipped")
+	svc.pendMu.Lock()
+	defer svc.pendMu.Unlock()
+	require.Len(t, svc.pending, 1, "the CURRENT revision is re-parked for convergence")
+	assert.Equal(t, 5, svc.pending["acme/mb-1"].version)
+	assert.Equal(t, 300, svc.pending["acme/mb-1"].spec.ACKWaitSeconds)
+}
+
+// UpdateConfig with unreadable version parks (no silent success).
+func TestMailboxService_UpdateConfig_UnreadableVersionParks(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 0)
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	repo.mu.Lock()
+	repo.getErr["acme/mb-1"] = errors.New("db down")
+	repo.mu.Unlock()
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 90, 5, 3600))
+
+	svc.pendMu.Lock()
+	defer svc.pendMu.Unlock()
+	assert.Len(t, svc.pending, 1, "unreadable version must park the spec, not return silent success")
 }

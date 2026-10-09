@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -42,6 +43,9 @@ type Result struct {
 	TenantsEnsured int
 	MailboxesSeen  int
 	Errors         []error
+	// FailedTenants carries the tenant IDs whose EnsureTenant errored;
+	// the retry loop converges them.
+	FailedTenants []string
 }
 
 func Run(ctx context.Context, opts Options) (*Result, error) {
@@ -62,6 +66,7 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	for _, tenantID := range tenantIDs {
 		if err := opts.QueueEnsurer.EnsureTenant(ctx, tenantID); err != nil {
 			result.Errors = append(result.Errors, fmt.Errorf("ensure tenant %s: %w", tenantID, err))
+			result.FailedTenants = append(result.FailedTenants, tenantID)
 			continue
 		}
 		result.TenantsEnsured++
@@ -106,4 +111,34 @@ func EnsureMailboxConsumer(ctx context.Context, ensurer MailboxEnsurer, mb *core
 	}
 
 	return nil
+}
+
+// RetryLoop re-runs bootstrap for the tenants that failed initially
+// (e.g. NATS was down at startup) until every tenant is ensured. Without
+// this, a transient broker outage at boot left those tenants' mailboxes
+// permanently unusable on this instance — EnsureTenant was never retried
+// and the periodic consumer replay cannot initialize a tenant.
+func RetryLoop(ctx context.Context, opts Options, failed []string, interval time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pending := failed
+		for len(pending) > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(interval):
+			}
+			var next []string
+			for _, tenantID := range pending {
+				if err := opts.QueueEnsurer.EnsureTenant(ctx, tenantID); err != nil {
+					log.Printf("bootstrap retry: ensure tenant %s: %v", tenantID, err)
+					next = append(next, tenantID)
+				}
+			}
+			pending = next
+		}
+		log.Printf("bootstrap retry: all previously-failed tenants ensured")
+	}()
+	return done
 }
