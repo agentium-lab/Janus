@@ -257,6 +257,57 @@ func (d *Driver) ReplayEvents(ctx context.Context, filter core.EventReplayFilter
 	}, nil
 }
 
+// ReconcileTenant verifies the tenant's streams actually exist on the
+// broker and recreates any that were lost (e.g. JetStream storage wiped).
+// The in-process tenant cache makes EnsureTenant a no-op once seen, so a
+// runtime stream loss would otherwise never heal on this instance.
+func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	ts := &tenantStreams{dlqStreams: make(map[string]jetstream.Stream), consumers: make(map[string]jetstream.Consumer)}
+	recreate := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+		if st, err := d.js.Stream(ctx, name); err == nil {
+			return st, nil // stream exists
+		}
+		st, err := d.js.CreateStream(ctx, cfg)
+		if err != nil {
+			return nil, err
+		}
+		log.Printf("nats: recreated missing stream %s for tenant %s", name, tenantID)
+		return st, nil
+	}
+
+	tasks, err := recreate(streamName(tenantID, "TASKS"), jetstream.StreamConfig{
+		Name:       streamName(tenantID, "TASKS"),
+		Subjects:   []string{fmt.Sprintf("janus.%s.tasks.>", tenantID)},
+		Retention:  jetstream.WorkQueuePolicy,
+		MaxAge:     7 * 24 * time.Hour,
+		Storage:    jetstream.FileStorage,
+		Duplicates: 2 * time.Minute,
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile task stream for tenant %s: %w", tenantID, err)
+	}
+	ts.taskStream = tasks
+
+	events, err := recreate(streamName(tenantID, "EVENTS"), jetstream.StreamConfig{
+		Name:      streamName(tenantID, "EVENTS"),
+		Subjects:  []string{fmt.Sprintf("janus.%s.events.>", tenantID)},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    30 * 24 * time.Hour,
+		MaxMsgs:   10000,
+		Storage:   jetstream.FileStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile event stream for tenant %s: %w", tenantID, err)
+	}
+	ts.eventStream = events
+
+	d.tenant[tenantID] = ts
+	return nil
+}
+
 func (d *Driver) EnsureTenant(ctx context.Context, tenantID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()

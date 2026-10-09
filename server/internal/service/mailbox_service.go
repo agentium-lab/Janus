@@ -128,6 +128,58 @@ func (s *MailboxService) Resume(ctx context.Context, tenantID, mailboxID string)
 	return s.mailboxRepo.UpdateStatus(ctx, tenantID, mailboxID, core.MailboxStatusActive)
 }
 
+// mailboxWriteLocker serializes per-mailbox config writes across replicas
+// (pg advisory lock). Repos without it degrade to the in-process mutex.
+type mailboxWriteLocker interface {
+	AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (release func(), ok bool, err error)
+}
+
+// withMailboxLock runs fn under the strongest available per-mailbox lock:
+// cross-replica advisory when the repo supports it, otherwise applyMu.
+func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxID string, fn func()) error {
+	if locker, ok := s.mailboxRepo.(mailboxWriteLocker); ok {
+		release, locked, err := locker.AcquireMailboxLock(ctx, tenantID, mailboxID)
+		if err == nil && locked {
+			defer release()
+			fn()
+			return nil
+		}
+		// not locked or error: fall through to the local mutex so a
+		// lock-infrastructure hiccup never blocks convergence entirely
+	}
+	s.applyMu.Lock()
+	defer s.applyMu.Unlock()
+	fn()
+	return nil
+}
+
+// tenantReconciler restores broker-level tenant resources (streams) that
+// were lost at runtime; implemented by the NATS driver.
+type tenantReconciler interface {
+	ReconcileTenant(ctx context.Context, tenantID string) error
+}
+
+// ReconcileAllTenants verifies/recreates every tenant's broker streams.
+// Called by the periodic loop next to the consumer reconcile: the
+// in-process tenant cache meant a wiped JetStream never healed.
+func (s *MailboxService) ReconcileAllTenants(ctx context.Context) {
+	tr, ok := s.queueDriver.(tenantReconciler)
+	if !ok {
+		return
+	}
+	tenants := map[string]struct{}{}
+	if mbs, err := s.mailboxRepo.ListAll(ctx); err == nil {
+		for _, mb := range mbs {
+			tenants[mb.TenantID] = struct{}{}
+		}
+	}
+	for tenantID := range tenants {
+		if err := tr.ReconcileTenant(ctx, tenantID); err != nil {
+			log.Printf("tenant reconcile: %s: %v", tenantID, err)
+		}
+	}
+}
+
 // consumerReconciler is implemented by queue drivers whose consumer config
 // can drift from PG (NATS). PG remains the source of truth; reconcile is
 // best-effort so drivers without reconcile support (pgqueue) stay valid.
@@ -166,46 +218,39 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 		MaxACKPending:  ackPending,
 	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
-		s.applyMu.Lock()
-		// Cross-instance interleave guard: re-read the durable version
-		// right before the broker write. Another replica may have committed
-		// a NEWER revision between our commit and this write — writing ours
-		// now would leave the broker on the older config with nothing
-		// pending (the newer replica's write already happened or will park
-		// itself). Skip; the newer revision owns convergence.
-		current, gerr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
-		if gerr != nil {
-			// Version unreadable: park for the retry loop (which also skips
-			// while unreadable) instead of returning success with nothing
-			// queued — that left the broker permanently unconverged.
-			s.pendMu.Lock()
-			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
-			s.pendMu.Unlock()
-			s.applyMu.Unlock()
-			log.Printf("mailbox %s/%s: consumer sync deferred for v%d (version unreadable, parked)", tenantID, mailboxID, version)
-			return nil
-		}
-		if current == nil || current.ConfigVersion != version {
-			s.applyMu.Unlock()
-			log.Printf("mailbox %s/%s: skipping consumer sync for v%d (superseded)", tenantID, mailboxID, version)
-			return nil
-		}
-		err := rc.ReconcileConsumer(ctx, spec)
-		if err == nil {
-			s.pendMu.Lock()
-			delete(s.pending, reconcileKey(tenantID, mailboxID))
-			s.pendMu.Unlock()
-		} else {
-			// The durable PG config is committed; park the spec WITH its PG
-			// version for the retry loop — the broker converges instead of
-			// silently running stale ack_wait/max_deliver forever, and the
-			// version check refuses to resurrect superseded revisions.
-			s.pendMu.Lock()
-			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
-			s.pendMu.Unlock()
-			log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed v%d, will retry): %v", tenantID, mailboxID, version, err)
-		}
-		s.applyMu.Unlock()
+		syncErr := s.withMailboxLock(ctx, tenantID, mailboxID, func() {
+			// Cross-instance interleave guard, now serialized per mailbox
+			// across replicas: re-read the durable version right before the
+			// broker write. A NEWER revision committed elsewhere between our
+			// commit and this write makes ours superseded — skip; the newer
+			// revision owns convergence.
+			current, gerr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+			if gerr != nil {
+				// Version unreadable: park for the retry loop (which also
+				// skips while unreadable) instead of returning success with
+				// nothing queued.
+				s.pendMu.Lock()
+				s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
+				s.pendMu.Unlock()
+				log.Printf("mailbox %s/%s: consumer sync deferred for v%d (version unreadable, parked)", tenantID, mailboxID, version)
+				return
+			}
+			if current == nil || current.ConfigVersion != version {
+				log.Printf("mailbox %s/%s: skipping consumer sync for v%d (superseded)", tenantID, mailboxID, version)
+				return
+			}
+			if err := rc.ReconcileConsumer(ctx, spec); err != nil {
+				s.pendMu.Lock()
+				s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
+				s.pendMu.Unlock()
+				log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed v%d, will retry): %v", tenantID, mailboxID, version, err)
+			} else {
+				s.pendMu.Lock()
+				delete(s.pending, reconcileKey(tenantID, mailboxID))
+				s.pendMu.Unlock()
+			}
+		})
+		_ = syncErr
 	}
 	return nil
 }
@@ -225,29 +270,26 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 	}
 	for _, mb := range mailboxes {
 		spec := consumerSpecFor(*mb)
-		s.applyMu.Lock()
-		// Write-time version gate: the ListAll snapshot can be stale by the
-		// time we write; re-read the durable version and skip if a newer
-		// revision has landed (writing the snapshot would roll the broker
-		// back until the next successful replay).
-		current, gerr := s.mailboxRepo.Get(ctx, mb.TenantID, mb.ID)
-		if gerr != nil || current == nil || current.ConfigVersion != mb.ConfigVersion {
-			s.applyMu.Unlock()
-			if gerr == nil && current != nil && current.ConfigVersion > mb.ConfigVersion {
-				// Re-park with the CURRENT version so convergence continues.
+		_ = s.withMailboxLock(ctx, mb.TenantID, mb.ID, func() {
+			// Write-time version gate (cross-replica serialized): the
+			// ListAll snapshot can be stale by write time; a newer durable
+			// revision skips the write and re-parks the CURRENT version so
+			// convergence continues.
+			current, gerr := s.mailboxRepo.Get(ctx, mb.TenantID, mb.ID)
+			if gerr != nil || current == nil || current.ConfigVersion != mb.ConfigVersion {
+				if gerr == nil && current != nil && current.ConfigVersion > mb.ConfigVersion {
+					s.pendMu.Lock()
+					s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)}
+					s.pendMu.Unlock()
+				}
+				return
+			}
+			if err := rc.ReconcileConsumer(ctx, spec); err != nil {
 				s.pendMu.Lock()
-				s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)}
+				s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
 				s.pendMu.Unlock()
 			}
-			continue
-		}
-		err := rc.ReconcileConsumer(ctx, spec)
-		s.applyMu.Unlock()
-		if err != nil {
-			s.pendMu.Lock()
-			s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
-			s.pendMu.Unlock()
-		}
+		})
 	}
 	s.pendMu.Lock()
 	n := len(s.pending)
@@ -300,6 +342,7 @@ func (s *MailboxService) StartReconcileRetryLoop(ctx context.Context, interval, 
 			case <-ticker.C:
 				s.retryPending(ctx)
 			case <-reconcile.C:
+				s.ReconcileAllTenants(ctx)
 				s.ReconcileAllConsumers(ctx)
 			}
 		}
@@ -311,12 +354,7 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 	if !ok {
 		return
 	}
-	// The read-apply-clear sequence runs entirely under applyMu: reading
-	// the spec outside the lock let a concurrent UpdateConfig apply a
-	// NEWER revision and clear the entry while this retry held the older
-	// spec — the stale apply then landed last on the broker.
 	for {
-		s.applyMu.Lock()
 		s.pendMu.Lock()
 		var key string
 		var parked parkedSpec
@@ -327,41 +365,59 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 		if key == "" {
 			n := len(s.pending)
 			s.pendMu.Unlock()
-			s.applyMu.Unlock()
 			if n > 0 {
 				log.Printf("mailbox reconcile: %d consumer config(s) still pending broker sync", n)
 			}
 			metrics.MailboxReconcilePending.Set(float64(n))
 			return
 		}
-		// Version gate: PG is the authority. If the durable version has
-		// moved past what this parked spec was read from, the spec is
-		// superseded — drop it instead of writing stale config back. If PG
-		// cannot answer, SKIP: writing with an unknown version can put a
-		// stale config on the broker (leave parked for the next tick).
+		s.pendMu.Unlock()
+
 		parts := strings.SplitN(key, "/", 2)
-		current, gerr := s.mailboxRepo.Get(ctx, parts[0], parts[1])
-		if gerr != nil {
+		// The version check and broker write run as ONE cross-replica
+		// serialized unit per mailbox: the advisory (or local) lock closes
+		// the read-to-write window in which a concurrent replica could
+		// commit a newer revision that this stale apply would overwrite.
+		var applyErr error
+		var skip bool
+		err := s.withMailboxLock(ctx, parts[0], parts[1], func() {
+			s.pendMu.Lock()
+			cur, still := s.pending[key]
 			s.pendMu.Unlock()
-			s.applyMu.Unlock()
-			s.reportPendingCount()
-			return
-		}
-		if current == nil || current.ConfigVersion > parked.version {
-			delete(s.pending, key)
-			s.pendMu.Unlock()
-			s.applyMu.Unlock()
+			if !still || cur != parked {
+				skip = true // superseded or drained mid-flight
+				return
+			}
+			// Version gate: PG is the authority. A parked spec older than
+			// the durable version is superseded — drop it. If PG cannot
+			// answer, SKIP: writing with an unknown version can put a stale
+			// config on the broker (leave parked for the next tick).
+			current, gerr := s.mailboxRepo.Get(ctx, parts[0], parts[1])
+			if gerr != nil {
+				applyErr = gerr
+				return
+			}
+			if current == nil || current.ConfigVersion > parked.version {
+				s.pendMu.Lock()
+				delete(s.pending, key)
+				s.pendMu.Unlock()
+				skip = true
+				return
+			}
+			applyErr = rc.ReconcileConsumer(ctx, parked.spec)
+			if applyErr == nil {
+				s.pendMu.Lock()
+				if cur, ok := s.pending[key]; ok && cur == parked {
+					delete(s.pending, key)
+				}
+				s.pendMu.Unlock()
+			}
+		})
+		_ = err
+		if skip {
 			continue
 		}
-		err := rc.ReconcileConsumer(ctx, parked.spec)
-		if err == nil {
-			if cur, ok := s.pending[key]; ok && cur == parked {
-				delete(s.pending, key)
-			}
-		}
-		s.pendMu.Unlock()
-		s.applyMu.Unlock()
-		if err != nil {
+		if applyErr != nil {
 			s.reportPendingCount()
 			return
 		}

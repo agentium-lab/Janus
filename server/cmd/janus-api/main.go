@@ -139,7 +139,9 @@ func main() {
 	// retrying in the background; without this their mailboxes stayed
 	// permanently unusable on this instance.
 	var bootstrapDone <-chan struct{}
+	var bootstrapFailingSince time.Time
 	if len(bootResult.FailedTenants) > 0 {
+		bootstrapFailingSince = time.Now()
 		bootstrapDone = bootstrap.RetryLoop(context.Background(), bootstrap.Options{
 			TenantLister: tenantRepo,
 			QueueEnsurer: queueDrv,
@@ -407,6 +409,14 @@ func main() {
 		case <-bootstrapDone:
 			return nil
 		default:
+			// Grace window: transient broker restarts degrade (pods keep
+			// serving healthy tenants). Beyond the grace period the probe
+			// FAILS — per-tenant traffic isolation is not possible at the
+			// probe level, so persistent bootstrap failure must pull the
+			// instance out of rotation instead of accepting doomed traffic.
+			if time.Since(bootstrapFailingSince) > 5*time.Minute {
+				return fmt.Errorf("tenant bootstrap failed for over 5m (%d tenant(s) pending)", len(bootResult.FailedTenants))
+			}
 			return observability.Degraded(fmt.Errorf("tenant bootstrap retry in progress (%d tenant(s) pending)", len(bootResult.FailedTenants)))
 		}
 	})

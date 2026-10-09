@@ -57,6 +57,31 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 	return &mb, nil
 }
 
+// AcquireMailboxLock takes a session advisory lock on the mailbox key,
+// serializing the read-version→write-broker sequence ACROSS REPLICAS: any
+// instance applying a config for this mailbox does so exclusively, so an
+// older revision cannot interleave past a newer one between the version
+// check and the broker write.
+func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (release func(), ok bool, err error) {
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, false, err
+	}
+	var locked bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext($1))`, "mailbox:"+tenantID+":"+mailboxID).Scan(&locked); err != nil {
+		conn.Release()
+		return nil, false, err
+	}
+	if !locked {
+		conn.Release()
+		return nil, false, nil
+	}
+	return func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, "mailbox:"+tenantID+":"+mailboxID)
+		conn.Release()
+	}, true, nil
+}
+
 func (r *MailboxRepository) ListAll(ctx context.Context) ([]*core.Mailbox, error) {
 	// Must read the FULL config: the startup reconcile replays these rows
 	// onto the NATS consumers, and a partial read replays zero values —
