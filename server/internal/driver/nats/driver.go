@@ -265,10 +265,22 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
-	ts := &tenantStreams{dlqStreams: make(map[string]jetstream.Stream), consumers: make(map[string]jetstream.Consumer)}
-	recreate := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+	// Incremental repair on the EXISTING cache entry: replace only the
+	// stream handles that are missing on the broker, and never touch the
+	// dlqStreams/consumers maps — rebuilding the entry from scratch evicted
+	// every live consumer handle and broke pulls until they were lazily
+	// re-created.
+	ts, ok := d.tenant[tenantID]
+	if !ok {
+		ts = &tenantStreams{
+			dlqStreams: make(map[string]jetstream.Stream),
+			consumers:  make(map[string]jetstream.Consumer),
+		}
+		d.tenant[tenantID] = ts
+	}
+	fix := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
 		if st, err := d.js.Stream(ctx, name); err == nil {
-			return st, nil // stream exists
+			return st, nil // stream exists on the broker
 		}
 		st, err := d.js.CreateStream(ctx, cfg)
 		if err != nil {
@@ -278,7 +290,7 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 		return st, nil
 	}
 
-	tasks, err := recreate(streamName(tenantID, "TASKS"), jetstream.StreamConfig{
+	tasks, err := fix(streamName(tenantID, "TASKS"), jetstream.StreamConfig{
 		Name:       streamName(tenantID, "TASKS"),
 		Subjects:   []string{fmt.Sprintf("janus.%s.tasks.>", tenantID)},
 		Retention:  jetstream.WorkQueuePolicy,
@@ -291,7 +303,7 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	}
 	ts.taskStream = tasks
 
-	events, err := recreate(streamName(tenantID, "EVENTS"), jetstream.StreamConfig{
+	events, err := fix(streamName(tenantID, "EVENTS"), jetstream.StreamConfig{
 		Name:      streamName(tenantID, "EVENTS"),
 		Subjects:  []string{fmt.Sprintf("janus.%s.events.>", tenantID)},
 		Retention: jetstream.LimitsPolicy,
@@ -304,7 +316,18 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	}
 	ts.eventStream = events
 
-	d.tenant[tenantID] = ts
+	retry, err := fix(streamName(tenantID, "RETRY"), jetstream.StreamConfig{
+		Name:      streamName(tenantID, "RETRY"),
+		Subjects:  []string{fmt.Sprintf("janus.%s.tasks_retry.>", tenantID)},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    24 * time.Hour,
+		Storage:   jetstream.FileStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("reconcile retry stream for tenant %s: %w", tenantID, err)
+	}
+	ts.retryStream = retry
+
 	return nil
 }
 

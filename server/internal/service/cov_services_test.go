@@ -991,3 +991,78 @@ func TestMailboxService_UpdateConfig_UnreadableVersionParks(t *testing.T) {
 	defer svc.pendMu.Unlock()
 	assert.Len(t, svc.pending, 1, "unreadable version must park the spec, not return silent success")
 }
+
+// busyLockRepo always reports the cross-replica lock as held.
+type busyLockRepo struct {
+	mockMailboxRepo
+	mu          sync.Mutex
+	mailboxes   map[string]*core.Mailbox
+	getOverride map[string]*core.Mailbox
+}
+
+func (r *busyLockRepo) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
+	return nil, false, nil // busy: another replica holds it
+}
+func (r *busyLockRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if mb, ok := r.getOverride[tenantID+"/"+mailboxID]; ok {
+		return mb, nil
+	}
+	return nil, pgx.ErrNoRows
+}
+func (r *busyLockRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) (int, error) {
+	return 1, nil
+}
+
+// When the cross-replica lock is held, the write MUST NOT happen and the
+// spec must be parked — writing under a local-only mutex is exactly the
+// interleave the lock exists to prevent.
+func TestMailboxService_LockBusy_ParksInsteadOfWriting(t *testing.T) {
+	repo := &busyLockRepo{getOverride: map[string]*core.Mailbox{
+		"acme/mb-1": {TenantID: "acme", ID: "mb-1", ConfigVersion: 1, MaxConcurrency: 4},
+	}}
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 90, 5, 3600))
+
+	drv.mu.Lock()
+	assert.Empty(t, drv.specs, "no broker write while the cross-replica lock is held")
+	drv.mu.Unlock()
+	svc.pendMu.Lock()
+	defer svc.pendMu.Unlock()
+	assert.Len(t, svc.pending, 1, "busy lock parks the spec for retry")
+}
+
+// errLockRepo simulates lock-infrastructure failure: no blind writes.
+type errLockRepo struct {
+	mockMailboxRepo
+	getOverride map[string]*core.Mailbox
+}
+
+func (r *errLockRepo) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
+	return nil, false, errors.New("pg unavailable")
+}
+func (r *errLockRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	if mb, ok := r.getOverride[tenantID+"/"+mailboxID]; ok {
+		return mb, nil
+	}
+	return nil, pgx.ErrNoRows
+}
+func (r *errLockRepo) UpdateConfig(_ context.Context, _, _ string, _, _, _, _ int) (int, error) {
+	return 1, nil
+}
+
+func TestMailboxService_LockError_ParksInsteadOfWriting(t *testing.T) {
+	repo := &errLockRepo{getOverride: map[string]*core.Mailbox{
+		"acme/mb-1": {TenantID: "acme", ID: "mb-1", ConfigVersion: 1, MaxConcurrency: 4},
+	}}
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	require.NoError(t, svc.UpdateConfig(context.Background(), "acme", "mb-1", 4, 90, 5, 3600))
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	assert.Empty(t, drv.specs, "no broker write when the lock infrastructure fails")
+}

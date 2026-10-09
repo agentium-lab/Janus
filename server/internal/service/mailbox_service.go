@@ -1,6 +1,8 @@
 package service
 
 import (
+	"errors"
+
 	"strings"
 
 	"github.com/agentium-lab/Janus/server/internal/metrics"
@@ -136,16 +138,25 @@ type mailboxWriteLocker interface {
 
 // withMailboxLock runs fn under the strongest available per-mailbox lock:
 // cross-replica advisory when the repo supports it, otherwise applyMu.
+// ErrMailboxLockBusy marks a broker write skipped because another
+// replica holds the per-mailbox cross-instance lock. The write MUST NOT
+// degrade to an unlocked write — that reintroduces exactly the interleave
+// the lock exists to prevent; callers park/defer instead.
+var ErrMailboxLockBusy = errors.New("mailbox write lock held by another replica")
+
 func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxID string, fn func()) error {
 	if locker, ok := s.mailboxRepo.(mailboxWriteLocker); ok {
 		release, locked, err := locker.AcquireMailboxLock(ctx, tenantID, mailboxID)
-		if err == nil && locked {
-			defer release()
-			fn()
-			return nil
+		if err != nil {
+			// Lock infrastructure failure: do not write blind.
+			return fmt.Errorf("mailbox lock: %w", err)
 		}
-		// not locked or error: fall through to the local mutex so a
-		// lock-infrastructure hiccup never blocks convergence entirely
+		if !locked {
+			return ErrMailboxLockBusy
+		}
+		defer release()
+		fn()
+		return nil
 	}
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
@@ -250,7 +261,15 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 				s.pendMu.Unlock()
 			}
 		})
-		_ = syncErr
+		if syncErr != nil {
+			// Lock busy (another replica is mid-write for this mailbox) or
+			// lock infrastructure failed: park for the retry loop instead
+			// of writing without mutual exclusion.
+			s.pendMu.Lock()
+			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
+			s.pendMu.Unlock()
+			log.Printf("mailbox %s/%s: consumer sync deferred (lock busy/error): %v", tenantID, mailboxID, syncErr)
+		}
 	}
 	return nil
 }
@@ -270,7 +289,7 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 	}
 	for _, mb := range mailboxes {
 		spec := consumerSpecFor(*mb)
-		_ = s.withMailboxLock(ctx, mb.TenantID, mb.ID, func() {
+		lerr := s.withMailboxLock(ctx, mb.TenantID, mb.ID, func() {
 			// Write-time version gate (cross-replica serialized): the
 			// ListAll snapshot can be stale by write time; a newer durable
 			// revision skips the write and re-parks the CURRENT version so
@@ -290,6 +309,11 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 				s.pendMu.Unlock()
 			}
 		})
+		if lerr != nil {
+			s.pendMu.Lock()
+			s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
+			s.pendMu.Unlock()
+		}
 	}
 	s.pendMu.Lock()
 	n := len(s.pending)
@@ -380,7 +404,7 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 		// commit a newer revision that this stale apply would overwrite.
 		var applyErr error
 		var skip bool
-		err := s.withMailboxLock(ctx, parts[0], parts[1], func() {
+		lockErr := s.withMailboxLock(ctx, parts[0], parts[1], func() {
 			s.pendMu.Lock()
 			cur, still := s.pending[key]
 			s.pendMu.Unlock()
@@ -413,7 +437,11 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 				s.pendMu.Unlock()
 			}
 		})
-		_ = err
+		if lockErr != nil {
+			// Lock busy or failed: the spec stays parked; try again next tick.
+			s.reportPendingCount()
+			return
+		}
 		if skip {
 			continue
 		}
