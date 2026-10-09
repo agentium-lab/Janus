@@ -138,7 +138,7 @@ type mailboxWriteLocker interface {
 
 // withMailboxLock runs fn under the strongest available per-mailbox lock:
 // cross-replica advisory when the repo supports it, otherwise applyMu.
-// ErrMailboxLockBusy marks a broker write skipped because another
+// ErrMailboxLockBusy reports a broker write skipped because another
 // replica holds the per-mailbox cross-instance lock. The write MUST NOT
 // degrade to an unlocked write — that reintroduces exactly the interleave
 // the lock exists to prevent; callers park/defer instead.
