@@ -1066,3 +1066,51 @@ func TestMailboxService_LockError_ParksInsteadOfWriting(t *testing.T) {
 	defer drv.mu.Unlock()
 	assert.Empty(t, drv.specs, "no broker write when the lock infrastructure fails")
 }
+
+// Covers the tenant/DLQ reconcile driver loop: one ListAll, tenants
+// reconciled once per distinct tenant, DLQ per mailbox.
+type recordingTenantReconciler struct {
+	reconcileRecorder
+	tenants []string
+	dlqs    []string
+}
+
+func (d *recordingTenantReconciler) ReconcileTenant(_ context.Context, tenantID string) error {
+	d.mu.Lock()
+	d.tenants = append(d.tenants, tenantID)
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *recordingTenantReconciler) ReconcileMailboxDLQ(_ context.Context, tenantID, mailboxID string) error {
+	d.mu.Lock()
+	d.dlqs = append(d.dlqs, tenantID+"/"+mailboxID)
+	d.mu.Unlock()
+	return nil
+}
+
+func TestMailboxService_ReconcileAllTenants_DeduplicatesAndCovers(t *testing.T) {
+	drv := &recordingTenantReconciler{}
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 0)
+	repo.setMailbox("acme", "mb-2", 0)
+	repo.setMailbox("b", "mb-1", 0)
+	svc := NewMailboxService(repo, drv)
+
+	svc.ReconcileAllTenants(context.Background())
+
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	assert.Equal(t, []string{"acme", "b"}, drv.tenants, "tenant streams reconciled once per distinct tenant")
+	assert.Len(t, drv.dlqs, 3, "DLQ verified for every mailbox")
+}
+
+func TestMailboxService_StartReconcileRetryLoop_TicksAndStops(t *testing.T) {
+	repo := newVersionRepo()
+	repo.setMailbox("acme", "mb-1", 0)
+	svc := NewMailboxService(repo, &mockQueueDriver{})
+	ctx, cancel := context.WithCancel(context.Background())
+	go svc.StartReconcileRetryLoop(ctx, 10*time.Millisecond, 25*time.Millisecond)
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+}

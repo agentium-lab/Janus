@@ -1,6 +1,8 @@
 package nats
 
 import (
+	"time"
+
 	"context"
 	"testing"
 
@@ -101,5 +103,36 @@ func TestStreamConfigParity_CreateVsReconcile(t *testing.T) {
 	}
 	if healed.Config.MaxMsgs != created.Config.MaxMsgs {
 		t.Fatalf("EVENTS MaxMsgs drifted: created=%d healed=%d", created.Config.MaxMsgs, healed.Config.MaxMsgs)
+	}
+}
+
+// ReconcileConsumer updates an existing durable consumer's config in place.
+func TestReconcileConsumer_UpdatesExisting(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	if err := d.EnsureTenant(ctx, "acme"); err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+	spec := core.ConsumerSpec{TenantID: "acme", MailboxID: "mb-1", DurableName: "mb-1",
+		ACKWaitSeconds: 60, MaxDeliver: 5, MaxACKPending: 10}
+	if err := d.EnsureConsumer(ctx, spec); err != nil {
+		t.Fatalf("ensure consumer: %v", err)
+	}
+
+	spec.ACKWaitSeconds = 120
+	if err := d.ReconcileConsumer(ctx, spec); err != nil {
+		t.Fatalf("reconcile consumer: %v", err)
+	}
+	cname := consumerName("acme", "mb-1")
+	ci, err := d.js.Consumer(ctx, streamName("acme", "TASKS"), cname)
+	if err != nil {
+		t.Fatalf("consumer fetch: %v", err)
+	}
+	info, err := ci.Info(ctx)
+	if err != nil {
+		t.Fatalf("consumer info: %v", err)
+	}
+	if info.Config.AckWait != 120*time.Second {
+		t.Fatalf("AckWait not reconciled: %v", info.Config.AckWait)
 	}
 }
