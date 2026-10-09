@@ -261,6 +261,53 @@ func (d *Driver) ReplayEvents(ctx context.Context, filter core.EventReplayFilter
 // broker and recreates any that were lost (e.g. JetStream storage wiped).
 // The in-process tenant cache makes EnsureTenant a no-op once seen, so a
 // runtime stream loss would otherwise never heal on this instance.
+// Stream configs are SHARED by initial creation and reconcile so a
+// restored stream always matches what EnsureTenant would have built (the
+// restore path previously capped EVENTS at 10k msgs while the initial
+// build had no cap — silently shrinking the broker replay window).
+func taskStreamConfig(tenantID string) jetstream.StreamConfig {
+	return jetstream.StreamConfig{
+		Name:       streamName(tenantID, "TASKS"),
+		Subjects:   []string{fmt.Sprintf("janus.%s.tasks.>", tenantID)},
+		Retention:  jetstream.WorkQueuePolicy,
+		MaxAge:     7 * 24 * time.Hour,
+		Storage:    jetstream.FileStorage,
+		Duplicates: 2 * time.Minute,
+	}
+}
+
+func eventStreamConfig(tenantID string) jetstream.StreamConfig {
+	return jetstream.StreamConfig{
+		Name:       streamName(tenantID, "EVENTS"),
+		Subjects:   []string{fmt.Sprintf("janus.%s.events.>", tenantID)},
+		Retention:  jetstream.LimitsPolicy,
+		MaxAge:     30 * 24 * time.Hour,
+		Storage:    jetstream.FileStorage,
+		Duplicates: 2 * time.Minute,
+	}
+}
+
+func retryStreamConfig(tenantID string) jetstream.StreamConfig {
+	return jetstream.StreamConfig{
+		Name:      streamName(tenantID, "RETRY"),
+		Subjects:  []string{fmt.Sprintf("janus.%s.tasks_retry.>", tenantID)},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    24 * time.Hour,
+		Storage:   jetstream.FileStorage,
+	}
+}
+
+func dlqStreamConfig(tenantID, mailboxID string) jetstream.StreamConfig {
+	return jetstream.StreamConfig{
+		Name:      streamName(tenantID, "DLQ_"+sanitize(mailboxID)),
+		Subjects:  []string{dlqSubject(tenantID, mailboxID)},
+		Retention: jetstream.LimitsPolicy,
+		MaxAge:    30 * 24 * time.Hour,
+		MaxMsgs:   10000,
+		Storage:   jetstream.FileStorage,
+	}
+}
+
 func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -298,39 +345,19 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 		return st, nil
 	}
 
-	tasks, err := fix(streamName(tenantID, "TASKS"), jetstream.StreamConfig{
-		Name:       streamName(tenantID, "TASKS"),
-		Subjects:   []string{fmt.Sprintf("janus.%s.tasks.>", tenantID)},
-		Retention:  jetstream.WorkQueuePolicy,
-		MaxAge:     7 * 24 * time.Hour,
-		Storage:    jetstream.FileStorage,
-		Duplicates: 2 * time.Minute,
-	})
+	tasks, err := fix(streamName(tenantID, "TASKS"), taskStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile task stream for tenant %s: %w", tenantID, err)
 	}
 	ts.taskStream = tasks
 
-	events, err := fix(streamName(tenantID, "EVENTS"), jetstream.StreamConfig{
-		Name:      streamName(tenantID, "EVENTS"),
-		Subjects:  []string{fmt.Sprintf("janus.%s.events.>", tenantID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    30 * 24 * time.Hour,
-		MaxMsgs:   10000,
-		Storage:   jetstream.FileStorage,
-	})
+	events, err := fix(streamName(tenantID, "EVENTS"), eventStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile event stream for tenant %s: %w", tenantID, err)
 	}
 	ts.eventStream = events
 
-	retry, err := fix(streamName(tenantID, "RETRY"), jetstream.StreamConfig{
-		Name:      streamName(tenantID, "RETRY"),
-		Subjects:  []string{fmt.Sprintf("janus.%s.tasks_retry.>", tenantID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    24 * time.Hour,
-		Storage:   jetstream.FileStorage,
-	})
+	retry, err := fix(streamName(tenantID, "RETRY"), retryStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile retry stream for tenant %s: %w", tenantID, err)
 	}
@@ -347,37 +374,17 @@ func (d *Driver) EnsureTenant(ctx context.Context, tenantID string) error {
 		return nil
 	}
 
-	taskStream, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:       streamName(tenantID, "TASKS"),
-		Subjects:   []string{fmt.Sprintf("janus.%s.tasks.>", tenantID)},
-		Retention:  jetstream.WorkQueuePolicy,
-		MaxAge:     7 * 24 * time.Hour,
-		Storage:    jetstream.FileStorage,
-		Duplicates: 2 * time.Minute,
-	})
+	taskStream, err := d.js.CreateStream(ctx, taskStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("create task stream for tenant %s: %w", tenantID, err)
 	}
 
-	eventStream, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:       streamName(tenantID, "EVENTS"),
-		Subjects:   []string{fmt.Sprintf("janus.%s.events.>", tenantID)},
-		Retention:  jetstream.LimitsPolicy,
-		MaxAge:     30 * 24 * time.Hour,
-		Storage:    jetstream.FileStorage,
-		Duplicates: 2 * time.Minute,
-	})
+	eventStream, err := d.js.CreateStream(ctx, eventStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("create event stream for tenant %s: %w", tenantID, err)
 	}
 
-	retryStream, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:      streamName(tenantID, "RETRY"),
-		Subjects:  []string{fmt.Sprintf("janus.%s.tasks_retry.>", tenantID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    24 * time.Hour,
-		Storage:   jetstream.FileStorage,
-	})
+	retryStream, err := d.js.CreateStream(ctx, retryStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("create retry stream for tenant %s: %w", tenantID, err)
 	}
@@ -405,20 +412,11 @@ func (d *Driver) ReconcileMailboxDLQ(ctx context.Context, tenantID, mailboxID st
 		return nil // tenant reconcile owns initialization
 	}
 	name := streamName(tenantID, "DLQ_"+sanitize(mailboxID))
-	if _, err := d.js.Stream(ctx, name); err == nil {
-		if st, err := d.js.Stream(ctx, name); err == nil {
-			ts.dlqStreams[mailboxID] = st
-			return nil
-		}
+	if st, err := d.js.Stream(ctx, name); err == nil {
+		ts.dlqStreams[mailboxID] = st
+		return nil
 	}
-	st, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:      name,
-		Subjects:  []string{dlqSubject(tenantID, mailboxID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    30 * 24 * time.Hour,
-		MaxMsgs:   10000,
-		Storage:   jetstream.FileStorage,
-	})
+	st, err := d.js.CreateStream(ctx, dlqStreamConfig(tenantID, mailboxID))
 	if err != nil {
 		return fmt.Errorf("reconcile DLQ stream for mailbox %s: %w", mailboxID, err)
 	}
@@ -440,14 +438,7 @@ func (d *Driver) EnsureMailbox(ctx context.Context, spec core.MailboxSpec) error
 		return nil
 	}
 
-	dlqStream, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
-		Name:      streamName(spec.TenantID, "DLQ_"+sanitize(spec.MailboxID)),
-		Subjects:  []string{dlqSubject(spec.TenantID, spec.MailboxID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    30 * 24 * time.Hour,
-		MaxMsgs:   10000,
-		Storage:   jetstream.FileStorage,
-	})
+	dlqStream, err := d.js.CreateStream(ctx, dlqStreamConfig(spec.TenantID, spec.MailboxID))
 	if err != nil {
 		return fmt.Errorf("create DLQ stream for mailbox %s: %w", spec.MailboxID, err)
 	}

@@ -59,3 +59,47 @@ func TestReconcileMailboxDLQ_HealthyStreamUntouched(t *testing.T) {
 		t.Fatalf("reconcile dlq: %v", err)
 	}
 }
+
+// A restored stream must carry the SAME config the initial build used:
+// initial creation and reconcile now share config builders, so a healed
+// EVENTS stream keeps the unbounded replay window EnsureTenant created.
+func TestStreamConfigParity_CreateVsReconcile(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+
+	if err := d.EnsureTenant(ctx, "acme"); err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+
+	createdStream, err := d.js.Stream(ctx, streamName("acme", "EVENTS"))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	created, err := createdStream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+
+	// Wipe and heal via the reconcile path.
+	if err := d.js.DeleteStream(ctx, streamName("acme", "EVENTS")); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	d.mu.Lock()
+	d.tenant["acme"].eventStream = nil
+	d.mu.Unlock()
+	if err := d.ReconcileTenant(ctx, "acme"); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	healedStream, err := d.js.Stream(ctx, streamName("acme", "EVENTS"))
+	if err != nil {
+		t.Fatalf("stream after heal: %v", err)
+	}
+	healed, err := healedStream.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream info after heal: %v", err)
+	}
+	if healed.Config.MaxMsgs != created.Config.MaxMsgs {
+		t.Fatalf("EVENTS MaxMsgs drifted: created=%d healed=%d", created.Config.MaxMsgs, healed.Config.MaxMsgs)
+	}
+}

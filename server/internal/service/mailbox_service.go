@@ -182,21 +182,28 @@ func (s *MailboxService) ReconcileAllTenants(ctx context.Context) {
 	if !ok {
 		return
 	}
-	tenants := map[string]struct{}{}
-	if mbs, err := s.mailboxRepo.ListAll(ctx); err == nil {
-		for _, mb := range mbs {
-			tenants[mb.TenantID] = struct{}{}
+	mailboxes, err := s.mailboxRepo.ListAll(ctx)
+	if err != nil {
+		log.Printf("tenant reconcile: list: %v", err)
+		return
+	}
+	// ONE listing, tenant streams reconciled ONCE per distinct tenant, then
+	// per-mailbox DLQ checks — the previous shape did ~5N broker queries
+	// under the driver's global lock (a second listing, per-mailbox tenant
+	// stream checks, and a doubled healthy-DLQ probe), delaying pulls on
+	// large tenants during every reconcile pass.
+	tenants := make(map[string]struct{}, len(mailboxes))
+	for _, mb := range mailboxes {
+		tenants[mb.TenantID] = struct{}{}
+	}
+	for tenantID := range tenants {
+		if err := tr.ReconcileTenant(ctx, tenantID); err != nil {
+			log.Printf("tenant reconcile: %s: %v", tenantID, err)
 		}
 	}
-	if mbs, err := s.mailboxRepo.ListAll(ctx); err == nil {
-		for _, mb := range mbs {
-			if err := tr.ReconcileTenant(ctx, mb.TenantID); err != nil {
-				log.Printf("tenant reconcile: %s: %v", mb.TenantID, err)
-				continue
-			}
-			if err := tr.ReconcileMailboxDLQ(ctx, mb.TenantID, mb.ID); err != nil {
-				log.Printf("mailbox dlq reconcile: %s/%s: %v", mb.TenantID, mb.ID, err)
-			}
+	for _, mb := range mailboxes {
+		if err := tr.ReconcileMailboxDLQ(ctx, mb.TenantID, mb.ID); err != nil {
+			log.Printf("mailbox dlq reconcile: %s/%s: %v", mb.TenantID, mb.ID, err)
 		}
 	}
 }
