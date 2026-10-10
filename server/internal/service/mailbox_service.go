@@ -339,9 +339,7 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 			}
 		})
 		if lerr != nil {
-			s.pendMu.Lock()
-			s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
-			s.pendMu.Unlock()
+			s.parkSpec(reconcileKey(mb.TenantID, mb.ID), parkedSpec{version: mb.ConfigVersion, spec: spec})
 		}
 	}
 	s.pendMu.Lock()
@@ -451,9 +449,10 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 				return
 			}
 			if current == nil || current.ConfigVersion > parked.version {
-				s.pendMu.Lock()
-				delete(s.pending, key)
-				s.pendMu.Unlock()
+				// This parked spec is stale, but a NEWER revision may have
+				// parked while this Get was in flight — evict only entries
+				// at or below the stale version, never the newer one.
+				s.clearParked(key, parked.version)
 				skip = true
 				return
 			}
