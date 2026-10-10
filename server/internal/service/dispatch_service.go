@@ -676,13 +676,11 @@ func (s *DispatchService) ensureMailboxConsumer(ctx context.Context, tenantID, m
 	}); err != nil {
 		return fmt.Errorf("ensure mailbox %s: %w", mailboxID, err)
 	}
-	if err := s.queueDriver.EnsureConsumer(ctx, core.ConsumerSpec{
-		TenantID:       tenantID,
-		MailboxID:      mailboxID,
-		DurableName:    mailboxID,
-		ACKWaitSeconds: mb.ACKWaitSeconds,
-		MaxDeliver:     mb.MaxDeliver,
-	}); err != nil {
+	// Reuse the CREATE-path spec builder: a hand-rolled spec here once
+	// omitted MaxACKPending, so a cold-cache replica pulled with a DIFFERENT
+	// consumer config than the creator used — NATS answers ErrConsumerExists
+	// and pulls fail until the reconcile converges.
+	if err := s.queueDriver.EnsureConsumer(ctx, consumerSpecFor(*mb)); err != nil {
 		return fmt.Errorf("ensure consumer %s: %w", mailboxID, err)
 	}
 	return nil

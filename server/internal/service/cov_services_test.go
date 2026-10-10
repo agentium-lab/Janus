@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/bootstrap"
+	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	redisdriver "github.com/agentium-lab/Janus/server/internal/driver/redis"
 )
 
@@ -1113,4 +1115,64 @@ func TestMailboxService_StartReconcileRetryLoop_TicksAndStops(t *testing.T) {
 	go svc.StartReconcileRetryLoop(ctx, 10*time.Millisecond, 25*time.Millisecond)
 	time.Sleep(60 * time.Millisecond)
 	cancel()
+}
+
+// Cross-replica cold-cache pull: replica A creates the mailbox+consumer
+// with the CREATE-path spec (MaxACKPending = MaxConcurrency*2); a FRESH
+// driver (replica B, empty cache, same NATS) builds the spec exactly like
+// DispatchService.ensureMailboxConsumer does (consumerSpecFor) — the specs
+// must agree or NATS answers ErrConsumerExists and pulls fail.
+func TestCrossReplica_ColdCacheConsumerSpecMatches(t *testing.T) {
+	d := openNATSOverlayDriver(t)
+	ctx := context.Background()
+	tenant := "cc-" + fmt.Sprintf("%d", time.Now().UnixNano())
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
+		t.Fatalf("A ensure tenant: %v", err)
+	}
+	mb := core.Mailbox{TenantID: tenant, ID: "mb-cc", AgentID: "a1",
+		MaxConcurrency: 1, ACKWaitSeconds: 45, MaxDeliver: 5}
+	if err := d.EnsureMailbox(ctx, core.MailboxSpec{
+		TenantID: tenant, MailboxID: mb.ID, AgentID: mb.AgentID,
+		MaxConcurrency: mb.MaxConcurrency, ACKWaitSeconds: mb.ACKWaitSeconds,
+	}); err != nil {
+		t.Fatalf("A ensure mailbox: %v", err)
+	}
+	// Create path spec (what MailboxService.Create drives).
+	createSpec := core.ConsumerSpec{TenantID: tenant, MailboxID: mb.ID, DurableName: mb.ID,
+		ACKWaitSeconds: mb.ACKWaitSeconds, MaxDeliver: mb.MaxDeliver, MaxACKPending: 2}
+	if err := d.EnsureConsumer(ctx, createSpec); err != nil {
+		t.Fatalf("A ensure consumer: %v", err)
+	}
+
+	// Replica B: fresh driver, same broker; the pull-path spec must match.
+	b := openNATSOverlayDriver(t)
+	if err := b.EnsureTenant(ctx, tenant); err != nil {
+		t.Fatalf("B ensure tenant: %v", err)
+	}
+	pullSpec := consumerSpecFor(mb)
+	assert.Equal(t, createSpec.MaxACKPending, pullSpec.MaxACKPending,
+		"create and pull spec builders must agree on MaxACKPending")
+	if err := b.EnsureConsumer(ctx, pullSpec); err != nil {
+		t.Fatalf("B cold-cache ensure consumer (spec mismatch -> ErrConsumerExists): %v", err)
+	}
+}
+
+// openNATSOverlayDriver builds a Driver with a COLD cache over the shared
+// test NATS (JANUS_NATS_URL when set; otherwise a self-started server whose
+// URL is stashed in the package-level overlay var).
+var overlayNATSURL string
+
+func openNATSOverlayDriver(t *testing.T) *natsdriver.Driver {
+	t.Helper()
+	url := os.Getenv("JANUS_NATS_URL")
+	if url == "" {
+		if overlayNATSURL == "" {
+			t.Skip("no shared NATS URL available (set JANUS_NATS_URL for cross-replica coverage)")
+		}
+		url = overlayNATSURL
+	}
+	d, err := natsdriver.NewDriver(natsdriver.Config{URL: url})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	return d
 }

@@ -294,6 +294,10 @@ func retryStreamConfig(tenantID string) jetstream.StreamConfig {
 		Retention: jetstream.LimitsPolicy,
 		MaxAge:    24 * time.Hour,
 		Storage:   jetstream.FileStorage,
+		// Explicit so the server default (2m) reads back equal — an unset
+		// Go zero value made every healthy RETRY stream read as drifted and
+		// re-updated under the global lock on each reconcile pass.
+		Duplicates: 2 * time.Minute,
 	}
 }
 
@@ -315,20 +319,27 @@ func streamConfigDrifted(live, want jetstream.StreamConfig) bool {
 		}
 		return d
 	}
+	normDupes := func(d time.Duration) time.Duration {
+		if d <= 0 {
+			return 2 * time.Minute // NATS server default for an unset window
+		}
+		return d
+	}
 	return normMsgs(live.MaxMsgs) != normMsgs(want.MaxMsgs) ||
 		normAge(live.MaxAge) != normAge(want.MaxAge) ||
 		live.Retention != want.Retention ||
-		live.Duplicates != want.Duplicates
+		normDupes(live.Duplicates) != normDupes(want.Duplicates)
 }
 
 func dlqStreamConfig(tenantID, mailboxID string) jetstream.StreamConfig {
 	return jetstream.StreamConfig{
-		Name:      streamName(tenantID, "DLQ_"+sanitize(mailboxID)),
-		Subjects:  []string{dlqSubject(tenantID, mailboxID)},
-		Retention: jetstream.LimitsPolicy,
-		MaxAge:    30 * 24 * time.Hour,
-		MaxMsgs:   10000,
-		Storage:   jetstream.FileStorage,
+		Name:       streamName(tenantID, "DLQ_"+sanitize(mailboxID)),
+		Subjects:   []string{dlqSubject(tenantID, mailboxID)},
+		Retention:  jetstream.LimitsPolicy,
+		MaxAge:     30 * 24 * time.Hour,
+		MaxMsgs:    10000,
+		Storage:    jetstream.FileStorage,
+		Duplicates: 2 * time.Minute,
 	}
 }
 

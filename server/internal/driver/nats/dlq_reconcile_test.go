@@ -254,3 +254,39 @@ func TestReconcileTenant_SecondPassNoDriftWrite(t *testing.T) {
 		t.Fatalf("healthy stream misjudged as drifted: live=%+v want=%+v", info.Config, want)
 	}
 }
+
+// After a full reconcile pass, ALL three tenant streams (TASKS, EVENTS,
+// RETRY) must read back non-drifted — the second pass is a no-op write.
+func TestReconcileTenant_AllStreamsSecondPassStable(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	tenant := testTenant(t)
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+	if err := d.ReconcileTenant(ctx, tenant); err != nil {
+		t.Fatalf("reconcile pass 1: %v", err)
+	}
+	for _, name := range []string{"TASKS", "EVENTS", "RETRY"} {
+		st, err := d.js.Stream(ctx, streamName(tenant, name))
+		if err != nil {
+			t.Fatalf("stream %s: %v", name, err)
+		}
+		info, err := st.Info(ctx)
+		if err != nil {
+			t.Fatalf("info %s: %v", name, err)
+		}
+		var want jetstream.StreamConfig
+		switch name {
+		case "TASKS":
+			want = taskStreamConfig(tenant)
+		case "EVENTS":
+			want = eventStreamConfig(tenant)
+		default:
+			want = retryStreamConfig(tenant)
+		}
+		if streamConfigDrifted(info.Config, want) {
+			t.Fatalf("%s stream judged drifted after reconcile: live=%+v want=%+v", name, info.Config, want)
+		}
+	}
+}
