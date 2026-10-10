@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,8 +22,17 @@ var natsURL string
 
 var listenAddrRe = regexp.MustCompile(`Listening for client connections on (.+)`)
 
+var (
+	tenantSeed    = fmt.Sprintf("%x", time.Now().UnixNano()%0x100000000)
+	tenantCounter atomic.Uint64
+)
+
+// testTenant is unique per invocation AND per process: against a persistent
+// external NATS (JANUS_NATS_URL), streams/consumers/dedupe windows survive
+// across tests, reruns, and processes.
 func testTenant(t *testing.T) string {
-	return strings.ReplaceAll(fmt.Sprintf("t_%s", t.Name()), "/", "_")
+	return fmt.Sprintf("t%s_%d_%s", tenantSeed, tenantCounter.Add(1),
+		strings.ReplaceAll(t.Name(), "/", "_"))
 }
 
 func startNATSServer(t *testing.T) {
@@ -619,5 +629,5 @@ func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 }
 
 func genTenant(t *testing.T) string {
-	return strings.ReplaceAll(fmt.Sprintf("t_%s", t.Name()), "/", "_")
+	return testTenant(t)
 }

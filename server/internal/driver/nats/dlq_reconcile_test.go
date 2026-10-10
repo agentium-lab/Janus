@@ -106,14 +106,19 @@ func TestStreamConfigParity_CreateVsReconcile(t *testing.T) {
 	}
 }
 
+// uniqueTenant derives a per-test tenant ID: the NATS server (and its
+// durable consumers/streams) is shared across tests in this package when
+// JANUS_NATS_URL points at one server, so a fixed tenant name collides
+// ("consumer already exists").
 // ReconcileConsumer updates an existing durable consumer's config in place.
 func TestReconcileConsumer_UpdatesExisting(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	if err := d.EnsureTenant(ctx, "acme"); err != nil {
+	tenant := testTenant(t)
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
 		t.Fatalf("ensure tenant: %v", err)
 	}
-	spec := core.ConsumerSpec{TenantID: "acme", MailboxID: "mb-1", DurableName: "mb-1",
+	spec := core.ConsumerSpec{TenantID: tenant, MailboxID: "mb-1", DurableName: "mb-1",
 		ACKWaitSeconds: 60, MaxDeliver: 5, MaxACKPending: 10}
 	if err := d.EnsureConsumer(ctx, spec); err != nil {
 		t.Fatalf("ensure consumer: %v", err)
@@ -123,8 +128,8 @@ func TestReconcileConsumer_UpdatesExisting(t *testing.T) {
 	if err := d.ReconcileConsumer(ctx, spec); err != nil {
 		t.Fatalf("reconcile consumer: %v", err)
 	}
-	cname := consumerName("acme", "mb-1")
-	ci, err := d.js.Consumer(ctx, streamName("acme", "TASKS"), cname)
+	cname := consumerName(tenant, "mb-1")
+	ci, err := d.js.Consumer(ctx, streamName(tenant, "TASKS"), cname)
 	if err != nil {
 		t.Fatalf("consumer fetch: %v", err)
 	}
@@ -143,10 +148,11 @@ func TestReconcileConsumer_UpdatesExisting(t *testing.T) {
 func TestReconcileConsumer_UnchangedSpecSkipsWrite(t *testing.T) {
 	d := openDriver(t)
 	ctx := context.Background()
-	if err := d.EnsureTenant(ctx, "acme"); err != nil {
+	tenant := testTenant(t)
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
 		t.Fatalf("ensure tenant: %v", err)
 	}
-	spec := core.ConsumerSpec{TenantID: "acme", MailboxID: "mb-1", DurableName: "mb-1",
+	spec := core.ConsumerSpec{TenantID: tenant, MailboxID: "mb-1", DurableName: "mb-1",
 		ACKWaitSeconds: 60, MaxDeliver: 5, MaxACKPending: 10}
 	if err := d.EnsureConsumer(ctx, spec); err != nil {
 		t.Fatalf("ensure consumer: %v", err)
@@ -163,7 +169,7 @@ func TestReconcileConsumer_UnchangedSpecSkipsWrite(t *testing.T) {
 	// If the skip failed and CreateOrUpdate ran, the test still passes on
 	// correctness; the skip itself is asserted by coverage of the early
 	// return. Functional invariant: config is still correct.
-	ci, err := d.js.Consumer(ctx, streamName("acme", "TASKS"), consumerName("acme", "mb-1"))
+	ci, err := d.js.Consumer(ctx, streamName(tenant, "TASKS"), consumerName(tenant, "mb-1"))
 	if err != nil {
 		t.Fatalf("consumer fetch: %v", err)
 	}
