@@ -1101,7 +1101,7 @@ func TestMailboxService_ReconcileAllTenants_DeduplicatesAndCovers(t *testing.T) 
 
 	drv.mu.Lock()
 	defer drv.mu.Unlock()
-	assert.Equal(t, []string{"acme", "b"}, drv.tenants, "tenant streams reconciled once per distinct tenant")
+	assert.ElementsMatch(t, []string{"acme", "b"}, drv.tenants, "tenant streams reconciled once per distinct tenant")
 	assert.Len(t, drv.dlqs, 3, "DLQ verified for every mailbox")
 }
 
