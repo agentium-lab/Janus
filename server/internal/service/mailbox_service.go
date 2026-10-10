@@ -207,6 +207,29 @@ func (s *MailboxService) ReconcileAllTenants(ctx context.Context) {
 	}
 }
 
+// parkSpec keeps the HIGHEST parked version: a newer revision queued while
+// an older write is in flight must never be clobbered by the older one
+// (A-v1 failing used to overwrite a parked v2, and A-v1 succeeding used to
+// delete it — both lost v2's fast retry until the 5-min reconcile).
+func (s *MailboxService) parkSpec(key string, p parkedSpec) {
+	s.pendMu.Lock()
+	if cur, ok := s.pending[key]; !ok || p.version >= cur.version {
+		s.pending[key] = p
+	}
+	s.pendMu.Unlock()
+}
+
+// clearParked deletes the parked entry only when it does not carry a NEWER
+// version than the one just applied: a success at v1 must not evict a
+// parked v2.
+func (s *MailboxService) clearParked(key string, version int) {
+	s.pendMu.Lock()
+	if cur, ok := s.pending[key]; ok && cur.version <= version {
+		delete(s.pending, key)
+	}
+	s.pendMu.Unlock()
+}
+
 // consumerReconciler is implemented by queue drivers whose consumer config
 // can drift from PG (NATS). PG remains the source of truth; reconcile is
 // best-effort so drivers without reconcile support (pgqueue) stay valid.
@@ -256,9 +279,7 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 				// Version unreadable: park for the retry loop (which also
 				// skips while unreadable) instead of returning success with
 				// nothing queued.
-				s.pendMu.Lock()
-				s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
-				s.pendMu.Unlock()
+				s.parkSpec(reconcileKey(tenantID, mailboxID), parkedSpec{version: version, spec: spec})
 				log.Printf("mailbox %s/%s: consumer sync deferred for v%d (version unreadable, parked)", tenantID, mailboxID, version)
 				return
 			}
@@ -267,23 +288,19 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 				return
 			}
 			if err := rc.ReconcileConsumer(ctx, spec); err != nil {
-				s.pendMu.Lock()
-				s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
-				s.pendMu.Unlock()
+				s.parkSpec(reconcileKey(tenantID, mailboxID), parkedSpec{version: version, spec: spec})
 				log.Printf("mailbox %s/%s: consumer reconcile failed (pg committed v%d, will retry): %v", tenantID, mailboxID, version, err)
 			} else {
-				s.pendMu.Lock()
-				delete(s.pending, reconcileKey(tenantID, mailboxID))
-				s.pendMu.Unlock()
+				// Only evict entries at or below OUR version — a newer
+				// revision parked while we held the lock must survive.
+				s.clearParked(reconcileKey(tenantID, mailboxID), version)
 			}
 		})
 		if syncErr != nil {
 			// Lock busy (another replica is mid-write for this mailbox) or
 			// lock infrastructure failed: park for the retry loop instead
 			// of writing without mutual exclusion.
-			s.pendMu.Lock()
-			s.pending[reconcileKey(tenantID, mailboxID)] = parkedSpec{version: version, spec: spec}
-			s.pendMu.Unlock()
+			s.parkSpec(reconcileKey(tenantID, mailboxID), parkedSpec{version: version, spec: spec})
 			log.Printf("mailbox %s/%s: consumer sync deferred (lock busy/error): %v", tenantID, mailboxID, syncErr)
 		}
 	}
@@ -313,16 +330,12 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 			current, gerr := s.mailboxRepo.Get(ctx, mb.TenantID, mb.ID)
 			if gerr != nil || current == nil || current.ConfigVersion != mb.ConfigVersion {
 				if gerr == nil && current != nil && current.ConfigVersion > mb.ConfigVersion {
-					s.pendMu.Lock()
-					s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)}
-					s.pendMu.Unlock()
+					s.parkSpec(reconcileKey(mb.TenantID, mb.ID), parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)})
 				}
 				return
 			}
 			if err := rc.ReconcileConsumer(ctx, spec); err != nil {
-				s.pendMu.Lock()
-				s.pending[reconcileKey(mb.TenantID, mb.ID)] = parkedSpec{version: mb.ConfigVersion, spec: spec}
-				s.pendMu.Unlock()
+				s.parkSpec(reconcileKey(mb.TenantID, mb.ID), parkedSpec{version: mb.ConfigVersion, spec: spec})
 			}
 		})
 		if lerr != nil {

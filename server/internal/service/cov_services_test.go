@@ -803,13 +803,17 @@ func (r *versionMailboxRepo) Get(_ context.Context, tenantID, mailboxID string) 
 	if err := r.getErr[k]; err != nil {
 		return nil, err
 	}
-	if mb, ok := r.getOverride[k]; ok {
-		return mb, nil
+	src := r.mailboxes[k]
+	if o, ok := r.getOverride[k]; ok {
+		src = o
 	}
-	if mb, ok := r.mailboxes[k]; ok {
-		return mb, nil
+	if src == nil {
+		return nil, pgx.ErrNoRows
 	}
-	return nil, pgx.ErrNoRows
+	// Return a COPY: callers read fields concurrently with writers
+	// mutating the map's pointee.
+	cp := *src
+	return &cp, nil
 }
 
 func (r *versionMailboxRepo) ListAll(_ context.Context) ([]*core.Mailbox, error) {
@@ -1175,4 +1179,139 @@ func openNATSOverlayDriver(t *testing.T) *natsdriver.Driver {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
+}
+
+// gateDriver lets tests BLOCK the broker write (release channel) and
+// observe every spec applied.
+type gateDriver struct {
+	reconcileRecorder
+	block     chan struct{}
+	opened    bool
+	failFirst bool
+	applied   []core.ConsumerSpec
+}
+
+func (d *gateDriver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) error {
+	if d.block != nil && !d.opened {
+		<-d.block
+	}
+	d.mu.Lock()
+	d.applied = append(d.applied, spec)
+	fail := d.failFirst && len(d.applied) == 1
+	d.mu.Unlock()
+	if fail {
+		return errors.New("broker down")
+	}
+	return nil
+}
+
+// tryLockRepo wraps versionMailboxRepo with a try-style mailbox lock: the
+// FIRST holder wins, everyone else gets lock-busy until release — exactly
+// the advisory-lock semantics that drive the park path.
+type tryLockRepo struct {
+	versionMailboxRepo
+	mu      sync.Mutex
+	held    bool
+	release chan struct{}
+}
+
+func (r *tryLockRepo) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (func(), bool, error) {
+	r.mu.Lock()
+	if r.held {
+		r.mu.Unlock()
+		return nil, false, nil // busy
+	}
+	r.held = true
+	rel := r.release
+	r.mu.Unlock()
+	return func() {
+		<-rel // hold until the test releases
+		r.mu.Lock()
+		r.held = false
+		r.mu.Unlock()
+	}, true, nil
+}
+
+func newPendingRaceHarness(t *testing.T, failV1 bool) (*MailboxService, *gateDriver, *tryLockRepo) {
+	t.Helper()
+	repo := &tryLockRepo{
+		versionMailboxRepo: versionMailboxRepo{
+			current:     map[string]int{},
+			mailboxes:   map[string]*core.Mailbox{},
+			getErr:      map[string]error{},
+			getOverride: map[string]*core.Mailbox{},
+		},
+		release: make(chan struct{}),
+	}
+	repo.setMailbox("acme", "mb-1", 0)
+	drv := &gateDriver{block: make(chan struct{}), failFirst: failV1}
+	svc := NewMailboxService(repo, drv)
+	return svc, drv, repo
+}
+
+// A(v1) holds the mailbox lock with a BLOCKED broker write; B(v2) hits
+// lock-busy and parks. A then SUCCEEDS — the parked v2 must survive and
+// retryPending must apply it.
+func TestPendingRace_V1SuccessKeepsV2(t *testing.T) {
+	svc, drv, repo := newPendingRaceHarness(t, false)
+	ctx := context.Background()
+
+	go func() { _ = svc.UpdateConfig(ctx, "acme", "mb-1", 4, 111, 5, 3600) }()
+	time.Sleep(50 * time.Millisecond) // A holds the lock, blocked in the broker write
+
+	// B(v2): try-lock busy -> parks v2 (does NOT block on a mutex).
+	require.NoError(t, svc.UpdateConfig(ctx, "acme", "mb-1", 4, 222, 5, 3600))
+	svc.pendMu.Lock()
+	require.Len(t, svc.pending, 1, "v2 must be parked while A holds the lock")
+	require.Equal(t, 2, svc.pending["acme/mb-1"].version)
+	svc.pendMu.Unlock()
+
+	close(drv.block) // release the broker write -> A(v1) SUCCEEDS
+	close(repo.release)
+	time.Sleep(100 * time.Millisecond)
+
+	svc.pendMu.Lock()
+	still, ok := svc.pending["acme/mb-1"]
+	svc.pendMu.Unlock()
+	require.True(t, ok, "A's v1 success must NOT evict the parked v2")
+	require.Equal(t, 2, still.version, "the parked entry must still be v2")
+
+	repo.mu.Lock()
+	repo.getOverride["acme/mb-1"] = repo.mailboxes["acme/mb-1"] // PG reads v2
+	repo.mu.Unlock()
+	svc.retryPending(ctx)
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	require.GreaterOrEqual(t, len(drv.applied), 2, "v2 must be applied after the race")
+	assert.Equal(t, 222, drv.applied[len(drv.applied)-1].ACKWaitSeconds, "final broker config is v2")
+}
+
+// Same race, but A's blocked write FAILS — the pending entry must remain v2
+// (the older v1 failure used to overwrite it).
+func TestPendingRace_V1FailureKeepsV2(t *testing.T) {
+	svc, drv, repo := newPendingRaceHarness(t, true)
+	ctx := context.Background()
+
+	go func() { _ = svc.UpdateConfig(ctx, "acme", "mb-1", 4, 111, 5, 3600) }()
+	time.Sleep(50 * time.Millisecond)
+	require.NoError(t, svc.UpdateConfig(ctx, "acme", "mb-1", 4, 222, 5, 3600))
+
+	close(drv.block) // A(v1) FAILS (failFirst)
+	close(repo.release)
+	time.Sleep(100 * time.Millisecond)
+
+	svc.pendMu.Lock()
+	still, ok := svc.pending["acme/mb-1"]
+	svc.pendMu.Unlock()
+	require.True(t, ok, "v1's failure park must not clobber the parked v2")
+	require.Equal(t, 2, still.version, "parked entry stays the NEWER v2")
+
+	repo.mu.Lock()
+	repo.getOverride["acme/mb-1"] = repo.mailboxes["acme/mb-1"]
+	repo.mu.Unlock()
+	svc.retryPending(ctx)
+	drv.mu.Lock()
+	defer drv.mu.Unlock()
+	require.GreaterOrEqual(t, len(drv.applied), 2)
+	assert.Equal(t, 222, drv.applied[len(drv.applied)-1].ACKWaitSeconds, "final broker config is v2")
 }
