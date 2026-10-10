@@ -224,3 +224,33 @@ func TestReconcileTenant_RepairsLegacyCappedEventsStream(t *testing.T) {
 		t.Fatalf("EVENTS MaxMsgs not unlimited after repair: %d", info.Config.MaxMsgs)
 	}
 }
+
+// A healthy stream must NOT be judged drifted by the unlimited
+// representation difference (broker -1 vs Go zero 0) — the second
+// reconcile of an already-correct stream performs no config write.
+func TestReconcileTenant_SecondPassNoDriftWrite(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	tenant := testTenant(t)
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := d.ReconcileTenant(ctx, tenant); err != nil {
+			t.Fatalf("reconcile pass %d: %v", i+1, err)
+		}
+	}
+	// Stream config must equal the desired config (unlimited = -1 on broker).
+	st, err := d.js.Stream(ctx, streamName(tenant, "EVENTS"))
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	info, err := st.Info(ctx)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	want := eventStreamConfig(tenant)
+	if streamConfigDrifted(info.Config, want) {
+		t.Fatalf("healthy stream misjudged as drifted: live=%+v want=%+v", info.Config, want)
+	}
+}

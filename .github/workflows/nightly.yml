@@ -102,6 +102,7 @@ jobs:
             JANUS_MIGRATION_AUTO=false \
             JANUS_AUTH_ENABLED=false \
             JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8081 \
+            JANUS_GRPC_PORT=9091 \
             /tmp/janus-api > /tmp/janus-api-b.log 2>&1 &
           echo $! > /tmp/janus-api-b.pid
           for i in $(seq 1 60); do

@@ -25,8 +25,9 @@ check() {
 echo "=== Two-Replica Convergence: cross-replica config updates ==="
 
 for U in "$JANUS_URL_A" "$JANUS_URL_B"; do
-  curl -sf --max-time 5 "$U/healthz" >/dev/null || { echo "SKIP: API not reachable at $U"; exit 0; }
+  curl -sf --max-time 5 "$U/healthz" >/dev/null || { echo "FATAL: replica not reachable at $U"; exit 1; }
 done
+curl -sf --max-time 5 "http://localhost:8222/jsz" >/dev/null || { echo "FATAL: NATS monitor not reachable on 8222"; exit 1; }
 
 # Fixture is idempotent (201 or 409 are both fine); connection errors are fatal.
 for ep in tenants tenants/$TENANT/agents tenants/$TENANT/mailboxes; do
@@ -98,7 +99,8 @@ sleep 5
 BROKER_AW=$(curl -sf --max-time 5 "http://localhost:8222/jsz?config=true&consumers=true" 2>/dev/null \
   | TENANT_NAME="$TENANT" MB_NAME="$MB" python3 scripts/jsz_consumer_ackwait.py 2>/dev/null || echo "")
 if [ -z "$BROKER_AW" ]; then
-  echo "  ! broker introspection unavailable — behavioral pull/ack above is the gate"
+  echo "FATAL: broker consumer introspection unavailable (jsz config) — cannot verify convergence"
+  exit 1
 elif [ "$BROKER_AW" != "$FINAL_AW" ]; then
   echo "FATAL: broker ack_wait=${BROKER_AW}s != PG ack_wait=${FINAL_AW}s (not converged)"
   exit 1

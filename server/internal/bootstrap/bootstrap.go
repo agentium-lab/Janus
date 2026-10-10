@@ -1,6 +1,8 @@
 package bootstrap
 
 import (
+	"sync/atomic"
+
 	"context"
 	"fmt"
 	"log"
@@ -118,11 +120,36 @@ func EnsureMailboxConsumer(ctx context.Context, ensurer MailboxEnsurer, mb *core
 // this, a transient broker outage at boot left those tenants' mailboxes
 // permanently unusable on this instance — EnsureTenant was never retried
 // and the periodic consumer replay cannot initialize a tenant.
+// RetryProgress exposes the LIVE retry state so readiness can distinguish
+// "zero tenants available" from "some recovered, some still pending" — the
+// startup snapshot alone misjudged partial recovery as zero availability.
+type RetryProgress struct {
+	Total   int
+	pending atomic.Int64
+}
+
+// Pending returns how many tenants are still failing right now.
+func (p *RetryProgress) Pending() int {
+	if p == nil {
+		return 0
+	}
+	return int(p.pending.Load())
+}
+
 func RetryLoop(ctx context.Context, opts Options, failed []string, interval time.Duration) <-chan struct{} {
+	return RetryLoopProgress(ctx, opts, failed, interval, nil)
+}
+
+// RetryLoopProgress is RetryLoop with a live progress handle.
+func RetryLoopProgress(ctx context.Context, opts Options, failed []string, interval time.Duration, progress *RetryProgress) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		pending := failed
+		if progress != nil {
+			progress.Total = len(failed)
+			progress.pending.Store(int64(len(failed)))
+		}
 		for len(pending) > 0 {
 			select {
 			case <-ctx.Done():
@@ -137,6 +164,9 @@ func RetryLoop(ctx context.Context, opts Options, failed []string, interval time
 				}
 			}
 			pending = next
+			if progress != nil {
+				progress.pending.Store(int64(len(pending)))
+			}
 		}
 		log.Printf("bootstrap retry: all previously-failed tenants ensured")
 	}()

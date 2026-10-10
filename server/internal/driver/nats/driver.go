@@ -300,8 +300,23 @@ func retryStreamConfig(tenantID string) jetstream.StreamConfig {
 // streamConfigDrifted reports whether the broker's live config differs
 // from the desired config on the limits that matter for parity.
 func streamConfigDrifted(live, want jetstream.StreamConfig) bool {
-	return live.MaxMsgs != want.MaxMsgs ||
-		live.MaxAge != want.MaxAge ||
+	// The broker reports "unlimited" as -1 while the Go zero value is 0 —
+	// normalize both limits so a healthy stream is not misjudged as drifted
+	// (and re-updated under the global lock) on every reconcile pass.
+	normMsgs := func(n int64) int64 {
+		if n < 0 {
+			return 0
+		}
+		return n
+	}
+	normAge := func(d time.Duration) time.Duration {
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return normMsgs(live.MaxMsgs) != normMsgs(want.MaxMsgs) ||
+		normAge(live.MaxAge) != normAge(want.MaxAge) ||
 		live.Retention != want.Retention ||
 		live.Duplicates != want.Duplicates
 }
@@ -396,19 +411,33 @@ func (d *Driver) EnsureTenant(ctx context.Context, tenantID string) error {
 		return nil
 	}
 
-	taskStream, err := d.js.CreateStream(ctx, taskStreamConfig(tenantID))
-	if err != nil {
-		return fmt.Errorf("create task stream for tenant %s: %w", tenantID, err)
+	// Create-or-repair: a stream left behind by an older version (e.g. the
+	// legacy capped EVENTS) is verified and UPDATED, not just found — cold
+	// start converges existing streams the same way the periodic reconcile
+	// does.
+	fixStream := func(cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+		if st, err := d.js.Stream(ctx, cfg.Name); err == nil {
+			if info, ierr := st.Info(ctx); ierr == nil && !streamConfigDrifted(info.Config, cfg) {
+				return st, nil
+			}
+			return d.js.UpdateStream(ctx, cfg)
+		}
+		return d.js.CreateStream(ctx, cfg)
 	}
 
-	eventStream, err := d.js.CreateStream(ctx, eventStreamConfig(tenantID))
+	taskStream, err := fixStream(taskStreamConfig(tenantID))
 	if err != nil {
-		return fmt.Errorf("create event stream for tenant %s: %w", tenantID, err)
+		return fmt.Errorf("ensure task stream for tenant %s: %w", tenantID, err)
 	}
 
-	retryStream, err := d.js.CreateStream(ctx, retryStreamConfig(tenantID))
+	eventStream, err := fixStream(eventStreamConfig(tenantID))
 	if err != nil {
-		return fmt.Errorf("create retry stream for tenant %s: %w", tenantID, err)
+		return fmt.Errorf("ensure event stream for tenant %s: %w", tenantID, err)
+	}
+
+	retryStream, err := fixStream(retryStreamConfig(tenantID))
+	if err != nil {
+		return fmt.Errorf("ensure retry stream for tenant %s: %w", tenantID, err)
 	}
 
 	d.tenant[tenantID] = &tenantStreams{

@@ -141,11 +141,13 @@ func main() {
 	// permanently unusable on this instance.
 	bootstrapTotal := len(bootResult.FailedTenants) + bootResult.TenantsEnsured
 	var bootstrapDone <-chan struct{}
+	var bootstrapProgress *bootstrap.RetryProgress
 	if len(bootResult.FailedTenants) > 0 {
-		bootstrapDone = bootstrap.RetryLoop(context.Background(), bootstrap.Options{
+		bootstrapProgress = &bootstrap.RetryProgress{}
+		bootstrapDone = bootstrap.RetryLoopProgress(context.Background(), bootstrap.Options{
 			TenantLister: tenantRepo,
 			QueueEnsurer: queueDrv,
-		}, bootResult.FailedTenants, 15*time.Second)
+		}, bootResult.FailedTenants, 15*time.Second, bootstrapProgress)
 	}
 
 	agentRepo := pgdriver.NewAgentRepository(pool)
@@ -409,11 +411,14 @@ func main() {
 		// the instance is useless either way. PARTIAL failures stay
 		// degraded forever: the instance still serves healthy tenants, and
 		// fleet-wide escalation for one bad tenant would 503 every pod.
-		zeroAvailable := bootResult.TenantsEnsured == 0 && bootstrapTotal > 0
+		// Dynamic zero-availability: judge by the LIVE pending count, not
+		// the startup snapshot — partial recovery must not read as zero.
+		pendingNow := bootstrapProgress.Pending()
+		zeroAvailable := pendingNow >= bootstrapTotal && bootstrapTotal > 0
 		if zeroAvailable && time.Since(processStart) > 5*time.Minute {
 			select {
 			case <-bootstrapDone:
-				return nil // recovered during the window
+				return nil
 			default:
 				return fmt.Errorf("bootstrap: 0/%d tenants available after 5m", bootstrapTotal)
 			}

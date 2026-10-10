@@ -181,7 +181,9 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		return nil, err
 	}
 
-	s.ensureMailboxConsumer(ctx, tenantID, mailboxID)
+	if err := s.ensureMailboxConsumer(ctx, tenantID, mailboxID); err != nil {
+		return nil, err
+	}
 	metrics.PullRequests.WithLabelValues(tenantID, mailboxID).Inc()
 
 	deliveries, err := s.queueDriver.FetchTasks(ctx, tenantID, mailboxID, core.FetchOptions{
@@ -647,12 +649,23 @@ func (s *DispatchService) publishEvent(ctx context.Context, event core.JanusEven
 	_ = s.queueDriver.PublishEvent(ctx, event)
 }
 
-func (s *DispatchService) ensureMailboxConsumer(ctx context.Context, tenantID, mailboxID string) {
-	mb, err := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
-	if err != nil || mb == nil {
-		return
+// ensureMailboxConsumer guarantees the tenant streams + mailbox DLQ +
+// durable consumer exist BEFORE the pull, and PROPAGATES errors: a pull
+// against an uninitialized tenant used to fail opaquely (or wait for the
+// 5-minute reconcile) when another replica created the tenant — errors
+// here now surface immediately with a clear cause.
+func (s *DispatchService) ensureMailboxConsumer(ctx context.Context, tenantID, mailboxID string) error {
+	if err := s.queueDriver.EnsureTenant(ctx, tenantID); err != nil {
+		return fmt.Errorf("ensure tenant %s: %w", tenantID, err)
 	}
-	_ = s.queueDriver.EnsureMailbox(ctx, core.MailboxSpec{
+	mb, err := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+	if err != nil {
+		return fmt.Errorf("mailbox lookup %s: %w", mailboxID, err)
+	}
+	if mb == nil {
+		return fmt.Errorf("mailbox %s not found", mailboxID)
+	}
+	if err := s.queueDriver.EnsureMailbox(ctx, core.MailboxSpec{
 		TenantID:         tenantID,
 		MailboxID:        mailboxID,
 		AgentID:          mb.AgentID,
@@ -660,14 +673,19 @@ func (s *DispatchService) ensureMailboxConsumer(ctx context.Context, tenantID, m
 		ACKWaitSeconds:   mb.ACKWaitSeconds,
 		MaxDeliver:       mb.MaxDeliver,
 		RetentionSeconds: mb.RetentionSeconds,
-	})
-	_ = s.queueDriver.EnsureConsumer(ctx, core.ConsumerSpec{
+	}); err != nil {
+		return fmt.Errorf("ensure mailbox %s: %w", mailboxID, err)
+	}
+	if err := s.queueDriver.EnsureConsumer(ctx, core.ConsumerSpec{
 		TenantID:       tenantID,
 		MailboxID:      mailboxID,
 		DurableName:    mailboxID,
 		ACKWaitSeconds: mb.ACKWaitSeconds,
 		MaxDeliver:     mb.MaxDeliver,
-	})
+	}); err != nil {
+		return fmt.Errorf("ensure consumer %s: %w", mailboxID, err)
+	}
+	return nil
 }
 
 func generateLeaseID() string {

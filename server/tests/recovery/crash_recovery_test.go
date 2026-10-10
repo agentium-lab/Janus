@@ -5,6 +5,7 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -163,8 +164,9 @@ func createTasks(t *testing.T, port int, n int) {
 		body := fmt.Sprintf(`{"id":"crash-%d","source_agent":"crash-agent","target_type":"mailbox","target_value":"crash-mb","mailbox_id":"crash-mb","envelope":{"janus_version":"1","task_id":"crash-%d","tenant_id":"%s","source_agent":"crash-agent","target":{"type":"mailbox","value":"crash-mb"},"priority":"normal","payload":{"type":"text","content":"crash"},"trace":{"trace_id":"crash-%d"}}}`, i, i, crashTenant, i)
 		resp, err := http.Post(base+"/v1/tenants/"+crashTenant+"/tasks", "application/json", strings.NewReader(body))
 		require.NoError(t, err, "create task %d", i)
+		rb, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
-		require.Equal(t, http.StatusCreated, resp.StatusCode, "task %d", i)
+		require.Equal(t, http.StatusCreated, resp.StatusCode, "task %d: %s", i, string(rb))
 	}
 }
 
