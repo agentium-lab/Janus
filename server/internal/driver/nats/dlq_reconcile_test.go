@@ -1,12 +1,14 @@
 package nats
 
 import (
+	"fmt"
 	"time"
 
 	"context"
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 func dlqTestMailboxSpec(tenantID, mailboxID string) core.MailboxSpec {
@@ -179,5 +181,46 @@ func TestReconcileConsumer_UnchangedSpecSkipsWrite(t *testing.T) {
 	}
 	if info.Config.AckWait != 60*time.Second {
 		t.Fatalf("AckWait drifted: %v", info.Config.AckWait)
+	}
+}
+
+// A legacy EVENTS stream capped at 10k messages (the pre-parity restore bug)
+// must be UPDATED to the current config by ReconcileTenant — not left as-is.
+func TestReconcileTenant_RepairsLegacyCappedEventsStream(t *testing.T) {
+	d := openDriver(t)
+	ctx := context.Background()
+	tenant := testTenant(t)
+	if err := d.EnsureTenant(ctx, tenant); err != nil {
+		t.Fatalf("ensure tenant: %v", err)
+	}
+
+	// Simulate the legacy drift: force the live stream to the bad config.
+	name := streamName(tenant, "EVENTS")
+	if _, err := d.js.UpdateStream(ctx, jetstream.StreamConfig{
+		Name: name, Subjects: []string{fmt.Sprintf("janus.%s.events.>", tenant)},
+		Retention: jetstream.LimitsPolicy, MaxAge: 30 * 24 * time.Hour,
+		MaxMsgs: 10000, Storage: jetstream.FileStorage,
+	}); err != nil {
+		t.Fatalf("seed legacy config: %v", err)
+	}
+
+	if err := d.ReconcileTenant(ctx, tenant); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	st, err := d.js.Stream(ctx, name)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	info, err := st.Info(ctx)
+	if err != nil {
+		t.Fatalf("info: %v", err)
+	}
+	if info.Config.MaxMsgs == 10000 {
+		t.Fatalf("legacy 10k cap not repaired: MaxMsgs=%d", info.Config.MaxMsgs)
+	}
+	// Unlimited is reported as -1 by the broker (Go zero value is 0).
+	if info.Config.MaxMsgs > 0 {
+		t.Fatalf("EVENTS MaxMsgs not unlimited after repair: %d", info.Config.MaxMsgs)
 	}
 }

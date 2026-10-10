@@ -48,6 +48,7 @@ import (
 )
 
 func main() {
+	processStart := time.Now()
 	cfg := config.Load()
 
 	// Wire the global tracer provider BEFORE any component starts, so the
@@ -138,6 +139,7 @@ func main() {
 	// Tenants that failed EnsureTenant (e.g. broker down at boot) keep
 	// retrying in the background; without this their mailboxes stayed
 	// permanently unusable on this instance.
+	bootstrapTotal := len(bootResult.FailedTenants) + bootResult.TenantsEnsured
 	var bootstrapDone <-chan struct{}
 	if len(bootResult.FailedTenants) > 0 {
 		bootstrapDone = bootstrap.RetryLoop(context.Background(), bootstrap.Options{
@@ -401,18 +403,26 @@ func main() {
 		if bootstrapDone == nil {
 			return nil // no failed tenants
 		}
+		// ZERO-tenant availability (e.g. JetStream permission or capacity
+		// denial for every stream) means this instance can serve nothing —
+		// after a grace window it FAILS readiness so orchestration can act;
+		// the instance is useless either way. PARTIAL failures stay
+		// degraded forever: the instance still serves healthy tenants, and
+		// fleet-wide escalation for one bad tenant would 503 every pod.
+		zeroAvailable := bootResult.TenantsEnsured == 0 && bootstrapTotal > 0
+		if zeroAvailable && time.Since(processStart) > 5*time.Minute {
+			select {
+			case <-bootstrapDone:
+				return nil // recovered during the window
+			default:
+				return fmt.Errorf("bootstrap: 0/%d tenants available after 5m", bootstrapTotal)
+			}
+		}
 		select {
 		case <-bootstrapDone:
 			return nil
 		default:
-			// Tenant-level bootstrap failures stay DEGRADED forever — never
-			// fail the probe. Every replica bootstraps the same PG tenant
-			// list, so escalating (as this once did after 5 minutes) turned
-			// ANY shared failure or single bad tenant into a fleet-wide 503:
-			// HPA removed every pod at once. Broker-wide outages are already
-			// caught by the dedicated nats/postgres checks; doomed per-tenant
-			// traffic fails fast at the pull path with a clear error.
-			return observability.Degraded(fmt.Errorf("tenant bootstrap retry in progress (%d tenant(s) pending)", len(bootResult.FailedTenants)))
+			return observability.Degraded(fmt.Errorf("tenant bootstrap retry in progress (%d/%d tenant(s) pending)", len(bootResult.FailedTenants), bootstrapTotal))
 		}
 	})
 	if natsDrv != nil {

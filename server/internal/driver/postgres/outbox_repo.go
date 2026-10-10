@@ -302,18 +302,30 @@ func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release f
 	if err != nil {
 		return nil, false, err
 	}
+	// Dual-lock transition (see MailboxRepository.AcquireMailboxLock): the
+	// legacy hashtext key is taken alongside the FNV key so pre-FNV
+	// replicas still lose the tick race instead of double-projecting.
 	lockKey := advisoryLockKey64(key)
-	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&locked); err != nil {
+	var locked, legacyLocked bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock($1), pg_try_advisory_lock(hashtext($2))`, lockKey, key,
+	).Scan(&locked, &legacyLocked); err != nil {
 		conn.Release()
 		return nil, false, err
 	}
-	if !locked {
+	if !locked || !legacyLocked {
+		if locked {
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		}
+		if legacyLocked {
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, key)
+		}
 		conn.Release()
 		return nil, false, nil
 	}
 	return func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		_, _ = conn.Exec(context.Background(),
+			`SELECT pg_advisory_unlock(hashtext($1)), pg_advisory_unlock($2)`, key, lockKey)
 		conn.Release()
 	}, true, nil
 }

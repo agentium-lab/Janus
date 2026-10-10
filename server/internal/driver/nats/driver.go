@@ -297,6 +297,15 @@ func retryStreamConfig(tenantID string) jetstream.StreamConfig {
 	}
 }
 
+// streamConfigDrifted reports whether the broker's live config differs
+// from the desired config on the limits that matter for parity.
+func streamConfigDrifted(live, want jetstream.StreamConfig) bool {
+	return live.MaxMsgs != want.MaxMsgs ||
+		live.MaxAge != want.MaxAge ||
+		live.Retention != want.Retention ||
+		live.Duplicates != want.Duplicates
+}
+
 func dlqStreamConfig(tenantID, mailboxID string) jetstream.StreamConfig {
 	return jetstream.StreamConfig{
 		Name:      streamName(tenantID, "DLQ_"+sanitize(mailboxID)),
@@ -335,7 +344,20 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 	}
 	fix := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
 		if st, err := d.js.Stream(ctx, name); err == nil {
-			return st, nil // stream exists on the broker
+			// Legacy drift repair: streams created by an older version may
+			// carry different limits (e.g. EVENTS once capped at 10k msgs
+			// by the pre-parity restore path). Verify and UPDATE the config
+			// in place so existing streams converge to the current spec —
+			// not just newly created ones.
+			if info, ierr := st.Info(ctx); ierr == nil && streamConfigDrifted(info.Config, cfg) {
+				updated, uerr := d.js.UpdateStream(ctx, cfg)
+				if uerr != nil {
+					return nil, fmt.Errorf("update drifted stream %s: %w", name, uerr)
+				}
+				log.Printf("nats: updated drifted stream config %s for tenant %s", name, tenantID)
+				return updated, nil
+			}
+			return st, nil
 		}
 		st, err := d.js.CreateStream(ctx, cfg)
 		if err != nil {

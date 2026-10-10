@@ -72,18 +72,36 @@ func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, ma
 	// stable across PG major versions — during a mixed-version rolling
 	// upgrade old and new replicas computed DIFFERENT lock keys for the
 	// same mailbox, silently reopening the lost-update window.
-	lockKey := advisoryLockKey64("mailbox:" + tenantID + ":" + mailboxID)
-	var locked bool
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, lockKey).Scan(&locked); err != nil {
+	// Rolling-upgrade transition: pre-FNV replicas lock via
+	// pg_try_advisory_lock(hashtext(key)). hashtext is computed server-side
+	// and cannot be reproduced in Go, so the legacy lock is taken with the
+	// SAME SQL the old version used. Both keys are acquired in one statement
+	// in a FIXED order (FNV first, legacy second — every holder uses this
+	// order, so mixed old/new replicas cannot deadlock). Remove the legacy
+	// half once no pre-FNV replicas remain in the fleet.
+	lockName := "mailbox:" + tenantID + ":" + mailboxID
+	lockKey := advisoryLockKey64(lockName)
+	var locked, legacyLocked bool
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_try_advisory_lock($1), pg_try_advisory_lock(hashtext($2))`, lockKey, lockName,
+	).Scan(&locked, &legacyLocked); err != nil {
 		conn.Release()
 		return nil, false, err
 	}
-	if !locked {
+	if !locked || !legacyLocked {
+		// Release whichever half was acquired to avoid leaking a held lock.
+		if locked {
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		}
+		if legacyLocked {
+			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, lockName)
+		}
 		conn.Release()
 		return nil, false, nil
 	}
 	return func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, lockKey)
+		_, _ = conn.Exec(context.Background(),
+			`SELECT pg_advisory_unlock(hashtext($1)), pg_advisory_unlock($2)`, lockName, lockKey)
 		conn.Release()
 	}, true, nil
 }
