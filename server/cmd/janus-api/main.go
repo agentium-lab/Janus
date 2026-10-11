@@ -134,7 +134,19 @@ func main() {
 		QueueEnsurer: queueDrv,
 	})
 	if berr != nil {
-		log.Fatalf("bootstrap: %v", berr)
+		// A total listing failure is usually transient on a co-starting
+		// replica (migrations still applying on another instance). Retrying
+		// the whole bootstrap once after a short delay keeps B alive instead
+		// of fataling before its HTTP listener even binds.
+		log.Printf("bootstrap: %v (retrying in 5s)", berr)
+		time.Sleep(5 * time.Second)
+		bootResult, berr = bootstrap.Run(context.Background(), bootstrap.Options{
+			TenantLister: tenantRepo,
+			QueueEnsurer: queueDrv,
+		})
+		if berr != nil {
+			log.Fatalf("bootstrap: %v", berr)
+		}
 	}
 	// Tenants that failed EnsureTenant (e.g. broker down at boot) keep
 	// retrying in the background; without this their mailboxes stayed

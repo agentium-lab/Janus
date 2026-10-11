@@ -11,8 +11,6 @@ PG_USER="${JANUS_PG_USER:-janus}"
 PG_DB="${JANUS_PG_DBNAME:-janus_test}"
 TENANT="two-replica"
 MB="conv-mb"
-PASS=0; FAIL=0
-
 check() {
   local name="$1"; local condition="$2"
   if eval "$condition"; then
@@ -29,26 +27,36 @@ for U in "$JANUS_URL_A" "$JANUS_URL_B"; do
 done
 curl -sf --max-time 5 "http://localhost:8222/jsz" >/dev/null || { echo "FATAL: NATS monitor not reachable on 8222"; exit 1; }
 
-# Fixture is idempotent (201 or 409 are both fine); connection errors are fatal.
-for ep in tenants tenants/$TENANT/agents tenants/$TENANT/mailboxes; do
-  case "$ep" in
-    tenants) BODY="{\"id\":\"$TENANT\",\"name\":\"Two Replica\"}" ;;
-    */agents) BODY='{"id":"conv-agent","display_name":"C","protocol":"a2a"}' ;;
-    *) BODY="{\"id\":\"$MB\",\"agent_id\":\"conv-agent\"}" ;;
-  esac
+# Fixture is idempotent: create-then-tolerate-exists (the API sanitizes
+# duplicate-key to 400, and agent/mailbox upserts are 201-or-duplicate).
+create_or_exists() {
+  local ep="$1" body="$2" get_url="$3"
+  local code
   code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST "$JANUS_URL_A/v1/$ep" \
-    -H 'Content-Type: application/json' -d "$BODY")
-  case "$code" in 201|409) ;; *) echo "FATAL: fixture $ep -> HTTP $code"; exit 1 ;; esac
-done
+    -H 'Content-Type: application/json' -d "$body")
+  case "$code" in
+    200|201) return 0 ;;
+    400)
+      # Only tolerate duplicates: the concrete resource must GET 200.
+      local gcode
+      gcode=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$get_url")
+      [ "$gcode" = "200" ] && return 0
+      echo "FATAL: fixture $ep -> HTTP $code (GET $get_url -> $gcode)"; return 1 ;;
+    *) echo "FATAL: fixture $ep -> HTTP $code"; return 1 ;;
+  esac
+}
+create_or_exists "tenants" "{\"id\":\"$TENANT\",\"name\":\"Two Replica\"}" "$JANUS_URL_A/v1/tenants/$TENANT" || exit 1
+create_or_exists "tenants/$TENANT/agents" '{"id":"conv-agent","display_name":"C","protocol":"a2a"}' "$JANUS_URL_A/v1/tenants/$TENANT/agents/conv-agent" || exit 1
+create_or_exists "tenants/$TENANT/mailboxes" "{\"id\":\"$MB\",\"agent_id\":\"conv-agent\"}" "$JANUS_URL_A/v1/tenants/$TENANT/mailboxes/$MB" || exit 1
 
 echo "  racing concurrent config updates across both replicas..."
 for i in 1 2 3 4 5; do
   AW=$((60 + i)); BW=$((120 + i))
-  curl -sf --max-time 5 -X PUT "$JANUS_URL_A/v1/tenants/$TENANT/mailboxes/$MB/config" \
+  curl -sf --max-time 5 -X PATCH "$JANUS_URL_A/v1/tenants/$TENANT/mailboxes/$MB" \
     -H 'Content-Type: application/json' \
     -d "{\"max_concurrency\":4,\"ack_wait_seconds\":$AW,\"max_deliver\":5,\"retention_seconds\":3600}" >/dev/null &
   PA=$!
-  curl -sf --max-time 5 -X PUT "$JANUS_URL_B/v1/tenants/$TENANT/mailboxes/$MB/config" \
+  curl -sf --max-time 5 -X PATCH "$JANUS_URL_B/v1/tenants/$TENANT/mailboxes/$MB" \
     -H 'Content-Type: application/json' \
     -d "{\"max_concurrency\":4,\"ack_wait_seconds\":$BW,\"max_deliver\":5,\"retention_seconds\":3600}" >/dev/null &
   PB=$!
@@ -94,23 +102,28 @@ curl -sf --max-time 5 -X POST "$JANUS_URL_B/v1/tenants/$TENANT/tasks/$TASK_ID/ac
   || { echo "FATAL: ack failed"; exit 1; }
 echo "  ✓ acked"
 
-# 5. Broker consumer config equals the durable PG value (strict).
-sleep 5
-BROKER_AW=$(curl -sf --max-time 5 "http://localhost:8222/jsz?config=true&consumers=true" 2>/dev/null \
-  | TENANT_NAME="$TENANT" MB_NAME="$MB" python3 scripts/jsz_consumer_ackwait.py 2>/dev/null || echo "")
-if [ -z "$BROKER_AW" ]; then
-  echo "FATAL: broker consumer introspection unavailable (jsz config) — cannot verify convergence"
+# 5. Broker consumer config converges to the durable PG value (poll <= 60s).
+# Eventual consistency is the contract: the last PG commit may still be
+# parked for the retry tick while the broker serves the previous revision.
+BROKER_AW=""
+for i in $(seq 1 30); do
+  BROKER_AW=$(curl -sf --max-time 5 "http://localhost:8222/jsz?config=true&consumers=true" 2>/dev/null \
+    | TENANT_NAME="$TENANT" MB_NAME="$MB" python3 scripts/jsz_consumer_ackwait.py 2>/dev/null || echo "")
+  if [ -z "$BROKER_AW" ]; then
+    echo "FATAL: broker consumer introspection unavailable (jsz config) — cannot verify convergence"
+    exit 1
+  fi
+  if [ "$BROKER_AW" = "$FINAL_AW" ]; then
+    echo "  ✓ broker == PG (ack_wait=${FINAL_AW}s)"
+    break
+  fi
+  sleep 2
+done
+if [ "$BROKER_AW" != "$FINAL_AW" ]; then
+  echo "FATAL: broker ack_wait=${BROKER_AW}s != PG ack_wait=${FINAL_AW}s after 60s (not converged)"
   exit 1
-elif [ "$BROKER_AW" != "$FINAL_AW" ]; then
-  echo "FATAL: broker ack_wait=${BROKER_AW}s != PG ack_wait=${FINAL_AW}s (not converged)"
-  exit 1
-else
-  echo "  ✓ broker == PG (ack_wait=${FINAL_AW}s)"
 fi
 
 echo ""
 echo "=== Results: two-replica convergence PASS ==="
 
-echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
-exit $FAIL

@@ -91,9 +91,15 @@ jobs:
             JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8080 \
             /tmp/janus-api > /tmp/janus-api.log 2>&1 &
           echo $! > /tmp/janus-api.pid
-          # Replica B: same PG/NATS, second port. Exercises the cross-replica
-          # advisory locks and config-version convergence paths that a single
-          # instance never touches.
+          for i in $(seq 1 60); do
+            curl -sf "$JANUS_URL/readyz" >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -sf "$JANUS_URL/readyz"
+          # Replica B starts only AFTER A is ready: on a fresh database A is
+          # still running migrations while B boots, and B's bootstrap queries
+          # the tenants table before it exists -> B fatals instantly and the
+          # convergence gate finds port 8081 dead.
           JANUS_QUEUE_DRIVER=nats \
             JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
             JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
@@ -106,10 +112,10 @@ jobs:
             /tmp/janus-api > /tmp/janus-api-b.log 2>&1 &
           echo $! > /tmp/janus-api-b.pid
           for i in $(seq 1 60); do
-            curl -sf "$JANUS_URL/readyz" >/dev/null 2>&1 && break
+            curl -sf http://localhost:8081/readyz >/dev/null 2>&1 && break
             sleep 1
           done
-          curl -sf "$JANUS_URL/readyz"
+          curl -sf http://localhost:8081/readyz
 
       - name: Dependency smoke (API/PG/NATS/Redis + metrics)
         run: JANUS_URL=$JANUS_URL bash scripts/smoke_api_dependencies.sh
