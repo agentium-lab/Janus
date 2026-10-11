@@ -1316,38 +1316,69 @@ func TestPendingRace_V1FailureKeepsV2(t *testing.T) {
 	assert.Equal(t, 222, drv.applied[len(drv.applied)-1].ACKWaitSeconds, "final broker config is v2")
 }
 
-// Gap 1: a stale ListAll snapshot (v1) parked by the replay's lock-busy
-// branch must not clobber an already-parked v2.
+// Gap 1 (real path): ReconcileAllConsumers with a BUSY mailbox lock must
+// park the stale ListAll snapshot WITHOUT clobbering an already-parked v2.
 func TestPendingRace_ReplayLockBusyKeepsNewer(t *testing.T) {
-	repo := newVersionRepo()
-	repo.setMailbox("acme", "mb-1", 1) // ListAll will snapshot v1
+	repo := &getHookRepo{versionMailboxRepo: versionMailboxRepo{
+		current: map[string]int{}, mailboxes: map[string]*core.Mailbox{
+			"acme/mb-1": {TenantID: "acme", ID: "mb-1", ConfigVersion: 1, MaxConcurrency: 4, ACKWaitSeconds: 111},
+		},
+		getErr: map[string]error{}, getOverride: map[string]*core.Mailbox{},
+	}}
+	repo.current["acme/mb-1"] = 1
+	// Busy lock: every AcquireMailboxLock reports held-by-another-replica.
+	lockRepo := &busyLockForReplay{getHookRepo: repo}
 	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
-	svc := NewMailboxService(repo, drv)
+	svc := NewMailboxService(lockRepo, drv)
 
-	// A newer revision is already parked (v2, from a racing update).
+	// A newer revision is already parked (v2).
 	svc.pendMu.Lock()
 	svc.pending["acme/mb-1"] = parkedSpec{version: 2, spec: core.ConsumerSpec{
 		TenantID: "acme", MailboxID: "mb-1", ACKWaitSeconds: 222}}
 	svc.pendMu.Unlock()
 
-	// Simulate the replay hitting a busy lock for the v1 snapshot: call
-	// parkSpec directly with the stale entry (the exact branch behavior).
-	svc.parkSpec("acme/mb-1", parkedSpec{version: 1, spec: core.ConsumerSpec{
-		TenantID: "acme", MailboxID: "mb-1", ACKWaitSeconds: 111}})
+	// Drive the REAL full reconcile: ListAll returns the v1 snapshot; the
+	// per-mailbox lock is busy -> the lock-busy branch parks v1.
+	svc.ReconcileAllConsumers(context.Background())
 
 	svc.pendMu.Lock()
 	defer svc.pendMu.Unlock()
 	require.Len(t, svc.pending, 1)
-	assert.Equal(t, 2, svc.pending["acme/mb-1"].version, "stale replay park must not clobber parked v2")
+	assert.Equal(t, 2, svc.pending["acme/mb-1"].version, "replay lock-busy park must not clobber parked v2")
 	assert.Equal(t, 222, svc.pending["acme/mb-1"].spec.ACKWaitSeconds)
 }
 
-// Gap 2: the retry loop selects the parked stale v1; while its PG Get runs,
-// a newer v2 parks. Get returns PG=v2 (>v1): the stale drop must evict only
-// the v1 entry — the v2 parked mid-flight must survive and be applied.
+// busyLockForReplay always reports the mailbox lock as held elsewhere.
+type busyLockForReplay struct {
+	*getHookRepo
+}
+
+func (r *busyLockForReplay) ListAll(ctx context.Context) ([]*core.Mailbox, error) {
+	return r.getHookRepo.ListAll(ctx)
+}
+
+func (r *busyLockForReplay) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
+	return nil, false, nil // busy
+}
+
+// Gap 2 (real path): retryPending selects parked v1; its PG Get BLOCKS on a
+// channel; v2 parks mid-flight; Get then returns PG=v2 — the stale drop must
+// evict only v1, and the loop's next pass applies v2.
 func TestPendingRace_StaleRetryDropKeepsNewer(t *testing.T) {
-	repo := &getHookRepo{versionMailboxRepo: *newVersionRepo()}
-	repo.setMailbox("acme", "mb-1", 2) // durable PG is v2
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	repo := &getHookRepo{versionMailboxRepo: versionMailboxRepo{
+		current: map[string]int{}, mailboxes: map[string]*core.Mailbox{
+			"acme/mb-1": {TenantID: "acme", ID: "mb-1", ConfigVersion: 2, MaxConcurrency: 4, ACKWaitSeconds: 222},
+		},
+		getErr: map[string]error{}, getOverride: map[string]*core.Mailbox{},
+	}}
+	repo.current["acme/mb-1"] = 2
+	var once sync.Once
+	repo.hook = func() {
+		once.Do(func() { close(entered) })
+		<-release // hold the stale retry's version-gate Get (first call only)
+	}
 	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
 	svc := NewMailboxService(repo, drv)
 
@@ -1357,17 +1388,22 @@ func TestPendingRace_StaleRetryDropKeepsNewer(t *testing.T) {
 		TenantID: "acme", MailboxID: "mb-1", ACKWaitSeconds: 111}}
 	svc.pendMu.Unlock()
 
-	// The retry loop reads PG once (v2); the mid-flight v2 park below
-	// happens BEFORE that read returns in the wild — simulate by parking v2
-	// first, then running the retry (Get returns v2 > v1 -> stale drop).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		svc.retryPending(context.Background()) // selects v1, blocks in Get
+	}()
+	<-entered // the retry is INSIDE its version-gate Get now
+
+	// Mid-flight: the newer v2 parks.
 	svc.parkSpec("acme/mb-1", parkedSpec{version: 2, spec: core.ConsumerSpec{
 		TenantID: "acme", MailboxID: "mb-1", ACKWaitSeconds: 222}})
-
-	svc.retryPending(context.Background())
+	close(release) // Get returns PG=v2 (>v1): stale drop must keep v2
+	<-done
 
 	svc.pendMu.Lock()
-	defer svc.pendMu.Unlock()
 	_, exists := svc.pending["acme/mb-1"]
+	svc.pendMu.Unlock()
 	assert.False(t, exists, "PG=v2 applied via the parked v2 -> entry drains")
 	drv.mu.Lock()
 	defer drv.mu.Unlock()
@@ -1376,7 +1412,15 @@ func TestPendingRace_StaleRetryDropKeepsNewer(t *testing.T) {
 		"the NEWER parked revision is what got applied, not the stale v1")
 }
 
-// getHookRepo allows tests to hook Get later if needed; baseline passes through.
+// getHookRepo hooks Get for mid-flight interleaving.
 type getHookRepo struct {
 	versionMailboxRepo
+	hook func()
+}
+
+func (r *getHookRepo) Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	if r.hook != nil {
+		r.hook()
+	}
+	return r.versionMailboxRepo.Get(ctx, tenantID, mailboxID)
 }
