@@ -1181,6 +1181,17 @@ func openNATSOverlayDriver(t *testing.T) *natsdriver.Driver {
 	return d
 }
 
+// waitCh waits for c or fails the test after d (deterministic barriers,
+// no naked sleeps).
+func waitCh(t *testing.T, c <-chan struct{}, d time.Duration, what string) {
+	t.Helper()
+	select {
+	case <-c:
+	case <-time.After(d):
+		t.Fatalf("timed out after %v waiting for %s", d, what)
+	}
+}
+
 // gateDriver lets tests BLOCK the broker write (release channel) and
 // observe every spec applied.
 type gateDriver struct {
@@ -1393,13 +1404,13 @@ func TestPendingRace_StaleRetryDropKeepsNewer(t *testing.T) {
 		defer close(done)
 		svc.retryPending(context.Background()) // selects v1, blocks in Get
 	}()
-	<-entered // the retry is INSIDE its version-gate Get now
+	waitCh(t, entered, 5*time.Second, "stale retry to enter its version-gate Get")
 
 	// Mid-flight: the newer v2 parks.
 	svc.parkSpec("acme/mb-1", parkedSpec{version: 2, spec: core.ConsumerSpec{
 		TenantID: "acme", MailboxID: "mb-1", ACKWaitSeconds: 222}})
 	close(release) // Get returns PG=v2 (>v1): stale drop must keep v2
-	<-done
+	waitCh(t, done, 5*time.Second, "retry loop to finish")
 
 	svc.pendMu.Lock()
 	_, exists := svc.pending["acme/mb-1"]

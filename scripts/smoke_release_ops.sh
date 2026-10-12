@@ -54,19 +54,44 @@ check "All up migrations have down counterparts" "[ $UP_COUNT -eq $DOWN_COUNT ]"
 TESTDB="janus_rollback_drill_$$"
 psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -c "CREATE DATABASE $TESTDB" >/dev/null 2>&1 || true
 
+# ON_ERROR_STOP: every migration must apply cleanly and roll back cleanly —
+# per-file errors were previously swallowed (|| true), so a broken pair
+# still "passed" as long as table counts moved.
+UP_FAIL=0
 for f in $UP_FILES; do
-  psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -f "$f" >/dev/null 2>&1 || true
+  if ! psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1; then
+    echo "  ✗ UP migration FAILED: $(basename "$f")"
+    UP_FAIL=$((UP_FAIL+1))
+  fi
 done
+check "All up migrations apply cleanly" "[ $UP_FAIL -eq 0 ]"
 
 TABLES_UP=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -t -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
 check "Migrations applied ($TABLES_UP tables)" "[ '$TABLES_UP' -gt 5 ]"
 
-for f in $(echo "$DOWN_FILES" | tac); do
-  psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -f "$f" >/dev/null 2>&1 || true
+# Schema spot-checks: tables the final migration set must have created.
+for t in tenants agents mailboxes tasks task_attempts outbox_events budgets; do
+  HAS=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -t -A -c     "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='$t'" 2>/dev/null)
+  check "Schema has $t after up" "[ '$HAS' = '1' ]"
 done
+
+DOWN_FAIL=0
+for f in $(echo "$DOWN_FILES" | tac); do
+  if ! psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -v ON_ERROR_STOP=1 -f "$f" >/dev/null 2>&1; then
+    echo "  ✗ DOWN migration FAILED: $(basename "$f")"
+    DOWN_FAIL=$((DOWN_FAIL+1))
+  fi
+done
+check "All down migrations apply cleanly" "[ $DOWN_FAIL -eq 0 ]"
 
 TABLES_DOWN=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -t -c "SELECT count(*) FROM pg_tables WHERE schemaname='public'" 2>/dev/null | tr -d ' ')
 check "Rollback reduces tables ($TABLES_DOWN remaining)" "[ '$TABLES_DOWN' -lt '$TABLES_UP' ]"
+
+# Full-cycle proof: after ALL downs, the core tables must be GONE.
+for t in tenants tasks outbox_events; do
+  GONE=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$TESTDB" -t -A -c     "SELECT count(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='$t'" 2>/dev/null)
+  check "$t dropped after rollback" "[ '$GONE' = '0' ]"
+done
 
 psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -c "DROP DATABASE IF EXISTS $TESTDB" >/dev/null 2>&1
 
