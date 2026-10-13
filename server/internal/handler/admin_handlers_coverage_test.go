@@ -511,16 +511,14 @@ func TestPolicyRuleHandler_List_Error(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-func TestPolicyRuleHandler_CreateFromTemplate_NotImplemented(t *testing.T) {
+func TestPolicyRuleHandler_CreateFromTemplate_InvalidTemplate(t *testing.T) {
 	h := NewPolicyRuleHandler(&fakePolicyRuleSvc{})
 
-	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/policy-rules/from-template", strings.NewReader(`{"template":"deny-pii"}`))
+	// The template API now creates EXECUTABLE rules; an invalid template
+	// body yields 400, not the old 501 placeholder.
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/policy-rules/from-template", strings.NewReader(`{"template":"unknown-template-type"}`))
 	w := httptest.NewRecorder()
 	h.CreateFromTemplate(w, req)
 
-	require.Equal(t, http.StatusNotImplemented, w.Code)
-	var env errorEnvelope
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&env))
-	assert.Equal(t, "INTERNAL", env.Code)
-	assert.Equal(t, http.StatusNotImplemented, env.Status)
+	require.Equal(t, http.StatusBadRequest, w.Code)
 }

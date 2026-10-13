@@ -12,6 +12,12 @@ export interface WorkerConfig {
   mailboxID: string;
   pollIntervalMs?: number;
   heartbeatIntervalMs?: number;
+  /** Retry delay after a pull error (default 1s, doubling to max). */
+  errorBackoffMs?: number;
+  maxErrorBackoffMs?: number;
+  /** Agent-liveness heartbeat interval (default 30s) — without it the
+   *  sweeper offlines the agent while it processes tasks. */
+  agentHeartbeatIntervalMs?: number;
 }
 
 export class JanusWorker {
@@ -26,16 +32,33 @@ export class JanusWorker {
       mailboxID: config.mailboxID,
       pollIntervalMs: config.pollIntervalMs ?? 2000,
       heartbeatIntervalMs: config.heartbeatIntervalMs ?? 30000,
+      errorBackoffMs: config.errorBackoffMs ?? 1000,
+      maxErrorBackoffMs: config.maxErrorBackoffMs ?? 30000,
+      agentHeartbeatIntervalMs: config.agentHeartbeatIntervalMs ?? 30000,
     };
   }
 
   async run(handler: TaskHandler): Promise<void> {
-    while (!this.stopped) {
-      try {
-        await this.processOne(handler);
-      } catch (e) {
-        console.error("janus worker:", e);
+    // Agent-liveness heartbeat: task heartbeats do NOT count as agent
+    // heartbeats — without this the sweeper offlines the agent.
+    const agentTimer = setInterval(() => {
+      this.client.heartbeatAgent(this.config.agentID).catch(() => {});
+    }, this.config.agentHeartbeatIntervalMs);
+
+    let backoff = this.config.errorBackoffMs;
+    try {
+      while (!this.stopped) {
+        try {
+          await this.processOne(handler);
+          backoff = this.config.errorBackoffMs;
+        } catch (e) {
+          console.error("janus worker:", e);
+          await this.sleep(backoff);
+          backoff = Math.min(backoff * 2, this.config.maxErrorBackoffMs);
+        }
       }
+    } finally {
+      clearInterval(agentTimer);
     }
   }
 
@@ -75,9 +98,18 @@ export class JanusWorker {
         lease_id: leaseID, attempt, result_ref: resultRef,
       };
       if (usage) ack.token_usage = usage;
-      await this.client.ackTask(task.id, ack);
+      // ACK transport failure is NOT a business failure — the handler
+      // SUCCEEDED. Log and let the lease expire; the task will NOT be
+      // NACKed as HANDLER_ERROR (the previous catch conflated the two
+      // and re-queued successfully-completed work).
+      try {
+        await this.client.ackTask(task.id, ack);
+      } catch (ackErr) {
+        console.error(`janus worker: ack transport failed for ${task.id} (handler succeeded):`, ackErr);
+      }
     } catch (e) {
       clearInterval(hbTimer);
+      // This is a genuine HANDLER failure — NACK is correct.
       await this.client.nackTask(task.id, {
         lease_id: leaseID, attempt, retriable: true,
         error: { code: "HANDLER_ERROR", message: String(e) },

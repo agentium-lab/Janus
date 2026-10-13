@@ -189,9 +189,9 @@ func TestClient_Heartbeat(t *testing.T) {
 func TestClient_AckTask(t *testing.T) {
 	c := newTestClient(t, testMux())
 	err := c.AckTask(context.Background(), "task-1", AckRequest{
-		LeaseID:   "lease-abc",
-		Attempt:   1,
-		ResultRef: "s3://results/1",
+		LeaseID:    "lease-abc",
+		Attempt:    1,
+		ResultRef:  "s3://results/1",
 		TokenUsage: &core.TokenUsage{PromptTokens: 10000, CompletionTokens: 5000, TotalTokens: 15000},
 	})
 	require.NoError(t, err)

@@ -72,10 +72,26 @@ func (h *PolicyRuleHandler) List(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{"policy_rules": rules})
 }
 
-// CreateFromTemplate is an explicit placeholder: template semantics are not
-// specified yet, and inventing condition/action shapes here would produce
-// rules the policy engine silently never matches.
+// CreateFromTemplate compiles a simplified template request into the
+// canonical policy_rules model and creates it — the engine's own
+// BuildPolicyRule produces the condition/action shapes, so the rule is
+// executable by PolicyService.Evaluate from the moment it is stored.
 func (h *PolicyRuleHandler) CreateFromTemplate(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented,
-		"policy rule templates are not implemented yet; create rules directly via POST /policy-rules")
+	tenantID := tenantIDFromPath(r.URL.Path)
+	var req core.PolicyRuleTemplateRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rule, err := req.BuildPolicyRule(tenantID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	rule, err = h.svc.Create(r.Context(), tenantID, rule)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, rule)
 }

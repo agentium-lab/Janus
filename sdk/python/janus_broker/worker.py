@@ -54,21 +54,50 @@ class JanusWorker:
         mailbox_id: str,
         poll_interval: float = 2.0,
         heartbeat_interval: float = 30.0,
+        error_backoff: float = 1.0,
+        max_error_backoff: float = 30.0,
+        agent_heartbeat_interval: float = 30.0,
     ):
         self._client = client
         self._agent_id = agent_id
         self._mailbox_id = mailbox_id
         self._poll_interval = poll_interval
         self._heartbeat_interval = heartbeat_interval
+        self._error_backoff = error_backoff
+        self._max_error_backoff = max_error_backoff
+        self._agent_heartbeat_interval = agent_heartbeat_interval
         self._stop = threading.Event()
 
     def run(self, handler: TaskHandler) -> None:
         """Run the worker loop until stop() is called."""
-        while not self._stop.is_set():
-            try:
-                self._process_one(handler)
-            except Exception as e:
-                logger.error("janus worker: %s", e)
+        # Agent-liveness heartbeat: without it the sweeper offlines the
+        # agent while it is actively processing (task heartbeats do not
+        # count as agent heartbeats).
+        agent_hb_stop = threading.Event()
+
+        def _agent_heartbeat():
+            while not agent_hb_stop.is_set() and not self._stop.is_set():
+                try:
+                    self._client.heartbeat_agent(self._agent_id)
+                except Exception as e:
+                    logger.debug("agent heartbeat (non-fatal): %s", e)
+                agent_hb_stop.wait(self._agent_heartbeat_interval)
+
+        agent_hb = threading.Thread(target=_agent_heartbeat, daemon=True)
+        agent_hb.start()
+
+        backoff = self._error_backoff
+        try:
+            while not self._stop.is_set():
+                try:
+                    self._process_one(handler)
+                    backoff = self._error_backoff
+                except Exception as e:
+                    logger.error("janus worker: %s", e)
+                    self._stop.wait(backoff)
+                    backoff = min(backoff * 2, self._max_error_backoff)
+        finally:
+            agent_hb_stop.set()
 
     def stop(self) -> None:
         """Signal the worker to stop."""

@@ -52,20 +52,20 @@ func TestNewJanusWorker_Defaults(t *testing.T) {
 }
 
 type pullScript struct {
-	mu        sync.Mutex
-	pulls     int32
-	starts    int32
-	acks      int32
-	nacks     int32
-	progress  int32
+	mu         sync.Mutex
+	pulls      int32
+	starts     int32
+	acks       int32
+	nacks      int32
+	progress   int32
 	heartbeats int32
-	pullErr   bool
-	startErr  bool
-	ackErr    bool
-	nackErr   bool
-	noTask    bool
-	ackBody   map[string]interface{}
-	nackBody  map[string]interface{}
+	pullErr    bool
+	startErr   bool
+	ackErr     bool
+	nackErr    bool
+	noTask     bool
+	ackBody    map[string]interface{}
+	nackBody   map[string]interface{}
 }
 
 func (s *pullScript) handler() http.Handler {
@@ -135,6 +135,7 @@ func newScriptWorker(t *testing.T, s *pullScript) *JanusWorker {
 	return NewJanusWorker(NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"}), WorkerConfig{
 		AgentID: "agent-1", MailboxID: "mb-1",
 		PollInterval: 5 * time.Millisecond, Heartbeat: 10 * time.Second,
+		ErrorBackoff: time.Millisecond, MaxErrorBackoff: 2 * time.Millisecond,
 	})
 }
 

@@ -356,7 +356,9 @@ func TestClient_doGet(t *testing.T) {
 	defer srv.Close()
 	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
 
-	var result struct{ ID string `json:"id"` }
+	var result struct {
+		ID string `json:"id"`
+	}
 	err := c.doGet(context.Background(), "/v1/test", &result)
 	require.NoError(t, err)
 	assert.Equal(t, "test", result.ID)

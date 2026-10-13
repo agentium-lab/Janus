@@ -38,6 +38,16 @@ type WorkerConfig struct {
 	MailboxID    string        // The mailbox to poll.
 	PollInterval time.Duration // Interval between polls when queue is empty (default 2s).
 	Heartbeat    time.Duration // Interval for task heartbeats while running (default 30s).
+
+	// ErrorBackoff controls the retry delay after a Pull error (default 1s,
+	// doubling to MaxErrorBackoff). Prevents hot-looping against a
+	// degraded API.
+	ErrorBackoff    time.Duration
+	MaxErrorBackoff time.Duration
+	// AgentHeartbeat is the interval for agent-liveness heartbeats
+	// (default 30s). Without periodic agent heartbeats the sweeper
+	// offlines the agent while it is actively processing tasks.
+	AgentHeartbeat time.Duration
 }
 
 // JanusWorker is a high-level helper that runs a poll-process-ack loop.
@@ -56,6 +66,15 @@ func NewJanusWorker(client *Client, config WorkerConfig) *JanusWorker {
 	if config.Heartbeat == 0 {
 		config.Heartbeat = 30 * time.Second
 	}
+	if config.ErrorBackoff == 0 {
+		config.ErrorBackoff = time.Second
+	}
+	if config.MaxErrorBackoff == 0 {
+		config.MaxErrorBackoff = 30 * time.Second
+	}
+	if config.AgentHeartbeat == 0 {
+		config.AgentHeartbeat = 30 * time.Second
+	}
 	return &JanusWorker{client: client, config: config}
 }
 
@@ -65,6 +84,14 @@ func NewJanusWorker(client *Client, config WorkerConfig) *JanusWorker {
 //  3. Send periodic heartbeats while the handler runs.
 //  4. ACK on success or NACK (retriable) on error.
 func (w *JanusWorker) Run(ctx context.Context, handler WorkerHandler) error {
+	// Agent-liveness heartbeat: the sweeper offlines agents without a
+	// recent heartbeat — a worker that only sends TASK heartbeats would
+	// go offline while actively processing.
+	agentCtx, agentCancel := context.WithCancel(ctx)
+	defer agentCancel()
+	go w.agentHeartbeatLoop(agentCtx)
+
+	backoff := w.config.ErrorBackoff
 	for {
 		select {
 		case <-ctx.Done():
@@ -72,8 +99,20 @@ func (w *JanusWorker) Run(ctx context.Context, handler WorkerHandler) error {
 		default:
 		}
 
-		if err := w.processOne(ctx, handler); err != nil {
-			log.Printf("janus worker: %v", err)
+		err := w.processOne(ctx, handler)
+		if err == nil {
+			backoff = w.config.ErrorBackoff // reset on success
+			continue
+		}
+		log.Printf("janus worker: %v", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > w.config.MaxErrorBackoff {
+			backoff = w.config.MaxErrorBackoff
 		}
 	}
 }
@@ -149,14 +188,38 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 func (w *JanusWorker) heartbeatLoop(ctx context.Context, taskID string, attempt int, leaseID string) {
 	ticker := time.NewTicker(w.config.Heartbeat)
 	defer ticker.Stop()
+	// Heartbeat failures are logged but DO NOT stop renewal — a single
+	// transient error previously killed the goroutine while the handler
+	// kept running, letting the lease expire and the task redeliver.
+	var consecutiveFailures int
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			if err := w.client.Heartbeat(ctx, taskID, attempt, leaseID); err != nil {
-				log.Printf("janus worker heartbeat %s: %v", taskID, err)
-				return
+				consecutiveFailures++
+				log.Printf("janus worker heartbeat %s: %v (streak %d)", taskID, err, consecutiveFailures)
+				if consecutiveFailures >= 5 {
+					return
+				}
+			} else {
+				consecutiveFailures = 0
+			}
+		}
+	}
+}
+
+func (w *JanusWorker) agentHeartbeatLoop(ctx context.Context) {
+	ticker := time.NewTicker(w.config.AgentHeartbeat)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := w.client.HeartbeatAgent(ctx, w.config.AgentID); err != nil {
+				log.Printf("janus worker agent heartbeat: %v (non-fatal)", err)
 			}
 		}
 	}
