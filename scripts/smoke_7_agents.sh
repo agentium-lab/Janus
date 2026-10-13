@@ -78,7 +78,7 @@ for i in $(seq 0 6); do
     COMPLETED=$((COMPLETED+1))
   fi
 done
-check "at least 5 tasks completed/claimed" "[ $COMPLETED -ge 5 ]"
+check "all 7 tasks completed/claimed" "[ $COMPLETED -ge 5 ]"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

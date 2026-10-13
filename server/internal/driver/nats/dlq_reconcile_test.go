@@ -290,3 +290,18 @@ func TestReconcileTenant_AllStreamsSecondPassStable(t *testing.T) {
 		}
 	}
 }
+
+// A4: "a.b" and "a_b" are DISTINCT mailboxes and must map to DISTINCT
+// stream names (the old dot→underscore sanitize collided them).
+func TestSanitize_NoDotCollision(t *testing.T) {
+	a := sanitize("a.b")
+	b := sanitize("a_b")
+	if a == b {
+		t.Fatalf("collision: sanitize(a.b)=%s == sanitize(a_b)=%s", a, b)
+	}
+	c := sanitize("mb.x")
+	d := sanitize("mb_x")
+	if c == d {
+		t.Fatalf("collision: sanitize(mb.x)=%s == sanitize(mb_x)=%s", c, d)
+	}
+}

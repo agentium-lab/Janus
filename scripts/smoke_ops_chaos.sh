@@ -33,7 +33,7 @@ echo ""
 echo "--- Phase 1: Baseline readiness ---"
 READY=$(curl -sf "$JANUS_URL/readyz" 2>/dev/null || echo "")
 if [ -z "$READY" ]; then
-  echo "SKIP: Janus API not reachable at $JANUS_URL"
+  echo "FATAL: Janus API not reachable at $JANUS_URL"; exit 1
   echo "This test requires a running Janus API instance."
   exit 0
 fi

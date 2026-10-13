@@ -27,7 +27,7 @@ if command -v helm &>/dev/null; then
   helm lint "$REPO_ROOT/deployments/helm/janus-core" 2>&1 && PASS=$((PASS+1)) || { echo "  ✗ helm lint failed"; FAIL=$((FAIL+1)); }
   helm template "$REPO_ROOT/deployments/helm/janus-core" > /dev/null 2>&1 && PASS=$((PASS+1)) || { echo "  ✗ helm template failed"; FAIL=$((FAIL+1)); }
 else
-  echo "  SKIP: helm not installed (chart YAML validated manually)"
+  echo "  ✗ helm not installed (required for release ops)"; FAIL=$((FAIL+1))
   python3 -c "
 import yaml, sys
 for f in ['Chart.yaml', 'values.yaml']:
@@ -98,7 +98,7 @@ psql -h "$PG_HOST" -U "$PG_USER" -d "$PG_DB" -c "DROP DATABASE IF EXISTS $TESTDB
 echo ""
 echo "--- Phase 3: Load baseline (1000 agents / 100 tasks) ---"
 if ! curl -sf "$JANUS_URL/healthz" >/dev/null 2>&1; then
-  echo "  SKIP: Janus API not reachable (load test requires running instance)"
+  echo "  ✗ Janus API not reachable (load test required)"; FAIL=$((FAIL+1))
   PASS=$((PASS+1))
 else
   TENANT="load-baseline"

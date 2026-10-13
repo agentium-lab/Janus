@@ -1,6 +1,8 @@
 package config
 
 import (
+	"net/url"
+
 	"fmt"
 	"log"
 	"os"
@@ -59,8 +61,9 @@ func (p PostgresConfig) sslMode() string {
 }
 
 func (p PostgresConfig) DSN() string {
+	// Passwords containing #, ?, /, @ etc. break the URI parse — escape.
 	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		p.User, p.Password, p.Host, p.Port, p.Database, p.sslMode())
+		p.User, url.QueryEscape(p.Password), p.Host, p.Port, p.Database, p.sslMode())
 }
 
 func (p PostgresConfig) ConnStr() string {

@@ -116,7 +116,14 @@ echo "  Success-path p95: ${P95}ms"
 
 if [ -n "$PG_DSN" ]; then
   PERSISTED=$(psql "$PG_DSN" -t -A -c \
-    "SELECT count(*) FROM tasks WHERE tenant_id='$TENANT' AND id LIKE 'task-%'" 2>/dev/null || echo "")
+    "SELECT count(*) FROM tasks WHERE tenant_id='$TENANT' AND id LIKE 'task-%'" 2>&1) || {
+    echo "FAIL: PG durability query failed: $PERSISTED"
+    exit 1
+  }
+  if [ -z "$PERSISTED" ]; then
+    echo "FAIL: PG durability query returned empty (expected a count)"
+    exit 1
+  fi
   if [ -n "$PERSISTED" ]; then
     echo "  Persisted in PG: $PERSISTED"
     if [ "$PERSISTED" != "$SUCCESSES" ]; then

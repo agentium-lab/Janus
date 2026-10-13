@@ -432,7 +432,7 @@ func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 
 func TestSanitize(t *testing.T) {
 	assert.Equal(t, "hello_world", sanitize("hello world"))
-	assert.Equal(t, "abc-123_def", sanitize("abc-123.def"))
+	assert.Equal(t, "abc-123__DOT__def", sanitize("abc-123.def"))
 	assert.Equal(t, "ALL_CAPS", sanitize("ALL CAPS"))
 }
 

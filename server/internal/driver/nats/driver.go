@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -736,17 +737,26 @@ func consumerName(tenantID, mailboxID string) string {
 	return fmt.Sprintf("consumer_%s_%s", sanitize(tenantID), sanitize(mailboxID))
 }
 
+// sanitize maps a mailbox ID to a NATS stream-name-safe token. Dots are
+// ILLEGAL in stream names (they are subject separators) and the naive
+// dot→underscore replacement made "a.b" and "a_b" collide: the second
+// mailbox's consumer silently attached to the first mailbox's stream and
+// could never receive a delivery. Disambiguate by escaping each dot to a
+// distinct, stream-safe two-char token.
 func sanitize(s string) string {
-	result := make([]byte, 0, len(s))
+	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-' {
-			result = append(result, c)
-		} else {
-			result = append(result, '_')
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			b.WriteByte(c)
+		case c == '.':
+			b.WriteString("__DOT__")
+		default:
+			b.WriteByte('_')
 		}
 	}
-	return string(result)
+	return b.String()
 }
 
 type eventIterator struct {

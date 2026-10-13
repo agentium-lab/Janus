@@ -80,6 +80,8 @@ spec:
                   key: {{ .Values.redis.secretKey }}
             - name: JANUS_REDIS_DB
               value: "{{ .Values.redis.db }}"
+            - name: JANUS_REDIS_ENABLE_TLS
+              value: "{{ .Values.redis.enableTLS | default false }}"
             - name: JANUS_MIGRATION_AUTO
               value: "false"
             - name: JANUS_MIGRATION_PATH

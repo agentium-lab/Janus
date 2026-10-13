@@ -21,7 +21,7 @@ check() {
 echo "=== M4 Smoke Prod: API + dependencies + metrics + observability ==="
 
 if ! curl -sf "$JANUS_URL/healthz" >/dev/null 2>&1; then
-  echo "SKIP: Janus API not reachable at $JANUS_URL"
+  echo "FATAL: Janus API not reachable at $JANUS_URL"; exit 1
   echo "Start Janus API with PG/NATS/Redis, then re-run."
   exit 0
 fi
