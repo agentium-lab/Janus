@@ -356,8 +356,24 @@ func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr
 	return nil
 }
 
+// Cancel transitions the task to cancelled AND finishes any open attempt
+// so the lease becomes unusable and the agent's concurrency slot is
+// released — a bare status change left the attempt claimed/running with a
+// live lease, letting the old holder revive the task (Start/Ack moved it
+// back to running/completed).
 func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID string) error {
-	return s.transition(ctx, tenantID, taskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0)
+	if err := s.transition(ctx, tenantID, taskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0); err != nil {
+		return err
+	}
+	if s.attemptRepo != nil {
+		if attempt, aerr := s.attemptRepo.GetLatest(ctx, tenantID, taskID); aerr == nil && attempt != nil {
+			if attempt.Status == "claimed" || attempt.Status == "running" {
+				_, _ = s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt,
+					"cancelled", nil, nil)
+			}
+		}
+	}
+	return nil
 }
 
 func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string) error {

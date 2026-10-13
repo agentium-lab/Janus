@@ -122,6 +122,7 @@ func TestCovPG_AckTask_QueueAckErrorAfterCommit(t *testing.T) {
 	env := setupServiceTestEnv(t)
 	ctx := context.Background()
 	task := createTestTask(t, env, "task-ackwarn-1")
+	_, _ = env.pool.Exec(ctx, `UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id='task-ackwarn-1'`)
 
 	require.NoError(t, env.attemptRepo.Create(ctx, core.TaskAttempt{
 		TenantID: "acme", TaskID: task.ID, Attempt: 1, AgentID: "agent-1",

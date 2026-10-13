@@ -316,11 +316,22 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 	// Serializing per tenant keeps the capacity recheck correct at a
 	// modest throughput cost (the claim transaction is milliseconds).
 	err = s.lifecycle.ApplyTxLocked(ctx, tenantID+":concurrency", func(tx pgx.Tx) error {
-		tActive, aActive, cerr2 := s.activeTaskCounts(ctx, tenantID, agentID)
-		if cerr := cerr2; cerr != nil {
-			return fmt.Errorf("concurrency recheck: %w", cerr)
+		// All reads inside the transaction run ON the tx executor — nested
+		// pool queries acquired a second connection while the tx held one
+		// (pool self-starvation under saturation).
+		tClaimed, cerr2 := s.taskTx.CountByStatusTx(ctx, tx, tenantID, core.TaskStatusClaimed)
+		if cerr2 != nil {
+			return fmt.Errorf("tenant claimed count: %w", cerr2)
 		}
-		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aActive, tActive); cerr != nil {
+		tRunning, cerr3 := s.taskTx.CountByStatusTx(ctx, tx, tenantID, core.TaskStatusRunning)
+		if cerr3 != nil {
+			return fmt.Errorf("tenant running count: %w", cerr3)
+		}
+		aActive, cerr4 := s.taskTx.CountRunningByAgentTx(ctx, tx, tenantID, agentID)
+		if cerr4 != nil {
+			return fmt.Errorf("agent active count: %w", cerr4)
+		}
+		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aActive, tClaimed+tRunning); cerr != nil {
 			return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
 		}
 		if cerr := s.attemptTx.CreateTx(ctx, tx, attempt); cerr != nil {
@@ -361,12 +372,19 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 	}
 
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		task, gerr := s.taskRepo.Get(ctx, tenantID, taskID)
+		task, gerr := s.taskTx.GetTx(ctx, tx, tenantID, taskID)
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
 		}
-		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRunning, 0); uerr != nil {
+		if !core.CanTransition(task.Status, core.TaskStatusRunning) {
+			return fmt.Errorf("%w: %s -> running for task %s", core.ErrInvalidTransition, task.Status, taskID)
+		}
+		started, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRunning, 0)
+		if uerr != nil {
 			return fmt.Errorf("update task running: %w", uerr)
+		}
+		if !started {
+			return fmt.Errorf("start race: task %s status changed concurrently, expected %s", taskID, task.Status)
 		}
 		startedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskStarted, TenantID: tenantID, TaskID: taskID,
@@ -431,9 +449,12 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 			return nil
 		}
 
-		task, gerr := s.taskRepo.Get(ctx, tenantID, taskID)
+		task, gerr := s.taskTx.GetTx(ctx, tx, tenantID, taskID)
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
+		}
+		if !core.CanTransition(task.Status, core.TaskStatusCompleted) {
+			return fmt.Errorf("%w: %s -> completed for task %s", core.ErrInvalidTransition, task.Status, taskID)
 		}
 		taskOK, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusCompleted, 0)
 		if uerr != nil {
@@ -566,6 +587,10 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 		}
 		attemptFinished = true
 
+		if !core.CanTransition(task.Status, core.TaskStatusRetryScheduled) &&
+			!core.CanTransition(task.Status, core.TaskStatusDeadLettered) {
+			return fmt.Errorf("%w: %s is terminal, cannot nack for task %s", core.ErrInvalidTransition, task.Status, taskID)
+		}
 		if canRetry {
 			retryAt := time.Now().Add(mb.RetryPolicy.BackoffDuration(task.AttemptCount))
 			retryOK, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, task.Status, core.TaskStatusRetryScheduled, 0)

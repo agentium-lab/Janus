@@ -43,6 +43,18 @@ func (a *TaskRepoTxAdapter) UpdateRetryAtTx(ctx context.Context, _ pgx.Tx, tenan
 	return a.UpdateRetryAt(ctx, tenantID, taskID, retryAt)
 }
 
+func (a *TaskRepoTxAdapter) GetTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string) (*core.Task, error) {
+	return a.Get(ctx, tenantID, taskID)
+}
+
+func (a *TaskRepoTxAdapter) CountByStatusTx(ctx context.Context, _ pgx.Tx, tenantID string, status core.TaskStatus) (int, error) {
+	return a.CountByStatus(ctx, tenantID, status)
+}
+
+func (a *TaskRepoTxAdapter) CountRunningByAgentTx(ctx context.Context, _ pgx.Tx, tenantID, agentID string) (int, error) {
+	return a.CountRunningByAgent(ctx, tenantID, agentID)
+}
+
 func (a *TaskRepoTxAdapter) ResetForReplayTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string) (int, error) {
 	t, err := a.Get(ctx, tenantID, taskID)
 	if err != nil {

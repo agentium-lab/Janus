@@ -354,6 +354,7 @@ func TestDispatchService_StartTask_Success(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusClaimed
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		AgentID: "agent-1", LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "claimed",
@@ -428,6 +429,7 @@ func TestDispatchService_AckTask_Success(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -448,6 +450,7 @@ func TestDispatchService_AckTask_NoUsage(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -490,6 +493,8 @@ func TestDispatchService_NackTask_Retriable(t *testing.T) {
 
 	task := makeDispatchTestTask("acme", "task-1", "mb-1", 1)
 	tRepo.tasks["acme:task-1"] = task
+	task.Status = core.TaskStatusRunning
+	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -509,6 +514,8 @@ func TestDispatchService_NackTask_NonRetriable(t *testing.T) {
 	ctx := context.Background()
 
 	task := makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"] = task
+	task.Status = core.TaskStatusRunning
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
@@ -535,6 +542,8 @@ func TestDispatchService_NackTask_RetriesExhausted(t *testing.T) {
 
 	task := makeDispatchTestTask("acme", "task-1", "mb-1", 5)
 	tRepo.tasks["acme:task-1"] = task
+	task.Status = core.TaskStatusRunning
+	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 5,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -550,6 +559,8 @@ func TestDispatchService_NackTask_LeaseMismatch(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -571,6 +582,8 @@ func TestDispatchService_NackTask_NoError(t *testing.T) {
 	ctx := context.Background()
 
 	task := makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"] = task
+	task.Status = core.TaskStatusRunning
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
@@ -615,6 +628,8 @@ func TestDispatchService_NackTask_NoMailbox(t *testing.T) {
 	ctx := context.Background()
 
 	task := makeDispatchTestTask("acme", "task-1", "nonexistent-mb", 1)
+	tRepo.tasks["acme:task-1"] = task
+	task.Status = core.TaskStatusRunning
 	tRepo.tasks["acme:task-1"] = task
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,

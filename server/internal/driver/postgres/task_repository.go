@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"fmt"
 
 	"context"
 	"encoding/json"
@@ -379,7 +380,19 @@ func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenant
 	if err == pgx.ErrNoRows {
 		return 0, ErrTaskNotReplayable
 	}
-	return generation, err
+	if err != nil {
+		return 0, err
+	}
+	// The task_attempts PK is (tenant_id, task_id, attempt) and attempt
+	// numbering restarts at 1 after attempt_count resets — the previous
+	// run's rows MUST go in the SAME transaction or the first post-replay
+	// pull hits a unique violation on attempt=1.
+	if _, derr := tx.Exec(ctx,
+		`DELETE FROM task_attempts WHERE tenant_id = $1 AND task_id = $2`,
+		tenantID, taskID); derr != nil {
+		return 0, fmt.Errorf("clear attempts for replay: %w", derr)
+	}
+	return generation, nil
 }
 
 func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailboxID string, limit int) ([]*core.Task, error) {
@@ -461,6 +474,73 @@ func (r *TaskRepository) CountByStatus(ctx context.Context, tenantID string, sta
 // agent, using task_attempts.agent_id — the agent actually working the task.
 // The pulling agent is rarely the task's source_agent (creator), so counting
 // by source_agent (the prior implementation) never enforced the per-agent cap.
+// GetTx reads a task on the caller's transaction — required inside
+// Lifecycle.ApplyTx callbacks so nested pool queries do not acquire a
+// SECOND connection while the tx holds one (pool self-starvation).
+func (r *TaskRepository) GetTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (*core.Task, error) {
+	var t core.Task
+	var status, priority, targetType, targetValue string
+	var idempotencyKey, mailboxID, resultRef *string
+	var deadline *time.Time
+	var ttlSeconds *int
+	var errorJSON, envelopeJSON []byte
+	var completedAt *time.Time
+
+	err := tx.QueryRow(ctx,
+		`SELECT tenant_id, id, idempotency_key, source_agent, target_type, target_value,
+		        mailbox_id, status, priority, deadline, ttl_seconds, envelope,
+		        result_ref, error, attempt_count, replay_count, created_at, updated_at, completed_at
+		 FROM tasks WHERE tenant_id = $1 AND id = $2`,
+		tenantID, taskID,
+	).Scan(
+		&t.TenantID, &t.ID, &idempotencyKey, &t.SourceAgent, &targetType, &targetValue,
+		&mailboxID, &status, &priority, &deadline, &ttlSeconds, &envelopeJSON,
+		&resultRef, &errorJSON, &t.AttemptCount, &t.ReplayCount, &t.CreatedAt, &t.UpdatedAt, &completedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	t.TargetType = core.TargetType(targetType)
+	t.TargetValue = targetValue
+	if mailboxID != nil {
+		t.MailboxID = *mailboxID
+	}
+	t.Status = core.TaskStatus(status)
+	t.Priority = core.Priority(priority)
+	if resultRef != nil {
+		t.ResultRef = *resultRef
+	}
+	t.Deadline = deadline
+	if ttlSeconds != nil {
+		t.TTLSeconds = *ttlSeconds
+	}
+	t.CompletedAt = completedAt
+	if errorJSON != nil {
+		var taskErr core.TaskError
+		_ = json.Unmarshal(errorJSON, &taskErr)
+		t.Error = &taskErr
+	}
+	_ = json.Unmarshal(envelopeJSON, &t.Envelope)
+	return &t, nil
+}
+
+func (r *TaskRepository) CountByStatusTx(ctx context.Context, tx pgx.Tx, tenantID string, status core.TaskStatus) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM tasks WHERE tenant_id = $1 AND status = $2`,
+		tenantID, string(status)).Scan(&count)
+	return count, err
+}
+
+func (r *TaskRepository) CountRunningByAgentTx(ctx context.Context, tx pgx.Tx, tenantID, agentID string) (int, error) {
+	var count int
+	err := tx.QueryRow(ctx,
+		`SELECT COUNT(*) FROM task_attempts
+		 WHERE tenant_id = $1 AND agent_id = $2 AND status IN ('claimed', 'running')`,
+		tenantID, agentID).Scan(&count)
+	return count, err
+}
+
 func (r *TaskRepository) CountRunningByAgent(ctx context.Context, tenantID, agentID string) (int, error) {
 	var count int
 	err := r.pool.QueryRow(ctx,

@@ -194,6 +194,7 @@ func TestDispatch_AckTask_IdempotentSettlement(t *testing.T) {
 	env := setupServiceTestEnv(t)
 	ctx := context.Background()
 	task := createTestTask(t, env, "task-ack-1")
+	_, _ = env.pool.Exec(ctx, "UPDATE tasks SET status = 'running' WHERE tenant_id = 'acme' AND id = 'task-ack-1'")
 
 	// Simulate a claim: insert an attempt in claimed state.
 	attempt := core.TaskAttempt{

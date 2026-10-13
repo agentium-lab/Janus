@@ -89,6 +89,9 @@ type HeartbeatDriver interface {
 type TaskTxRepo interface {
 	TaskRepo
 	CreateTx(ctx context.Context, tx pgx.Tx, task core.Task) error
+	GetTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (*core.Task, error)
+	CountByStatusTx(ctx context.Context, tx pgx.Tx, tenantID string, status core.TaskStatus) (int, error)
+	CountRunningByAgentTx(ctx context.Context, tx pgx.Tx, tenantID, agentID string) (int, error)
 	UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
 	UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error)
 	SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error

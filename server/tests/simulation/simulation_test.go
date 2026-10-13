@@ -900,7 +900,7 @@ func TestAckResultRefPersistence(t *testing.T) {
 		TenantID: "acme", ID: "task-resultref-001",
 		SourceAgent: "agent-1", TargetType: core.TargetTypeCapability,
 		TargetValue: "coding", MailboxID: "coding-mb",
-		Priority: core.PriorityNormal, Status: core.TaskStatusClaimed,
+		Priority: core.PriorityNormal, Status: core.TaskStatusRunning,
 		Envelope: core.TaskEnvelope{JanusVersion: "0.8", TaskID: "task-resultref-001", TenantID: "acme", SourceAgent: "agent-1", Target: core.Target{Type: core.TargetTypeCapability, Value: "coding"}, Payload: core.Payload{Type: "code_change"}, Trace: core.TraceContext{TraceID: "trace-resultref-001"}},
 	}
 	require.NoError(t, taskRepo.Create(ctx, task))

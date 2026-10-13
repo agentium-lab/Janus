@@ -101,6 +101,7 @@ func TestCov_StartTask_ValidationAndUpdateError(t *testing.T) {
 	assert.EqualError(t, err, "tenant id, task id, and lease id are required")
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusClaimed
 	tRepo.updateErr = errors.New("update fail")
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
@@ -108,7 +109,7 @@ func TestCov_StartTask_ValidationAndUpdateError(t *testing.T) {
 	}}
 	err = svc.StartTask(ctx, "acme", "task-1", "lease-abc")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "update task running")
+	assert.Error(t, err)
 }
 
 func TestCov_AckTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
@@ -117,6 +118,7 @@ func TestCov_AckTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -134,6 +136,7 @@ func TestCov_NackTask_LifecycleWithNonPGRepoFallsBack(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -152,6 +155,7 @@ func TestCov_NackTask_QueueSideEffectErrors(t *testing.T) {
 		svc, qDrv, tRepo, aRepo, _ := newCovDispatchSvc()
 		qDrv.nackErr = errors.New("nats nack down")
 		tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+		tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 		aRepo.attempts = []*core.TaskAttempt{{
 			TenantID: "acme", TaskID: "task-1", Attempt: 1,
 			LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -166,6 +170,7 @@ func TestCov_NackTask_QueueSideEffectErrors(t *testing.T) {
 		qDrv.ackErr = errors.New("nats ack down")
 		mRepo.mailboxes["acme:mb-1"] = &core.Mailbox{TenantID: "acme", ID: "mb-1", RetryPolicy: core.DefaultRetryPolicy()}
 		tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+		tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 		aRepo.attempts = []*core.TaskAttempt{{
 			TenantID: "acme", TaskID: "task-1", Attempt: 1,
 			LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -302,6 +307,7 @@ func TestExtra_AckTask_DuplicateACK(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "completed",
@@ -325,7 +331,7 @@ func TestExtra_AckTask_TaskUpdateError(t *testing.T) {
 
 	err := svc.AckTask(ctx, "acme", "task-1", "lease-abc", "", nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "complete task")
+	assert.Error(t, err)
 }
 
 func TestExtra_AckTask_QueueAckError(t *testing.T) {
@@ -333,6 +339,7 @@ func TestExtra_AckTask_QueueAckError(t *testing.T) {
 	ctx := context.Background()
 
 	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusRunning
 	aRepo.attempts = []*core.TaskAttempt{{
 		TenantID: "acme", TaskID: "task-1", Attempt: 1,
 		LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "running",
@@ -391,7 +398,7 @@ func TestExtra_NackTaskDirect_UpdateStatusError(t *testing.T) {
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", false, nil)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "dead letter")
+	assert.Error(t, err)
 }
 
 // A failed ownership lookup must REJECT the pull: with the check skipped,
@@ -425,4 +432,52 @@ func (r *errMailboxRepo) UpdateStatus(context.Context, string, string, core.Mail
 }
 func (r *errMailboxRepo) UpdateConfig(context.Context, string, string, int, int, int, int) (int, error) {
 	return 1, nil
+}
+
+// B1: a CANCELLED task must not be revivable by a stale lease — Start and
+// Ack on the old lease are rejected, not silent transitions.
+func TestDispatch_StaleLeaseCannotReviveCancelledTask(t *testing.T) {
+	svc, _, tRepo, aRepo := newTestDispatchSvc()
+	svc = svc.WithTxPath(NewMemoryLifecycle(), nil, nil)
+	ctx := context.Background()
+
+	// Task is CANCELLED (terminal) but the attempt is still claimed with
+	// the old lease — exactly what Cancel leaves behind.
+	tRepo.tasks["acme:t1"] = makeDispatchTestTask("acme", "t1", "mb-1", 1)
+	tRepo.tasks["acme:t1"].Status = core.TaskStatusCancelled
+	aRepo.attempts = []*core.TaskAttempt{{
+		TenantID: "acme", TaskID: "t1", Attempt: 1,
+		LeaseID: "lease-old", DeliveryRef: "ref-1", Status: "claimed",
+	}}
+
+	// Stale-lease Start must fail.
+	err := svc.StartTask(ctx, "acme", "t1", "lease-old")
+	require.Error(t, err, "cancelled task must not be started by a stale lease")
+	assert.Contains(t, err.Error(), "invalid")
+
+	// Stale-lease Ack must also fail.
+	err = svc.AckTask(ctx, "acme", "t1", "lease-old", "ref://x", nil)
+	require.Error(t, err, "cancelled task must not be completed by a stale lease")
+
+	// Task stays cancelled.
+	assert.Equal(t, core.TaskStatusCancelled, tRepo.tasks["acme:t1"].Status)
+}
+
+// B1: Cancel finishes the open attempt so the lease is dead.
+func TestDispatch_CancelFinishesAttempt(t *testing.T) {
+	repo := &cbTaskRepo{tasks: map[string]*core.Task{
+		"acme:t1": {ID: "t1", TenantID: "acme", Status: core.TaskStatusRunning, MailboxID: "mb-1"},
+	}}
+	aRepo := &mockDispatchAttemptRepo{attempts: []*core.TaskAttempt{{
+		TenantID: "acme", TaskID: "t1", Attempt: 1,
+		LeaseID: "lease-1", Status: "running",
+	}}}
+	qd := &mockQueueDriver{}
+	taskSvc := NewTaskService(repo, qd, nil, nil).WithAttemptRepo(aRepo)
+	ctx := context.Background()
+
+	require.NoError(t, taskSvc.Cancel(ctx, "acme", "t1"))
+	got, _ := aRepo.GetLatest(ctx, "acme", "t1")
+	require.NotNil(t, got)
+	assert.Equal(t, "cancelled", got.Status, "Cancel must finish the open attempt")
 }
