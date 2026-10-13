@@ -199,7 +199,7 @@ func main() {
 		}, nil)
 	}
 	agentSvc := service.NewAgentService(agentRepo, mailboxRepo, agentHb, queueDrv)
-	policySvc := service.NewPolicyService(policyRuleRepo)
+	policySvc := service.NewPolicyService(policyRuleRepo).WithAgentRepo(agentRepo)
 	budgetSvc := service.NewBudgetServiceWithUsage(budgetRepo, budgetUsageRepo).WithRateLimiter(budgetRL).WithThrottleFailureMode(cfg.Budget.RateLimitFailureMode)
 
 	var llmClient *llm.Client

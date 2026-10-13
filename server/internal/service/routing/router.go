@@ -19,6 +19,7 @@ type AgentCandidate struct {
 	Status         string
 	DataClass      string
 	ModelClasses   []string
+	TeamID         string
 }
 
 type FilteredCandidate struct {

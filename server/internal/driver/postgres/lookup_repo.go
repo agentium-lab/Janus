@@ -18,9 +18,21 @@ func NewAgentLookupRepo(pool *pgxpool.Pool) routing.AgentLookup {
 }
 
 func (r *agentLookupRepo) ListOnlineByCapability(ctx context.Context, tenantID, capability string) ([]routing.AgentCandidate, error) {
+	// Governance attributes come from trusted records: agents.metadata
+	// carries data_classification; running/backlog counts come from the
+	// tasks table on the agent's mailbox. Without these, the router's
+	// capacity/data-class filters silently pass every candidate.
 	rows, err := r.pool.Query(ctx,
-		`SELECT a.id, m.id, m.status, a.max_concurrency,
-		        COALESCE(m.status, '') as mailbox_status
+		`SELECT a.id, m.id, a.max_concurrency,
+		        COALESCE(m.status, '') as mailbox_status,
+		        COALESCE(a.team_id, ''),
+		        COALESCE(a.metadata->>'data_classification', ''),
+		        COALESCE((SELECT count(*) FROM tasks t
+		          WHERE t.tenant_id = a.tenant_id AND t.mailbox_id = m.id
+		            AND t.status = 'running'), 0) AS running_count,
+		        COALESCE((SELECT count(*) FROM tasks t
+		          WHERE t.tenant_id = a.tenant_id AND t.mailbox_id = m.id
+		            AND t.status = 'queued'), 0) AS backlog
 		 FROM agents a
 		 JOIN agent_capabilities ac ON a.tenant_id = ac.tenant_id AND a.id = ac.agent_id
 		 LEFT JOIN mailboxes m ON a.tenant_id = m.tenant_id AND m.agent_id = a.id
@@ -37,7 +49,8 @@ func (r *agentLookupRepo) ListOnlineByCapability(ctx context.Context, tenantID, 
 	for rows.Next() {
 		var c routing.AgentCandidate
 		var capRow string
-		if err := rows.Scan(&c.AgentID, &c.MailboxID, &capRow, &c.MaxConcurrency, &c.Status); err != nil {
+		if err := rows.Scan(&c.AgentID, &c.MailboxID, &c.MaxConcurrency, &c.Status,
+			&c.TeamID, &c.DataClass, &c.RunningCount, &c.Backlog); err != nil {
 			return nil, fmt.Errorf("scan candidate: %w", err)
 		}
 		if capRow == "active" || capRow == "" {

@@ -1,0 +1,58 @@
+package postgres
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// A3 fix: ListOnlineByCapability must return governance attributes from
+// trusted records (team_id, metadata.data_classification) and REAL
+// running/backlog counts — not hollow candidates that silently pass every
+// router filter.
+func TestAgentLookupRepo_ListOnlineByCapability_RealGovernanceAttributes(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	ctx := context.Background()
+
+	// Agent trusted record: team + data classification in metadata.
+	_, err := pool.Exec(ctx, `
+		INSERT INTO agents (id, tenant_id, display_name, protocol, status, metadata, max_concurrency, team_id)
+		VALUES ('gov-agent', 'acme', 'Gov Agent', 'a2a', 'online',
+		        '{"data_classification":"confidential"}'::jsonb, 2, 'team-x')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO agent_capabilities (tenant_id, agent_id, capability)
+		VALUES ('acme', 'gov-agent', 'code-review')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ('mb-gov', 'acme', 'gov-agent', 'active')`)
+	require.NoError(t, err)
+
+	// 1 running + 2 queued tasks on the agent's mailbox.
+	for i, status := range []string{"running", "queued", "queued"} {
+		_, err = pool.Exec(ctx, `
+			INSERT INTO tasks (id, tenant_id, source_agent, mailbox_id, status, priority, created_at, updated_at)
+			VALUES ($1, 'acme', 'src', 'mb-gov', $2, 'normal', now(), now())`,
+			"task-"+string(rune('a'+i)), status)
+		require.NoError(t, err)
+	}
+
+	repo := NewAgentLookupRepo(pool)
+	candidates, err := repo.ListOnlineByCapability(ctx, "acme", "code-review")
+	require.NoError(t, err)
+	require.Len(t, candidates, 1)
+
+	c := candidates[0]
+	assert.Equal(t, "gov-agent", c.AgentID)
+	assert.Equal(t, "mb-gov", c.MailboxID)
+	assert.Equal(t, "team-x", c.TeamID, "team_id must come from the trusted agent record")
+	assert.Equal(t, "confidential", c.DataClass, "data_classification must come from agents.metadata")
+	assert.Equal(t, 1, c.RunningCount, "running count must come from the tasks table")
+	assert.Equal(t, 2, c.Backlog, "backlog must come from the tasks table")
+	assert.Equal(t, 2, c.MaxConcurrency)
+}

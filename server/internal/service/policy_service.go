@@ -11,16 +11,42 @@ import (
 
 type PolicyService struct {
 	repo PolicyRuleRepo
+	// agentRepo, when set, supplies trusted governance attributes (team_id)
+	// for agent actors. Team-scoped template rules (actor.team_id) can
+	// only match when the actor is enriched from the agent record.
+	agentRepo AgentRepo
 }
 
 func NewPolicyService(repo PolicyRuleRepo) *PolicyService {
 	return &PolicyService{repo: repo}
 }
 
+// WithAgentRepo enables actor enrichment from trusted agent records.
+func (s *PolicyService) WithAgentRepo(repo AgentRepo) *PolicyService {
+	s.agentRepo = repo
+	return s
+}
+
+// enrichActor loads trusted governance attributes for agent actors.
+// Failures are non-fatal: evaluation proceeds without the attributes
+// (same behavior as before enrichment existed).
+func (s *PolicyService) enrichActor(ctx context.Context, input *core.PolicyInput) {
+	if s.agentRepo == nil || input.Actor.Type != "agent" || input.Actor.ID == "" || input.Actor.TeamID != "" {
+		return
+	}
+	agent, err := s.agentRepo.Get(ctx, input.TenantID, input.Actor.ID)
+	if err != nil || agent == nil {
+		return
+	}
+	input.Actor.TeamID = agent.TeamID
+}
+
 func (s *PolicyService) Evaluate(ctx context.Context, input core.PolicyInput) (core.PolicyDecision, error) {
 	if input.TenantID == "" {
 		return core.PolicyDecision{}, fmt.Errorf("tenant id is required")
 	}
+
+	s.enrichActor(ctx, &input)
 
 	rules, err := s.repo.ListActive(ctx, input.TenantID)
 	if err != nil {

@@ -289,3 +289,79 @@ func TestPolicyService_DifferentTenant(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, core.PolicyDecisionAllow, decision.Decision)
 }
+
+// stubAgentRepoForEnrich is a minimal AgentRepo for actor-enrichment tests.
+type stubAgentRepoForEnrich struct {
+	agents map[string]*core.Agent
+}
+
+func (s *stubAgentRepoForEnrich) Register(ctx context.Context, agent core.Agent) error {
+	return nil
+}
+func (s *stubAgentRepoForEnrich) UpsertCapabilities(ctx context.Context, agent core.Agent) error {
+	return nil
+}
+func (s *stubAgentRepoForEnrich) Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error) {
+	if a, ok := s.agents[tenantID+"/"+agentID]; ok {
+		return a, nil
+	}
+	return nil, fmt.Errorf("agent %s not found", agentID)
+}
+func (s *stubAgentRepoForEnrich) List(ctx context.Context, tenantID string) ([]*core.Agent, error) {
+	return nil, nil
+}
+func (s *stubAgentRepoForEnrich) ListByStatus(ctx context.Context, tenantID string, status core.AgentStatus) ([]*core.Agent, error) {
+	return nil, nil
+}
+func (s *stubAgentRepoForEnrich) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
+	return nil, nil
+}
+func (s *stubAgentRepoForEnrich) UpdateHeartbeat(ctx context.Context, tenantID, agentID string) error {
+	return nil
+}
+func (s *stubAgentRepoForEnrich) UpdateStatus(ctx context.Context, tenantID, agentID string, status core.AgentStatus) error {
+	return nil
+}
+func (s *stubAgentRepoForEnrich) FindByCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error) {
+	return nil, nil
+}
+
+// Team-scoped template rules (actor.team_id) can only match when the actor
+// is enriched from the trusted agent record — the audit's A3 finding.
+func TestPolicyService_ActorEnrichment_TeamScopedRuleMatches(t *testing.T) {
+	repo := &mockPolicyRuleRepo{
+		rules: []*core.PolicyRule{
+			{
+				TenantID: "acme", ID: "deny-team-x", Name: "Deny Team X",
+				Status: "active", Priority: 100,
+				Condition: json.RawMessage(`{"actor.team_id":"team-x"}`),
+				Action:    json.RawMessage(`{"decision":"deny"}`),
+			},
+		},
+	}
+	svc := NewPolicyService(repo).WithAgentRepo(&stubAgentRepoForEnrich{
+		agents: map[string]*core.Agent{
+			"acme/agent-1": {ID: "agent-1", TenantID: "acme", TeamID: "team-x"},
+		},
+	})
+	ctx := context.Background()
+
+	// Actor without explicit TeamID — enriched from the trusted record.
+	decision, err := svc.Evaluate(ctx, core.PolicyInput{
+		TenantID: "acme",
+		Actor:    core.PolicyActor{Type: "agent", ID: "agent-1"},
+		Action:   "execute",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, core.PolicyDecisionDeny, decision.Decision,
+		"team-scoped rule must match after actor enrichment")
+
+	// Unknown agent: enrichment is a no-op, evaluation still succeeds.
+	decision2, err2 := svc.Evaluate(ctx, core.PolicyInput{
+		TenantID: "acme",
+		Actor:    core.PolicyActor{Type: "agent", ID: "ghost"},
+		Action:   "execute",
+	})
+	require.NoError(t, err2)
+	assert.NotEqual(t, core.PolicyDecisionDeny, decision2.Decision)
+}
