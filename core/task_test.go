@@ -72,7 +72,7 @@ func TestCanTransition_Invalid(t *testing.T) {
 		{TaskStatusCreated, TaskStatusRunning},
 		{TaskStatusCreated, TaskStatusCompleted},
 		{TaskStatusQueued, TaskStatusRunning},
-		{TaskStatusClaimed, TaskStatusCompleted},
+		{TaskStatusClaimed, TaskStatusBlocked},
 		{TaskStatusClaimed, TaskStatusFailed},
 		{TaskStatusCompleted, TaskStatusQueued},
 		{TaskStatusCompleted, TaskStatusRunning},

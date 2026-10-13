@@ -54,6 +54,7 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 	},
 	TaskStatusClaimed: {
 		TaskStatusRunning:        true,
+		TaskStatusCompleted:      true,
 		TaskStatusRetryScheduled: true,
 		TaskStatusDeadLettered:   true,
 		TaskStatusCancelled:      true,
