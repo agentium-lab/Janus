@@ -849,3 +849,147 @@ func TestAgentService_Register_SweepLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, core.AgentStatusOffline, got.Status)
 }
+
+// B2: a FULL replay round against real PG — execute (pull→start→ack),
+// replay, execute AGAIN (pull→start→ack). The second round's pull must
+// not hit the attempt-1 PK collision that ResetForReplayTx previously
+// left behind (attempt rows were never deleted, attempt_count reset to 0).
+func TestReplay_FullSecondRound_Execution(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	// Fixture: tenant, agent, mailbox.
+	_, _ = env.pool.Exec(ctx, `INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('acme','r-agent','R','a2a','online') ON CONFLICT DO NOTHING`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','r-mb','r-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
+
+	// Round 1: create → pull → start → ack.
+	task1 := core.Task{
+		ID: "replay-round-1", TenantID: "acme", SourceAgent: "r-agent",
+		TargetType: core.TargetTypeMailbox, TargetValue: "r-mb", MailboxID: "r-mb",
+		Status: core.TaskStatusQueued, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{JanusVersion: "1", TaskID: "replay-round-1", TenantID: "acme",
+			SourceAgent: "r-agent", Target: core.Target{Type: "mailbox", Value: "r-mb"},
+			Payload: core.Payload{Type: "text", Content: "round1"}},
+	}
+	require.NoError(t, env.taskRepo.Create(ctx, task1))
+
+	// Simulate delivery + pull via the dispatch path (bypass NATS: the test
+	// harness inserts an attempt directly through PullTask's claim logic).
+	// We drive the state machine directly: claimed → running → completed.
+	_, _ = env.pool.Exec(ctx, `UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id='replay-round-1'`)
+	require.NoError(t, env.attemptRepo.Create(ctx, core.TaskAttempt{
+		TenantID: "acme", TaskID: "replay-round-1", Attempt: 1, AgentID: "r-agent",
+		LeaseID: "lease-r1", Status: "claimed",
+	}))
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "replay-round-1", "lease-r1"))
+
+	err := env.dispatch.AckTask(ctx, "acme", "replay-round-1", "lease-r1", "s3://r1", nil)
+	require.NoError(t, err, "round 1: ack must succeed")
+
+	got, _ := env.taskRepo.Get(ctx, "acme", "replay-round-1")
+	require.Equal(t, core.TaskStatusCompleted, got.Status, "round 1: task completed")
+
+	// Verify attempt=1 exists in the DB (the collision source).
+	var attemptCount int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id='replay-round-1'`).Scan(&attemptCount))
+	require.Greater(t, attemptCount, 0, "round 1 attempt row must exist")
+
+	// Replay.
+	_, err = env.taskSvc.Replay(ctx, "acme", "replay-round-1")
+	require.NoError(t, err, "replay must succeed")
+
+	got, _ = env.taskRepo.Get(ctx, "acme", "replay-round-1")
+	require.Equal(t, core.TaskStatusQueued, got.Status, "replay: task re-queued")
+	require.Equal(t, 1, got.ReplayCount, "replay_count bumped")
+
+	// Attempts must be gone (ResetForReplayTx deletes them).
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id='replay-round-1'`).Scan(&attemptCount))
+	require.Equal(t, 0, attemptCount, "replay: old attempts must be deleted")
+
+	// Round 2: the pull that previously failed with a unique violation.
+	_, _ = env.pool.Exec(ctx, `UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id='replay-round-1'`)
+	require.NoError(t, env.attemptRepo.Create(ctx, core.TaskAttempt{
+		TenantID: "acme", TaskID: "replay-round-1", Attempt: 1, AgentID: "r-agent",
+		LeaseID: "lease-r2", Status: "claimed",
+	}), "round 2: attempt-1 insert must NOT collide — old rows were deleted")
+
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "replay-round-1", "lease-r2"))
+	err = env.dispatch.AckTask(ctx, "acme", "replay-round-1", "lease-r2", "s3://r2", nil)
+	require.NoError(t, err, "round 2: ack must succeed")
+
+	got, _ = env.taskRepo.Get(ctx, "acme", "replay-round-1")
+	require.Equal(t, core.TaskStatusCompleted, got.Status, "round 2: task completed again")
+}
+
+// B3: the full task flow (create → start → ack) must complete under a
+// SINGLE-CONNECTION pool — the dispatch path previously acquired a second
+// pool connection inside the lifecycle transaction (self-starvation).
+func TestSingleConnectionPool_FullTaskFlow(t *testing.T) {
+	pool := openServiceTestDB(t)
+	ctx := context.Background()
+
+	// Single-connection pool: any nested acquisition deadlocks.
+	cfg := pool.Config().Copy()
+	cfg.MaxConns = 1
+	cfg.MinConns = 1
+	single, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Skipf("single-conn pool: %v", err)
+	}
+	defer single.Close()
+
+	taskRepo := postgres.NewTaskRepository(single)
+	attemptRepo := postgres.NewTaskAttemptRepository(single)
+	mailboxRepo := postgres.NewMailboxRepository(single)
+	taskSvc := NewTaskService(taskRepo, nil, single, nil)
+	budgetSvc := NewBudgetService(&cbBudgetSpecRepo{})
+	dispatch := NewDispatchService(taskRepo, attemptRepo, mailboxRepo, &cbQueueDriver{},
+		NewPolicyService(&mockPolicyRuleRepo{}), budgetSvc).
+		WithTxPath(NewPGLifecycle(single), nil, nil)
+
+	// Fixture.
+	_, _ = single.Exec(ctx, `INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('acme','sc-agent','S','a2a','online') ON CONFLICT DO NOTHING`)
+	_, _ = single.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','sc-mb','sc-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
+
+	// Create + claim + start — all inside lifecycle txs on the 1-conn pool.
+	_, _ = single.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','sc-task','sc-agent','mailbox','sc-mb','sc-mb','claimed','normal','{"task_id":"sc-task","tenant_id":"acme","source_agent":"sc-agent"}')
+		ON CONFLICT DO NOTHING`)
+	require.NoError(t, attemptRepo.Create(ctx, core.TaskAttempt{
+		TenantID: "acme", TaskID: "sc-task", Attempt: 1, AgentID: "sc-agent",
+		LeaseID: "lease-sc", Status: "claimed",
+	}))
+
+	// StartTask opens ApplyTx (holds the 1 conn), then reads the task —
+	// GetTx runs on the TX executor, so no second connection is needed.
+	// With the old pool-based Get, this would deadlock forever.
+	done := make(chan error, 1)
+	go func() {
+		done <- dispatch.StartTask(ctx, "acme", "sc-task", "lease-sc")
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "start under 1-conn pool must complete (tx executor, no nested pool query)")
+	case <-time.After(5 * time.Second):
+		t.Fatal("StartTask deadlocked under single-connection pool (nested pool query)")
+	}
+
+	// AckTask: same pattern — UpdateFinishedWithCheckTx + GetTx on tx.
+	_, _ = single.Exec(ctx, `UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id='sc-task'`)
+	done2 := make(chan error, 1)
+	go func() {
+		done2 <- dispatch.AckTask(ctx, "acme", "sc-task", "lease-sc", "s3://sc", nil)
+	}()
+	select {
+	case err := <-done2:
+		require.NoError(t, err, "ack under 1-conn pool must complete")
+	case <-time.After(5 * time.Second):
+		t.Fatal("AckTask deadlocked under single-connection pool")
+	}
+
+	got, _ := taskRepo.Get(ctx, "acme", "sc-task")
+	require.Equal(t, core.TaskStatusCompleted, got.Status)
+	_ = taskSvc
+}

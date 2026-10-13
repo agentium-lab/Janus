@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	crand "crypto/rand"
@@ -257,7 +256,12 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 			RequestedBy: task.SourceAgent,
 			Reason:      "policy: approval required",
 		}); err != nil {
-			log.Printf("task %s: request approval: %v", task.ID, err)
+			// An approval-gated task whose approval record failed to persist
+			// would sit in approval_pending with NO approval to approve —
+			// an orphan. Surface the error so the caller knows the task
+			// is not properly gated (the task itself IS durable; the
+			// approval is not — the caller retries or cancels).
+			return result, fmt.Errorf("approval gate: task %s persisted but approval creation failed: %w", task.ID, err)
 		}
 	}
 

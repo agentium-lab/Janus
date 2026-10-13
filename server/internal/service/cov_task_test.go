@@ -171,10 +171,13 @@ func TestCov_TaskService_Create_ApprovalRequired(t *testing.T) {
 		require.Len(t, approvalRepo.approvals, 1)
 	})
 
-	t.Run("approval request failure is logged not fatal", func(t *testing.T) {
+	t.Run("approval request failure surfaces to caller", func(t *testing.T) {
+		// The task is durable but ungated (no approval to approve) — the
+		// caller must KNOW instead of a silent log.
 		svc, _ := makeSvc(&mockApprovalRepo{err: errors.New("approval db down")})
 		_, err := svc.Create(ctx, task)
-		require.NoError(t, err)
+		require.Error(t, err, "approval failure must surface")
+		assert.Contains(t, err.Error(), "approval gate")
 	})
 }
 

@@ -149,13 +149,11 @@ func (d *Driver) NackTask(ctx context.Context, tenantID string, r core.DeliveryR
 		return err
 	}
 	d.clearLease(ctx, tenantID, taskID)
-	if reason == core.NackNonRetriable {
-		_, err = d.pool.Exec(ctx,
-			`UPDATE tasks SET status='dead_letter', updated_at=now() WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
-		return err
-	}
-	// Retriable: release the lease immediately; retry_at scheduling stays
-	// owned by the existing retry policy columns.
+	// Task status transitions (dead_lettered etc.) belong to the service
+	// lifecycle transaction, NOT the queue driver — the driver previously
+	// wrote status='dead_letter' (a value the state machine/DLQ queries
+	// don't recognize) and corrupted the core state. The driver now only
+	// manages DELIVERY state: retry scheduling via retry_at.
 	_, err = d.pool.Exec(ctx,
 		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
 	return err
@@ -166,8 +164,15 @@ func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string) {
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
+	// Record the dead-letter payload WITHOUT touching task.status — the
+	// service lifecycle transaction owns state transitions. An empty error
+	// payload becomes a minimal valid JSON object (a bare '' previously
+	// failed the JSONB cast).
+	if len(errPayload) == 0 || string(errPayload) == "" {
+		errPayload = []byte(`{"reason":"unspecified"}`)
+	}
 	_, err := d.pool.Exec(ctx,
-		`UPDATE tasks SET status='dead_letter', error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
+		`UPDATE tasks SET error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
 		msg.TaskID, msg.TenantID, string(errPayload))
 	return err
 }
