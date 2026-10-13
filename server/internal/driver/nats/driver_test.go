@@ -279,20 +279,24 @@ func TestDriver_NackNonRetriable(t *testing.T) {
 	require.NoError(t, d.NackTask(ctx, tn, deliveries[0].DeliveryRef, core.NackNonRetriable))
 }
 
-func TestDriver_AckNotFound(t *testing.T) {
+func TestDriver_AckNotFound_CrossReplicaSettles(t *testing.T) {
+	// A delivery ref this replica never pulled is a cross-replica
+	// settlement (the pending map is per-replica): the DB-first commit
+	// succeeds and the broker's delivery is settled via AckWait expiry +
+	// PullTask's terminal-state reconciliation. This is the B6 fix —
+	// returning an error broke cross-replica ACK even though PG was
+	// consistent.
 	d := openDriver(t)
 	tn := genTenant(t)
 	err := d.AckTask(context.Background(), tn, "nonexistent:0")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.NoError(t, err, "unknown refs settle via cross-replica semantics")
 }
 
-func TestDriver_NackNotFound(t *testing.T) {
+func TestDriver_NackNotFound_CrossReplicaSettles(t *testing.T) {
 	d := openDriver(t)
 	tn := genTenant(t)
 	err := d.NackTask(context.Background(), tn, "nonexistent:0", core.NackRetriable)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.NoError(t, err, "unknown refs settle via cross-replica semantics")
 }
 
 func TestDriver_PublishEvent(t *testing.T) {

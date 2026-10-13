@@ -547,10 +547,10 @@ func TestDriver_StorePendingAndPopPending(t *testing.T) {
 	// Ack the task - this pops from pending
 	require.NoError(t, d.AckTask(context.Background(), tn, deliveries[0].DeliveryRef))
 
-	// Try to ack again - should fail
+	// Try to ack again: the local handle is popped, so it settles via the
+	// cross-replica path (AckWait + reconciliation) — nil, not an error.
 	err = d.AckTask(context.Background(), tn, deliveries[0].DeliveryRef)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
+	assert.NoError(t, err, "duplicate ack settles via cross-replica semantics")
 }
 
 // TestDriver_MultipleTenants tests managing multiple tenants simultaneously

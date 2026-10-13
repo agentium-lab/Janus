@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	natsio "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/agentium-lab/Janus/core"
@@ -40,7 +40,7 @@ type Config struct {
 }
 
 type Driver struct {
-	nc      *nats.Conn
+	nc      *natsio.Conn
 	js      jetstream.JetStream
 	mu      sync.RWMutex
 	tenant  map[string]*tenantStreams
@@ -61,10 +61,10 @@ func NewDriver(cfg Config) (*Driver, error) {
 	// the process never recovers without a restart (observed in the nightly
 	// chaos run: docker stop/start nats left the API degraded forever).
 	// A reconnecting client costs one SYN per interval.
-	nc, err := nats.Connect(cfg.URL,
-		nats.ReconnectWait(2*time.Second),
-		nats.MaxReconnects(-1),
-		nats.Timeout(5*time.Second),
+	nc, err := natsio.Connect(cfg.URL,
+		natsio.ReconnectWait(2*time.Second),
+		natsio.MaxReconnects(-1),
+		natsio.Timeout(5*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("connect to NATS: %w", err)
@@ -87,7 +87,7 @@ func NewDriver(cfg Config) (*Driver, error) {
 func (d *Driver) PublishTask(ctx context.Context, msg core.TaskMessage) error {
 	subject := taskSubject(msg.TenantID, msg.MailboxID)
 
-	nmsg := nats.NewMsg(subject)
+	nmsg := natsio.NewMsg(subject)
 	nmsg.Data = msg.Payload
 	nmsg.Header.Set("JANUS-Task-ID", msg.TaskID)
 	nmsg.Header.Set("JANUS-Tenant-ID", msg.TenantID)
@@ -110,7 +110,7 @@ func (d *Driver) PublishTask(ctx context.Context, msg core.TaskMessage) error {
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
 	subject := dlqSubject(msg.TenantID, msg.MailboxID)
 
-	nmsg := nats.NewMsg(subject)
+	nmsg := natsio.NewMsg(subject)
 	nmsg.Data = msg.Payload
 	nmsg.Header.Set("JANUS-Task-ID", msg.TaskID)
 	nmsg.Header.Set("JANUS-Tenant-ID", msg.TenantID)
@@ -177,22 +177,28 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 }
 
 func (d *Driver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error {
-	msg, ok := d.popPending(ref)
-	if !ok {
-		return fmt.Errorf("delivery ref not found: %s", ref)
+	if msg, ok := d.popPending(ref); ok {
+		return msg.Ack()
 	}
-	return msg.Ack()
+	// Cross-replica settlement: this replica never pulled the delivery
+	// (the pending map is per-replica). PG is already committed; the
+	// broker's delivery is settled by AckWait expiry + PullTask's
+	// terminal-state reconciliation. Returning nil lets the DB-first
+	// commit succeed — the previous "not found" error broke cross-replica
+	// ACK even though PG was consistent.
+	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation", ref)
+	return nil
 }
 
 func (d *Driver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, reason core.NackReason) error {
-	msg, ok := d.popPending(ref)
-	if !ok {
-		return fmt.Errorf("delivery ref not found: %s", ref)
+	if msg, ok := d.popPending(ref); ok {
+		if reason == core.NackNonRetriable {
+			return msg.Term()
+		}
+		return msg.Nak()
 	}
-	if reason == core.NackNonRetriable {
-		return msg.Term()
-	}
-	return msg.Nak()
+	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation", ref)
+	return nil
 }
 
 func (d *Driver) PublishEvent(ctx context.Context, event core.JanusEvent) error {
@@ -205,10 +211,10 @@ func (d *Driver) PublishEvent(ctx context.Context, event core.JanusEvent) error 
 	if msgID == "" {
 		msgID = fmt.Sprintf("%s-%s-%d", event.TenantID, event.TaskID, event.Timestamp.UnixNano())
 	}
-	_, err = d.js.PublishMsg(ctx, &nats.Msg{
+	_, err = d.js.PublishMsg(ctx, &natsio.Msg{
 		Subject: subject,
 		Data:    data,
-		Header:  nats.Header{"Nats-Msg-Id": []string{msgID}},
+		Header:  natsio.Header{"Nats-Msg-Id": []string{msgID}},
 	})
 	if err != nil {
 		return fmt.Errorf("publish event to %s: %w", subject, err)
@@ -636,7 +642,7 @@ func (d *Driver) Close() error {
 	return nil
 }
 
-func (d *Driver) Conn() *nats.Conn {
+func (d *Driver) Conn() *natsio.Conn {
 	return d.nc
 }
 
@@ -649,8 +655,8 @@ func isTerminalEvent(evt core.JanusEvent) bool {
 	return false
 }
 
-func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent) (*nats.Subscription, error) {
-	sub, err := d.nc.Subscribe("janus.*.events.>", func(msg *nats.Msg) {
+func (d *Driver) SubscribeEvents(ctx context.Context, ch chan<- core.JanusEvent) (*natsio.Subscription, error) {
+	sub, err := d.nc.Subscribe("janus.*.events.>", func(msg *natsio.Msg) {
 		var event core.JanusEvent
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
 			return

@@ -572,7 +572,14 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
-	mb, _ := s.mailboxRepo.Get(ctx, tenantID, task.MailboxID)
+	mb, mbErr := s.mailboxRepo.Get(ctx, tenantID, task.MailboxID)
+	if mbErr != nil {
+		// An infrastructure failure reading the retry policy must NOT be
+		// interpreted as "cannot retry" — that misrouted transient PG
+		// faults to the DLQ. Surface it; the delivery stays in the broker's
+		// redelivery window.
+		return fmt.Errorf("nack: mailbox read for retry policy: %w", mbErr)
+	}
 	canRetry := retriable && mb != nil && !mb.RetryPolicy.ExceedsMaxAttempts(task.AttemptCount)
 
 	committed := false

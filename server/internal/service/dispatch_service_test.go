@@ -637,8 +637,10 @@ func TestDispatchService_NackTask_NoMailbox(t *testing.T) {
 	}}
 
 	err := svc.NackTask(ctx, "acme", "task-1", "lease-abc", true, nil)
-	require.NoError(t, err)
-	assert.Equal(t, core.TaskStatusDeadLettered, tRepo.tasks["acme:task-1"].Status)
+	require.Error(t, err, "missing mailbox must surface — not silently DLQ")
+	assert.Contains(t, err.Error(), "mailbox read")
+	assert.Equal(t, core.TaskStatusRunning, tRepo.tasks["acme:task-1"].Status,
+		"task must NOT transition when the retry policy is unreadable")
 }
 
 func TestGenerateLeaseID(t *testing.T) {

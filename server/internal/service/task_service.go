@@ -502,7 +502,10 @@ func (s *TaskService) ReportProgress(ctx context.Context, tenantID, taskID, agen
 	}
 	evtPayload := MarshalEvent(&evt)
 	if err := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", evtPayload); err != nil {
-		logOutboxWrite(taskID, err)
+		// The audit-persist failure must surface: a silent log let callers
+		// treat the event as durable when it was only broadcast — the
+		// progress trail could silently vanish.
+		return nil, fmt.Errorf("task %s progress: audit persist failed: %w", taskID, err)
 	}
 	return &evt, nil
 }

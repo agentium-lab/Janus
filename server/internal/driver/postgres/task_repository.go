@@ -429,8 +429,18 @@ func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailbox
 	return scanTasks(rows)
 }
 
+// ExpireTasks transitions overdue tasks to expired AND writes an
+// task.expired outbox event per task in the SAME transaction, so the
+// audit trail captures the expiry (a bare status flip previously left no
+// trace).
 func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
-	tag, err := r.pool.Exec(ctx,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx,
 		`UPDATE tasks SET status = 'expired', updated_at = now()
 		 WHERE status NOT IN ('completed','dead_lettered','expired','cancelled')
 		   AND (
@@ -441,7 +451,30 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return tag.RowsAffected(), nil
+	n := tag.RowsAffected()
+	if n > 0 {
+		// One task.expired event per newly expired task.
+		if _, ierr := tx.Exec(ctx,
+			`INSERT INTO outbox_events (id, tenant_id, kind, payload)
+			 SELECT 'exp-' || t.id, t.tenant_id, 'event_publish',
+			        jsonb_build_object('event_type','task.expired','tenant_id',t.tenant_id,'task_id',t.id,
+			                           'event_id','obx-exp-'||t.id,
+			                           'timestamp',to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'))
+			 FROM tasks t
+			 WHERE t.status = 'expired'
+			   AND NOT EXISTS (
+			     SELECT 1 FROM outbox_events oe
+			     WHERE oe.tenant_id = t.tenant_id AND oe.kind = 'event_publish'
+			       AND oe.payload->>'task_id' = t.id
+			       AND oe.payload->>'event_type' = 'task.expired'
+			   )`); ierr != nil {
+			return 0, fmt.Errorf("expiry outbox: %w", ierr)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func nilIfZero(v int) interface{} {
