@@ -21,6 +21,7 @@ type Config struct {
 	Redis     RedisConfig     `mapstructure:"redis"`
 	Migration MigrationConfig `mapstructure:"migration"`
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat"`
+	Mailbox   MailboxConfig   `mapstructure:"mailbox"`
 	Auth      AuthConfig      `mapstructure:"auth"`
 	TLS       TLSConfig       `mapstructure:"tls"`
 	CORS      CORSConfig      `mapstructure:"cors"`
@@ -94,6 +95,13 @@ type MigrationConfig struct {
 type HeartbeatConfig struct {
 	SweeperInterval string `mapstructure:"sweeper_interval"`
 	TTL             string `mapstructure:"ttl"`
+}
+
+type MailboxConfig struct {
+	// ReconcileInterval bounds how long PG-to-broker consumer drift can
+	// persist (e.g. a lockless older replica committing a config the
+	// broker never received during a rolling upgrade).
+	ReconcileInterval string `mapstructure:"reconcile_interval"`
 }
 
 type AuthConfig struct {
@@ -189,6 +197,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("migration.auto", true)
 	v.SetDefault("migration.path", "migrations/")
 	v.SetDefault("heartbeat.sweeper_interval", "30s")
+	v.SetDefault("mailbox.reconcile_interval", "60s")
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", true)
 	v.SetDefault("tls.enabled", false)
@@ -233,6 +242,7 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_MIGRATION_AUTO":                 "migration.auto",
 		"JANUS_MIGRATION_PATH":                 "migration.path",
 		"JANUS_HB_SWEEPER_INTERVAL":            "heartbeat.sweeper_interval",
+		"JANUS_MAILBOX_RECONCILE_INTERVAL":     "mailbox.reconcile_interval",
 		"JANUS_HB_TTL":                         "heartbeat.ttl",
 		"JANUS_AUTH_ENABLED":                   "auth.enabled",
 		"JANUS_TLS_ENABLED":                    "tls.enabled",

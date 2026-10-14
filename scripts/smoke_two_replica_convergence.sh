@@ -106,7 +106,8 @@ echo "  ✓ acked"
 # Eventual consistency is the contract: the last PG commit may still be
 # parked for the retry tick while the broker serves the previous revision.
 BROKER_AW=""
-for i in $(seq 1 30); do
+CONVERGE_TRIES="${CONVERGE_TRIES:-30}"
+for i in $(seq 1 "$CONVERGE_TRIES"); do
   BROKER_AW=$(curl -sf --max-time 5 "http://localhost:8222/jsz?config=true&consumers=true" 2>/dev/null \
     | TENANT_NAME="$TENANT" MB_NAME="$MB" python3 scripts/jsz_consumer_ackwait.py 2>/dev/null || echo "")
   if [ -z "$BROKER_AW" ]; then
@@ -120,7 +121,7 @@ for i in $(seq 1 30); do
   sleep 2
 done
 if [ "$BROKER_AW" != "$FINAL_AW" ]; then
-  echo "FATAL: broker ack_wait=${BROKER_AW}s != PG ack_wait=${FINAL_AW}s after 60s (not converged)"
+  echo "FATAL: broker ack_wait=${BROKER_AW}s != PG ack_wait=${FINAL_AW}s after $((CONVERGE_TRIES * 2))s (not converged)"
   exit 1
 fi
 
