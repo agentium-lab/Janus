@@ -71,7 +71,9 @@ func TestAgentRepo_WithNullFields(t *testing.T) {
 	assert.Equal(t, "", got.Description)
 	assert.Equal(t, 0, got.RPM)
 	assert.Equal(t, 0, got.TPM)
-	assert.Nil(t, got.LastHeartbeatAt)
+	// Registration counts as the first heartbeat — a NULL here would let
+	// the sweeper offline every freshly registered agent on its next tick.
+	assert.NotNil(t, got.LastHeartbeatAt)
 }
 
 func TestAgentRepo_ListNullFieldsViaList(t *testing.T) {
@@ -110,7 +112,7 @@ func TestAgentRepo_ListNullFieldsViaList(t *testing.T) {
 	assert.Equal(t, "", minimal.Description)
 	assert.Equal(t, 0, minimal.RPM)
 	assert.Equal(t, 0, minimal.TPM)
-	assert.Nil(t, minimal.LastHeartbeatAt)
+	assert.NotNil(t, minimal.LastHeartbeatAt)
 
 	assert.Equal(t, "https://example.com", full.Endpoint)
 	assert.Equal(t, "desc", full.Description)

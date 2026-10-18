@@ -54,8 +54,12 @@ func TestAgentRepo_RegisterDuplicate(t *testing.T) {
 		Protocol: core.ProtocolA2A, Status: core.AgentStatusOnline,
 	}
 	require.NoError(t, repo.Register(ctx, agent))
-	err := repo.Register(ctx, agent)
-	assert.Error(t, err)
+	// Registration is an idempotent upsert: a retry after a partial
+	// failure must not conflict on the already-committed row.
+	require.NoError(t, repo.Register(ctx, agent))
+	got, err := repo.Get(ctx, "acme", "reviewer")
+	require.NoError(t, err)
+	assert.Equal(t, "R1", got.DisplayName)
 }
 
 func TestAgentRepo_UpdateStatus(t *testing.T) {

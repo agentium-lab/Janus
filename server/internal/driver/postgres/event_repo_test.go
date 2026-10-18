@@ -58,8 +58,9 @@ func TestEventRepo_Insert_Duplicate(t *testing.T) {
 		Payload:   []byte(`{}`),
 	}
 	require.NoError(t, repo.Insert(ctx, evt))
-	err := repo.Insert(ctx, evt)
-	assert.Error(t, err)
+	// Event insertion is idempotent on (tenant_id, event_id): broker or
+	// outbox redelivery must not error on the duplicate.
+	require.NoError(t, repo.Insert(ctx, evt))
 }
 
 func TestEventRepo_ListByTask(t *testing.T) {

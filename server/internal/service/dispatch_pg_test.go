@@ -1032,9 +1032,18 @@ func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
 	}
 	env.dispatch = env.dispatch.WithQueueDriver(drv)
 
+	// Two legal outcomes of this interleaving, both correctly converged:
+	//  a) the second task read (after FetchTasks) sees 'cancelled' and the
+	//     redelivery-reconciliation branch ACKs the delivery (nil, nil);
+	//  b) the claim transaction runs and its CAS fails (nil, err).
+	// Either way NO lease may be handed out and NO attempt may survive.
 	result, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
-	require.Error(t, err, "claim must fail when Cancel wins the race")
-	require.Nil(t, result)
+	require.Nil(t, result, "no lease may be handed out for a cancelled task")
+	if err != nil {
+		t.Logf("converged via claim-race rollback: %v", err)
+	} else {
+		t.Log("converged via redelivery reconciliation")
+	}
 
 	task, gerr := env.taskRepo.Get(ctx, "acme", "race-task")
 	require.NoError(t, gerr)
@@ -1114,8 +1123,8 @@ func TestReplay_SecondRound_UsageNotSwallowedByLedger(t *testing.T) {
 	_, _ = env.pool.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','lg-mb','lg-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
 	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
 		VALUES ('acme','lg-task','lg-agent','mailbox','lg-mb','lg-mb','claimed','normal','{"task_id":"lg-task","tenant_id":"acme","source_agent":"lg-agent"}')`)
-	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
-		VALUES ('acme','lg-task',1,'lg-agent','lease-lg1','claimed')`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		VALUES ('acme','lg-task',1,'lg-agent','lease-lg1','claimed','dr-lg1')`)
 
 	u1 := &core.TokenUsage{PromptTokens: 100, CompletionTokens: 100, TotalTokens: 200}
 	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "lg-task", "lease-lg1"))
@@ -1126,8 +1135,8 @@ func TestReplay_SecondRound_UsageNotSwallowedByLedger(t *testing.T) {
 
 	// Round 2: attempt numbering restarted at 1.
 	_, _ = env.pool.Exec(ctx, `UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id='lg-task'`)
-	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
-		VALUES ('acme','lg-task',1,'lg-agent','lease-lg2','claimed')`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		VALUES ('acme','lg-task',1,'lg-agent','lease-lg2','claimed','dr-lg2')`)
 	u2 := &core.TokenUsage{PromptTokens: 50, CompletionTokens: 50, TotalTokens: 100}
 	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "lg-task", "lease-lg2"))
 	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "lg-task", "lease-lg2", "s3://lg2", u2))
