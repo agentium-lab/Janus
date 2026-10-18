@@ -133,7 +133,7 @@ jobs:
         run: |
           # The matrix executes the Python and TS SDK test suites, not just
           # type checks — their runner deps must be present.
-          python3 -m pip install --quiet pytest
+          (cd sdk/python && python3 -m pip install --quiet -e '.[dev]')
           (cd sdk/typescript && npm ci --silent)
           bash scripts/acceptance_matrix.sh
 
