@@ -130,7 +130,12 @@ jobs:
           bash scripts/smoke_two_replica_convergence.sh
 
       - name: T01-T13 acceptance matrix (audit 2026-10-12)
-        run: bash scripts/acceptance_matrix.sh
+        run: |
+          # The matrix executes the Python and TS SDK test suites, not just
+          # type checks — their runner deps must be present.
+          python3 -m pip install --quiet pytest
+          (cd sdk/typescript && npm ci --silent)
+          bash scripts/acceptance_matrix.sh
 
       - name: Mixed-version lock contention (v1.9.0 + HEAD)
         run: |

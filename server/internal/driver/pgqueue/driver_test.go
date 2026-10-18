@@ -2,6 +2,8 @@ package pgqueue
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -12,9 +14,27 @@ import (
 )
 
 // Cross-tenant isolation: same task ID + mailbox in two tenants; pulling from
-// one must never return or mutate the other's data. Requires PG at localhost.
+// one must never return or mutate the other's data. PG connection follows
+// JANUS_PG_* (same convention as the postgres-driver suites).
 func TestFetchTasks_TenantIsolation(t *testing.T) {
-	dsn := "postgres://silv@localhost:5432/janus_test?sslmode=disable"
+	host := os.Getenv("JANUS_PG_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("JANUS_PG_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("JANUS_PG_USER")
+	if user == "" {
+		user = "janus"
+	}
+	password := os.Getenv("JANUS_PG_PASSWORD")
+	db := os.Getenv("JANUS_PG_DBNAME")
+	if db == "" {
+		db = "janus_test"
+	}
+	dsn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable", user, password, host, port, db)
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Skipf("pg not available: %v", err)
