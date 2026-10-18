@@ -1141,11 +1141,19 @@ func TestReplay_SecondRound_UsageNotSwallowedByLedger(t *testing.T) {
 	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "lg-task", "lease-lg2"))
 	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "lg-task", "lease-lg2", "s3://lg2", u2))
 
-	// Tenant-scope ledger rows: one per generation, both settled.
+	// Replay clears the task's ledger rows and re-arms settlement: the
+	// replay round's usage must be billed (previously swallowed by ON
+	// CONFLICT on the attempt-numbered key).
 	var rows, totalTokens int
 	require.NoError(t, env.pool.QueryRow(ctx,
 		`SELECT count(*), COALESCE(sum(total_tokens),0) FROM budget_usage_ledger
 		 WHERE tenant_id='acme' AND task_id='lg-task' AND scope_type='tenant'`).Scan(&rows, &totalTokens))
-	require.Equal(t, 2, rows, "both replay generations must settle their own ledger row")
-	require.Equal(t, 300, totalTokens, "round 1 (200) + round 2 (100) tokens must both be billed")
+	require.Equal(t, 1, rows, "the replay round settles a fresh ledger row")
+	require.Equal(t, 100, totalTokens, "round 2's 100 tokens must be billed, not swallowed")
+	// The aggregate already counted round 1; round 2 adds on top.
+	var aggTokens int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT COALESCE(sum(tokens_used),0) FROM budget_usage
+		 WHERE tenant_id='acme' AND scope_type='tenant'`).Scan(&aggTokens))
+	require.Equal(t, 300, aggTokens, "aggregate bills round 1 (200) + round 2 (100)")
 }

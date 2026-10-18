@@ -87,11 +87,11 @@ func (r *BudgetUsageRepo) GetDailyUsage(ctx context.Context, tenantID, scopeType
 func (r *BudgetUsageRepo) InsertLedgerTx(ctx context.Context, tx pgx.Tx, e core.LedgerEntry) (bool, error) {
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO budget_usage_ledger
-		   (tenant_id, task_id, generation, attempt, scope_type, scope_id,
+		   (tenant_id, task_id, attempt, scope_type, scope_id,
 		    prompt_tokens, completion_tokens, total_tokens, cost_usd)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		 ON CONFLICT (tenant_id, task_id, generation, attempt, scope_type, scope_id) DO NOTHING`,
-		e.TenantID, e.TaskID, e.Generation, e.Attempt, e.ScopeType, e.ScopeID,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ON CONFLICT (tenant_id, task_id, attempt, scope_type, scope_id) DO NOTHING`,
+		e.TenantID, e.TaskID, e.Attempt, e.ScopeType, e.ScopeID,
 		e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.CostUSD,
 	)
 	if err != nil {
@@ -104,11 +104,11 @@ func (r *BudgetUsageRepo) InsertLedgerTx(ctx context.Context, tx pgx.Tx, e core.
 func (r *BudgetUsageRepo) InsertLedger(ctx context.Context, e core.LedgerEntry) (bool, error) {
 	tag, err := r.pool.Exec(ctx,
 		`INSERT INTO budget_usage_ledger
-		   (tenant_id, task_id, generation, attempt, scope_type, scope_id,
+		   (tenant_id, task_id, attempt, scope_type, scope_id,
 		    prompt_tokens, completion_tokens, total_tokens, cost_usd)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-		 ON CONFLICT (tenant_id, task_id, generation, attempt, scope_type, scope_id) DO NOTHING`,
-		e.TenantID, e.TaskID, e.Generation, e.Attempt, e.ScopeType, e.ScopeID,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		 ON CONFLICT (tenant_id, task_id, attempt, scope_type, scope_id) DO NOTHING`,
+		e.TenantID, e.TaskID, e.Attempt, e.ScopeType, e.ScopeID,
 		e.PromptTokens, e.CompletionTokens, e.TotalTokens, e.CostUSD,
 	)
 	if err != nil {

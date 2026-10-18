@@ -538,7 +538,7 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 		} {
 			if s.ledger != nil {
 				if ierr := s.ledger.SettleTx(ctx, tx, core.LedgerEntry{
-					TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt, Generation: task.ReplayCount,
+					TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt,
 					ScopeType: scope.Type, ScopeID: scope.ID,
 					PromptTokens: prompt, CompletionTokens: completion,
 					TotalTokens: total, CostUSD: costUSD,

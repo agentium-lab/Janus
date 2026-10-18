@@ -154,7 +154,6 @@ CREATE TABLE IF NOT EXISTS budget_usage (
 CREATE TABLE IF NOT EXISTS budget_usage_ledger (
     tenant_id text NOT NULL,
     task_id text NOT NULL,
-    generation integer NOT NULL DEFAULT 0,
     attempt integer NOT NULL,
     scope_type text NOT NULL,
     scope_id text NOT NULL,
@@ -163,7 +162,7 @@ CREATE TABLE IF NOT EXISTS budget_usage_ledger (
     total_tokens bigint NOT NULL DEFAULT 0,
     cost_usd numeric(18, 6) NOT NULL DEFAULT 0,
     recorded_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, task_id, generation, attempt, scope_type, scope_id)
+    PRIMARY KEY (tenant_id, task_id, attempt, scope_type, scope_id)
 );
 
 CREATE INDEX IF NOT EXISTS budget_usage_ledger_scope_idx

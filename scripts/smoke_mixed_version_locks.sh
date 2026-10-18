@@ -48,7 +48,12 @@ echo "=== Mixed-version lock contention: OLD=$OLD_REF (lockless) vs HEAD (adviso
 # --- Stage 1: build both binaries -------------------------------------------
 rm -rf "$WORKDIR"; mkdir -p "$WORKDIR"
 git -C "$REPO_ROOT" worktree prune
-git -C "$REPO_ROOT" worktree add "$WORKDIR/old-src" "$OLD_REF" --detach >/dev/null 2>&1
+# Shallow CI clones may not carry release tags: fetch them when the ref
+# is missing instead of dying with a bare exit 128.
+if ! git -C "$REPO_ROOT" cat-file -e "$OLD_REF^{commit}" 2>/dev/null; then
+  git -C "$REPO_ROOT" fetch --tags --quiet || { echo "FATAL: cannot fetch $OLD_REF"; exit 1; }
+fi
+git -C "$REPO_ROOT" worktree add "$WORKDIR/old-src" "$OLD_REF" --detach   || { echo "FATAL: worktree add $OLD_REF failed"; exit 1; }
 ( cd "$WORKDIR/old-src" && GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" go build -o "$WORKDIR/janus-old" ./server/cmd/janus-api ) \
   || { echo "FATAL: build OLD ($OLD_REF) failed"; exit 1; }
 ( cd "$REPO_ROOT" && GOPROXY="${GOPROXY:-https://goproxy.cn,direct}" go build -o "$WORKDIR/janus-new" ./server/cmd/janus-api ) \
@@ -148,9 +153,9 @@ done
 }
 echo "  ✓ task published via NEW, pulled via OLD"
 
-c=$(post "http://localhost:8080/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
+c=$(curl -s -o /tmp/opencode/ack-body.txt -w "%{http_code}" --max-time 5 -X POST "http://localhost:8080/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
   -d "{\"lease_id\":\"$LEASE\",\"result_ref\":\"smoke://mix-ok\"}")
-[ "$c" = 200 ] || { echo "FATAL: ack via OLD -> $c"; exit 1; }
+[ "$c" = 200 ] || { echo "FATAL: ack via OLD -> $c body=$(cat /tmp/opencode/ack-body.txt 2>/dev/null)"; exit 1; }
 echo "  ✓ acked via OLD"
 
 # --- Stage 5: post-race integrity ---------------------------------------------

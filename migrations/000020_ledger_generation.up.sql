@@ -1,9 +1,7 @@
--- Replay generation in the settlement ledger: attempt numbers restart at 1
--- after a replay, so (task_id, attempt) alone collided across generations —
--- the replay round's usage was silently swallowed by ON CONFLICT DO NOTHING
--- and replayed work never hit the budget. The tasks.replay_count at insert
--- time is the generation.
-ALTER TABLE budget_usage_ledger ADD COLUMN IF NOT EXISTS generation integer NOT NULL DEFAULT 0;
-
-ALTER TABLE budget_usage_ledger DROP CONSTRAINT IF EXISTS budget_usage_ledger_pkey;
-ALTER TABLE budget_usage_ledger ADD PRIMARY KEY (tenant_id, task_id, generation, attempt, scope_type, scope_id);
+-- Placeholder kept for chain stability: the replay-ledger fix ships
+-- entirely in code (ResetForReplayTx deletes the task's prior ledger
+-- rows in the same transaction). Keeping the five-column ledger PK is
+-- deliberate: the originally-proposed generation column would have
+-- broken ON CONFLICT for v1.9.0 binaries during the rolling-upgrade
+-- window (migrate-then-restart order).
+SELECT 1;

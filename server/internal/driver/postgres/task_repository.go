@@ -387,10 +387,23 @@ func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenant
 	// numbering restarts at 1 after attempt_count resets — the previous
 	// run's rows MUST go in the SAME transaction or the first post-replay
 	// pull hits a unique violation on attempt=1.
+	//
+	// The settlement ledger shares the same attempt-numbered key, so the
+	// replay round's rows would be swallowed by ON CONFLICT DO NOTHING.
+	// Clearing them here re-arms per-round settlement. The ledger's job is
+	// idempotent settlement, not history — the aggregate (budget_usage)
+	// already counted the prior round and audit trails live in events.
+	// A generation column was rejected: it breaks v1.9.0 binaries' ON
+	// CONFLICT target during the rolling-upgrade window.
 	if _, derr := tx.Exec(ctx,
 		`DELETE FROM task_attempts WHERE tenant_id = $1 AND task_id = $2`,
 		tenantID, taskID); derr != nil {
 		return 0, fmt.Errorf("clear attempts for replay: %w", derr)
+	}
+	if _, derr := tx.Exec(ctx,
+		`DELETE FROM budget_usage_ledger WHERE tenant_id = $1 AND task_id = $2`,
+		tenantID, taskID); derr != nil {
+		return 0, fmt.Errorf("clear settlement ledger for replay: %w", derr)
 	}
 	return generation, nil
 }
