@@ -153,21 +153,21 @@ CREATE TABLE IF NOT EXISTS budget_usage (
 
 CREATE TABLE IF NOT EXISTS budget_usage_ledger (
     tenant_id text NOT NULL,
-    id text NOT NULL,
     task_id text NOT NULL,
+    generation integer NOT NULL DEFAULT 0,
     attempt integer NOT NULL,
     scope_type text NOT NULL,
     scope_id text NOT NULL,
-    event_type text NOT NULL,
-    tokens integer NOT NULL DEFAULT 0,
+    prompt_tokens bigint NOT NULL DEFAULT 0,
+    completion_tokens bigint NOT NULL DEFAULT 0,
+    total_tokens bigint NOT NULL DEFAULT 0,
     cost_usd numeric(18, 6) NOT NULL DEFAULT 0,
-    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
-    occurred_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (tenant_id, id)
+    recorded_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, task_id, generation, attempt, scope_type, scope_id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS budget_usage_ledger_attempt_scope_idx
-    ON budget_usage_ledger (tenant_id, task_id, attempt, scope_type, scope_id, event_type);
+CREATE INDEX IF NOT EXISTS budget_usage_ledger_scope_idx
+    ON budget_usage_ledger (tenant_id, scope_type, scope_id, recorded_at);
 
 CREATE INDEX IF NOT EXISTS budget_usage_ledger_scope_idx
     ON budget_usage_ledger (tenant_id, scope_type, scope_id, occurred_at);
