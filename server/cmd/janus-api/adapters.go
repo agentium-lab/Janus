@@ -124,6 +124,18 @@ func (a *dispatchAdapter) StartTask(ctx context.Context, tenantID, taskID, lease
 	return a.svc.StartTask(ctx, tenantID, taskID, leaseID)
 }
 
+func (a *dispatchAdapter) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.svc.StartTaskAs(ctx, tenantID, taskID, leaseID, agentID)
+}
+
+func (a *dispatchAdapter) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.svc.TaskHeartbeatAs(ctx, tenantID, taskID, leaseID, agentID)
+}
+
+func (a *dispatchAdapter) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	return a.svc.AckTaskAs(ctx, tenantID, taskID, leaseID, agentID, resultRef, usage)
+}
+
 func (a *dispatchAdapter) TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error {
 	return a.svc.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
 }
@@ -134,6 +146,10 @@ func (a *dispatchAdapter) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 func (a *dispatchAdapter) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
 	return a.svc.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
+func (a *dispatchAdapter) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	return a.svc.NackTaskAs(ctx, tenantID, taskID, leaseID, agentID, retriable, taskErr)
 }
 
 type auditAdapter struct {

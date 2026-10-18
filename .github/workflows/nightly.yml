@@ -129,6 +129,14 @@ jobs:
           JANUS_PG_HOST=localhost JANUS_PG_USER=janus PGPASSWORD=janus JANUS_PG_DBNAME=janus_test \
           bash scripts/smoke_two_replica_convergence.sh
 
+      - name: T01-T13 acceptance matrix (audit 2026-10-12)
+        run: bash scripts/acceptance_matrix.sh
+
+      - name: Mixed-version lock contention (v1.9.0 + HEAD)
+        run: |
+          JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
+          bash scripts/smoke_mixed_version_locks.sh
+
       - name: Ops chaos (dependency restarts + state persistence)
         env:
           JANUS_PG_DBNAME: janus_test

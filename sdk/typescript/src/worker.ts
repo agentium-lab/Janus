@@ -5,7 +5,7 @@ import type { Task, TokenUsage } from "./types";
 
 export type ProgressFn = (message: string, percent?: number, data?: Record<string, unknown>) => void;
 // Backward compatible: progress is optional — old 2-param handlers still work.
-export type TaskHandler = (task: Task, agentID: string, progress?: ProgressFn) => Promise<{ resultRef: string; usage?: TokenUsage }>;
+export type TaskHandler = (task: Task, agentID: string, progress?: ProgressFn, signal?: AbortSignal) => Promise<{ resultRef: string; usage?: TokenUsage }>;
 
 export interface WorkerConfig {
   agentID: string;
@@ -77,11 +77,24 @@ export class JanusWorker {
     const leaseID = result.lease.lease_id;
     const attempt = result.lease.attempt;
 
-    await this.client.startTask(task.id, attempt, leaseID);
+    await this.client.startTask(task.id, attempt, leaseID, this.config.agentID);
 
     // Heartbeat timer
+    let hbFailures = 0;
+    // Cooperative cancellation: sustained heartbeat failure means the
+    // lease is gone and the task will be redelivered — handlers that
+    // accept the signal can stop burning compute.
+    const leaseCtl = new AbortController();
     const hbTimer = setInterval(() => {
-      this.client.heartbeat(task.id, attempt, leaseID).catch(() => {});
+      this.client.heartbeat(task.id, attempt, leaseID, this.config.agentID).then(() => {
+        hbFailures = 0;
+      }).catch(() => {
+        hbFailures++;
+        if (hbFailures >= 5) {
+          console.error(`janus worker: lease for ${task.id} presumed lost after 5 heartbeat failures; cancelling handler`);
+          leaseCtl.abort();
+        }
+      });
     }, this.config.heartbeatIntervalMs);
 
     const progress: ProgressFn = (message, percent, data) => {
@@ -92,7 +105,7 @@ export class JanusWorker {
     };
 
     try {
-      const { resultRef, usage } = await handler(task, this.config.agentID, progress);
+      const { resultRef, usage } = await handler(task, this.config.agentID, progress, leaseCtl.signal);
       clearInterval(hbTimer);
       const ack: import("./types").AckRequest = {
         lease_id: leaseID, attempt, result_ref: resultRef,
@@ -103,7 +116,7 @@ export class JanusWorker {
       // NACKed as HANDLER_ERROR (the previous catch conflated the two
       // and re-queued successfully-completed work).
       try {
-        await this.client.ackTask(task.id, ack);
+        await this.client.ackTask(task.id, ack, this.config.agentID);
       } catch (ackErr) {
         console.error(`janus worker: ack transport failed for ${task.id} (handler succeeded):`, ackErr);
       }
@@ -113,7 +126,7 @@ export class JanusWorker {
       await this.client.nackTask(task.id, {
         lease_id: leaseID, attempt, retriable: true,
         error: { code: "HANDLER_ERROR", message: String(e) },
-      });
+      }, this.config.agentID);
     }
   }
 

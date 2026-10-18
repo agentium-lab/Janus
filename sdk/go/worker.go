@@ -141,10 +141,13 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 		return fmt.Errorf("start task %s: %w", task.ID, err)
 	}
 
-	// Heartbeat goroutine while the handler runs.
+	// Heartbeat goroutine while the handler runs. The handler receives
+	// hbCtx: after sustained heartbeat failure the lease is gone, the task
+	// will be redelivered, and continuing to burn compute is waste — the
+	// worker cancels hbCtx so cooperative handlers stop.
 	hbCtx, hbCancel := context.WithCancel(ctx)
 	defer hbCancel()
-	go w.heartbeatLoop(hbCtx, task.ID, attempt, leaseID)
+	go w.heartbeatLoop(hbCtx, hbCancel, task.ID, attempt, leaseID)
 
 	// Progress reporter: fire-and-forget, failures logged not propagated.
 	progress := func(message string, percent *int, data map[string]interface{}) {
@@ -154,7 +157,7 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 	}
 
 	// Run the handler.
-	resultRef, usage, hErr := handler(ctx, task, w.config.AgentID, progress)
+	resultRef, usage, hErr := handler(hbCtx, task, w.config.AgentID, progress)
 	hbCancel()
 
 	// ACK or NACK.
@@ -164,6 +167,7 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 			Attempt:   attempt,
 			Retriable: true,
 			Error:     &core.TaskError{Code: "HANDLER_ERROR", Message: hErr.Error()},
+			AgentID:   w.config.AgentID,
 		})
 		if nackErr != nil {
 			return fmt.Errorf("nack task %s: %w (handler error: %v)", task.ID, nackErr, hErr)
@@ -175,6 +179,7 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 		LeaseID:   leaseID,
 		Attempt:   attempt,
 		ResultRef: resultRef,
+		AgentID:   w.config.AgentID,
 	}
 	if usage != nil {
 		ackReq.TokenUsage = usage
@@ -185,7 +190,7 @@ func (w *JanusWorker) processOne(ctx context.Context, handler WorkerHandler) err
 	return nil
 }
 
-func (w *JanusWorker) heartbeatLoop(ctx context.Context, taskID string, attempt int, leaseID string) {
+func (w *JanusWorker) heartbeatLoop(ctx context.Context, leaseLost context.CancelFunc, taskID string, attempt int, leaseID string) {
 	ticker := time.NewTicker(w.config.Heartbeat)
 	defer ticker.Stop()
 	// Heartbeat failures are logged but DO NOT stop renewal — a single
@@ -201,6 +206,8 @@ func (w *JanusWorker) heartbeatLoop(ctx context.Context, taskID string, attempt 
 				consecutiveFailures++
 				log.Printf("janus worker heartbeat %s: %v (streak %d)", taskID, err, consecutiveFailures)
 				if consecutiveFailures >= 5 {
+					log.Printf("janus worker heartbeat %s: lease presumed lost after 5 failures; cancelling handler context", taskID)
+					leaseLost()
 					return
 				}
 			} else {

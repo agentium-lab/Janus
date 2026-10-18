@@ -88,6 +88,12 @@ func (s *DispatchService) initTxPath() {
 // WithTxPath wires the production transaction components: PGLifecycle, the
 // PG repos' native *Tx methods, the persistent outbox, and the idempotent
 // budget ledger.
+// WithQueueDriver swaps the queue driver (tests inject fault-shaped drivers).
+func (s *DispatchService) WithQueueDriver(d QueueDriver) *DispatchService {
+	s.queueDriver = d
+	return s
+}
+
 func (s *DispatchService) WithTxPath(lc Lifecycle, outbox OutboxDedupeWriter, ledger BudgetLedger) *DispatchService {
 	if lc != nil {
 		s.lifecycle = lc
@@ -246,7 +252,26 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		Action:   "dispatch",
 		Resource: core.PolicyResource{Type: "task", Value: task.ID},
 	})
-	if dispatchErr == nil && dispatchDecision.Decision == core.PolicyDecisionDeny {
+	// Fail-closed on policy evaluation errors: an unreachable policy store
+	// previously read as "no rule matched" and let every delivery through.
+	// Only an explicit Allow proceeds; Deny AND ApprovalRequired both stop
+	// the dispatch — an approval-gated task must not run before approval.
+	if dispatchErr != nil {
+		metrics.PolicyDenied.WithLabelValues(tenantID).Inc()
+		s.publishEvent(ctx, core.JanusEvent{
+			EventType: core.EventPolicyDenied,
+			TenantID:  tenantID, TaskID: task.ID,
+			Payload: mustMarshal(map[string]string{
+				"agent_id": agentID, "delivery_ref": string(delivery.DeliveryRef),
+				"reason": fmt.Sprintf("policy evaluation failed: %v", dispatchErr),
+			}),
+		})
+		return nil, &core.BackpressureError{
+			Reason:  core.ReasonApprovalRequired,
+			Message: fmt.Sprintf("dispatch policy unavailable: %v", dispatchErr),
+		}
+	}
+	if dispatchDecision.Decision == core.PolicyDecisionDeny || dispatchDecision.Decision == core.PolicyDecisionApprovalRequired {
 		metrics.PolicyDenied.WithLabelValues(tenantID).Inc()
 		s.publishEvent(ctx, core.JanusEvent{
 			EventType: core.EventPolicyDenied,
@@ -331,14 +356,21 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		if cerr4 != nil {
 			return fmt.Errorf("agent active count: %w", cerr4)
 		}
-		if cerr := s.budgetSvc.CheckConcurrency(ctx, tenantID, agentID, aActive, tClaimed+tRunning); cerr != nil {
+		if cerr := s.budgetSvc.CheckConcurrencyTx(ctx, tx, tenantID, agentID, aActive, tClaimed+tRunning); cerr != nil {
 			return fmt.Errorf("%w: %v", errAgentAtCapacity, cerr)
 		}
 		if cerr := s.attemptTx.CreateTx(ctx, tx, attempt); cerr != nil {
 			return fmt.Errorf("create attempt: %w", cerr)
 		}
-		if _, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1); uerr != nil {
+		claimed, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1)
+		if uerr != nil {
 			return fmt.Errorf("update task claimed: %w", uerr)
+		}
+		if !claimed {
+			// The task moved between the pre-lock read and this CAS (e.g.
+			// Cancel committed first). Committing anyway would leave a live
+			// attempt+lease on a terminal task — roll back the claim.
+			return fmt.Errorf("claim race: task %s status changed concurrently, expected %s", task.ID, task.Status)
 		}
 		claimedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskClaimed, TenantID: tenantID, TaskID: task.ID,
@@ -359,6 +391,13 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 }
 
 func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return s.StartTaskAs(ctx, tenantID, taskID, leaseID, "")
+}
+
+// StartTaskAs additionally verifies the acting agent owns the attempt.
+// agentID == "" skips the owner check (pre-v1.10 callers); the API handler
+// always forwards the request's agent_id.
+func (s *DispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
@@ -368,7 +407,10 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 		return fmt.Errorf("get latest attempt: %w", err)
 	}
 	if attempt.LeaseID != leaseID {
-		return fmt.Errorf("lease mismatch: expected %s, got %s", attempt.LeaseID, leaseID)
+		return fmt.Errorf("lease mismatch")
+	}
+	if agentID != "" && attempt.AgentID != agentID {
+		return fmt.Errorf("agent %s does not own the current attempt", agentID)
 	}
 
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
@@ -395,6 +437,11 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 }
 
 func (s *DispatchService) TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error {
+	return s.TaskHeartbeatAs(ctx, tenantID, taskID, leaseID, "")
+}
+
+// TaskHeartbeatAs additionally verifies the acting agent owns the attempt.
+func (s *DispatchService) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
@@ -406,11 +453,19 @@ func (s *DispatchService) TaskHeartbeat(ctx context.Context, tenantID, taskID, l
 	if attempt.LeaseID != leaseID {
 		return fmt.Errorf("lease mismatch")
 	}
+	if agentID != "" && attempt.AgentID != agentID {
+		return fmt.Errorf("agent %s does not own the current attempt", agentID)
+	}
 
 	return s.attemptRepo.UpdateHeartbeat(ctx, tenantID, taskID, attempt.Attempt)
 }
 
 func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {
+	return s.AckTaskAs(ctx, tenantID, taskID, leaseID, "", resultRef, usage)
+}
+
+// AckTaskAs additionally verifies the acting agent owns the attempt.
+func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
 	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.AckTask",
 		trace.WithAttributes(
 			attribute.String("tenant.id", tenantID),
@@ -428,6 +483,9 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 	}
 	if attempt.LeaseID != leaseID {
 		return fmt.Errorf("lease mismatch")
+	}
+	if agentID != "" && attempt.AgentID != agentID {
+		return fmt.Errorf("agent %s does not own the current attempt", agentID)
 	}
 
 	var prompt, completion, total int64
@@ -480,7 +538,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 		} {
 			if s.ledger != nil {
 				if ierr := s.ledger.SettleTx(ctx, tx, core.LedgerEntry{
-					TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt,
+					TenantID: tenantID, TaskID: taskID, Attempt: attempt.Attempt, Generation: task.ReplayCount,
 					ScopeType: scope.Type, ScopeID: scope.ID,
 					PromptTokens: prompt, CompletionTokens: completion,
 					TotalTokens: total, CostUSD: costUSD,
@@ -543,6 +601,11 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 }
 
 func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
+	return s.NackTaskAs(ctx, tenantID, taskID, leaseID, "", retriable, taskErr)
+}
+
+// NackTaskAs additionally verifies the acting agent owns the attempt.
+func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
 	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.NackTask",
 		trace.WithAttributes(
 			attribute.String("tenant.id", tenantID),
@@ -561,6 +624,9 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 	}
 	if attempt.LeaseID != leaseID {
 		return fmt.Errorf("lease mismatch")
+	}
+	if agentID != "" && attempt.AgentID != agentID {
+		return fmt.Errorf("agent %s does not own the current attempt", agentID)
 	}
 
 	var errJSON []byte

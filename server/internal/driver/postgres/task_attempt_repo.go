@@ -143,3 +143,32 @@ func jsonOrNull(b []byte) interface{} {
 	}
 	return b
 }
+
+// FinishOpenAttempts finishes every claimed/running attempt of the task in
+// one statement — terminal transitions (cancel/expire) must not leave a
+// live lease behind, and the open attempt's number is not known to the
+// caller at transition time.
+func (r *TaskAttemptRepository) FinishOpenAttempts(ctx context.Context, tenantID, taskID, status string) (int64, error) {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE task_attempts SET status = $1, finished_at = now()
+		 WHERE tenant_id = $2 AND task_id = $3 AND status IN ('claimed', 'running')`,
+		status, tenantID, taskID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// FinishOpenAttemptsTx is the transactional variant of FinishOpenAttempts.
+func (r *TaskAttemptRepository) FinishOpenAttemptsTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, status string) (int64, error) {
+	tag, err := tx.Exec(ctx,
+		`UPDATE task_attempts SET status = $1, finished_at = now()
+		 WHERE tenant_id = $2 AND task_id = $3 AND status IN ('claimed', 'running')`,
+		status, tenantID, taskID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}

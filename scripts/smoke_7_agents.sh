@@ -63,8 +63,12 @@ for i in $(seq 0 6); do
     -d "{\"agent_id\":\"$AGENT_ID\"}" 2>/dev/null || echo "{}")
   LEASE_ID=$(echo "$PULL_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
   if [ -n "$LEASE_ID" ]; then
-    curl -sf -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
-      -d "{\"lease_id\":\"$LEASE_ID\",\"result_ref\":\"s3://results/$TASK_ID\"}" > /dev/null 2>&1 || true
+    ACK_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
+      -d "{\"lease_id\":\"$LEASE_ID\",\"result_ref\":\"s3://results/$TASK_ID\"}")
+    case "$ACK_CODE" in 200|201) ;; *) echo "  ack $TASK_ID -> HTTP $ACK_CODE"; FAIL=$((FAIL+1)) ;; esac
+  else
+    echo "  pull $MB_ID returned no lease"
+    FAIL=$((FAIL+1))
   fi
 done
 PASS=$((PASS+1))
@@ -74,11 +78,11 @@ COMPLETED=0
 for i in $(seq 0 6); do
   TASK_ID="task-smoke-$((i+1))"
   STATUS=$(curl -sf "$JANUS_URL/v1/tenants/$TENANT/tasks/$TASK_ID" 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null || echo "unknown")
-  if [ "$STATUS" = "completed" ] || [ "$STATUS" = "claimed" ]; then
+  if [ "$STATUS" = "completed" ]; then
     COMPLETED=$((COMPLETED+1))
   fi
 done
-check "all 7 tasks completed/claimed" "[ $COMPLETED -ge 5 ]"
+check "all 7 tasks completed" "[ $COMPLETED -eq 7 ]"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

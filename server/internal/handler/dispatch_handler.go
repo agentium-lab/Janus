@@ -12,9 +12,13 @@ import (
 type DispatchService interface {
 	PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*ServicePullResult, error)
 	StartTask(ctx context.Context, tenantID, taskID, leaseID string) error
+	StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error
 	TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error
+	TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error
 	AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error
+	AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error
 	NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error
+	NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error
 }
 
 type ServicePullResult struct {
@@ -73,12 +77,13 @@ func (h *DispatchHandler) Start(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	var req struct {
 		LeaseID string `json:"lease_id"`
+		AgentID string `json:"agent_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.svc.StartTask(r.Context(), tenantID, taskID, req.LeaseID); err != nil {
+	if err := h.svc.StartTaskAs(r.Context(), tenantID, taskID, req.LeaseID, req.AgentID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -89,12 +94,13 @@ func (h *DispatchHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	var req struct {
 		LeaseID string `json:"lease_id"`
+		AgentID string `json:"agent_id"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := h.svc.TaskHeartbeat(r.Context(), tenantID, taskID, req.LeaseID); err != nil {
+	if err := h.svc.TaskHeartbeatAs(r.Context(), tenantID, taskID, req.LeaseID, req.AgentID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -105,6 +111,7 @@ func (h *DispatchHandler) Ack(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	var req struct {
 		LeaseID    string `json:"lease_id"`
+		AgentID    string `json:"agent_id"`
 		ResultRef  string `json:"result_ref"`
 		TokenUsage *struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -124,7 +131,7 @@ func (h *DispatchHandler) Ack(w http.ResponseWriter, r *http.Request) {
 			TotalTokens:      req.TokenUsage.TotalTokens,
 		}
 	}
-	if err := h.svc.AckTask(r.Context(), tenantID, taskID, req.LeaseID, req.ResultRef, usage); err != nil {
+	if err := h.svc.AckTaskAs(r.Context(), tenantID, taskID, req.LeaseID, req.AgentID, req.ResultRef, usage); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -135,6 +142,7 @@ func (h *DispatchHandler) Nack(w http.ResponseWriter, r *http.Request) {
 	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
 	var req struct {
 		LeaseID   string `json:"lease_id"`
+		AgentID   string `json:"agent_id"`
 		Retriable bool   `json:"retriable"`
 		Error     *struct {
 			Code    string `json:"code"`
@@ -149,7 +157,7 @@ func (h *DispatchHandler) Nack(w http.ResponseWriter, r *http.Request) {
 	if req.Error != nil {
 		taskErr = &core.TaskError{Code: req.Error.Code, Message: req.Error.Message}
 	}
-	if err := h.svc.NackTask(r.Context(), tenantID, taskID, req.LeaseID, req.Retriable, taskErr); err != nil {
+	if err := h.svc.NackTaskAs(r.Context(), tenantID, taskID, req.LeaseID, req.AgentID, req.Retriable, taskErr); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

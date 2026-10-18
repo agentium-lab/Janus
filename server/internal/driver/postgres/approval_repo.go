@@ -27,6 +27,17 @@ func (r *ApprovalRepo) Create(ctx context.Context, a core.Approval) error {
 	return err
 }
 
+// CreateTx inserts the approval on the caller's transaction — the task and
+// its gating approval must commit atomically or neither does.
+func (r *ApprovalRepo) CreateTx(ctx context.Context, tx pgx.Tx, a core.Approval) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO approvals (tenant_id, id, task_id, status, requested_by, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		a.TenantID, a.ID, a.TaskID, a.Status, a.RequestedBy, a.ExpiresAt,
+	)
+	return err
+}
+
 func (r *ApprovalRepo) Get(ctx context.Context, tenantID, approvalID string) (*core.Approval, error) {
 	var a core.Approval
 	var decidedAt *time.Time

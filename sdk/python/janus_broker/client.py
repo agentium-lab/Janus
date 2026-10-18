@@ -95,17 +95,17 @@ class JanusClient:
             return None
         return PullResult.model_validate(resp.json())
 
-    def start_task(self, task_id: str, lease_id: str) -> None:
+    def start_task(self, task_id: str, lease_id: str, agent_id: str = "") -> None:
         resp = self._client.post(
             self._url(f"/tasks/{task_id}/start"),
-            json={"lease_id": lease_id},
+            json={"lease_id": lease_id, "agent_id": agent_id},
         )
         self._check(resp)
 
-    def heartbeat(self, task_id: str, lease_id: str) -> None:
+    def heartbeat(self, task_id: str, lease_id: str, agent_id: str = "") -> None:
         resp = self._client.post(
             self._url(f"/tasks/{task_id}/heartbeat"),
-            json={"lease_id": lease_id},
+            json={"lease_id": lease_id, "agent_id": agent_id},
         )
         self._check(resp)
 

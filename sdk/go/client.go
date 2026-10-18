@@ -277,6 +277,7 @@ type AckRequest struct {
 	Attempt    int              `json:"attempt"`
 	ResultRef  string           `json:"result_ref,omitempty"`
 	TokenUsage *core.TokenUsage `json:"token_usage,omitempty"`
+	AgentID    string           `json:"agent_id,omitempty"`
 }
 
 func (c *Client) AckTask(ctx context.Context, taskID string, req AckRequest) error {
@@ -288,6 +289,7 @@ type NackRequest struct {
 	Attempt   int             `json:"attempt"`
 	Retriable bool            `json:"retriable"`
 	Error     *core.TaskError `json:"error,omitempty"`
+	AgentID   string          `json:"agent_id,omitempty"`
 }
 
 func (c *Client) NackTask(ctx context.Context, taskID string, req NackRequest) error {

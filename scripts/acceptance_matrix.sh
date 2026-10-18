@@ -45,12 +45,27 @@ record() { # id name status
 go_check() { # id name pkg run_pattern
   local id="$1" name="$2" pkg="$3" run="$4"
   local out
-  if out=$(go test "$pkg" -run "$run" -count=1 -timeout 300s 2>&1); then
-    record "$id" "$name" PASS
-  else
+  if ! out=$(go test "$pkg" -run "$run" -count=1 -timeout 300s -v 2>&1); then
     echo "---- $id output ----"; echo "$out" | tail -15
     record "$id" "$name" FAIL
+    return
   fi
+  local ran
+  ran=$(printf '%s\n' "$out" | grep -cE '^(=== RUN|--- PASS|--- FAIL)')
+  if [ "$ran" -eq 0 ] || printf '%s\n' "$out" | grep -q "no tests to run"; then
+    echo "---- $id output ----"; echo "$out" | tail -15
+    record "$id" "$name" "FAIL (0 tests matched)"
+    return
+  fi
+  local passed skipped
+  passed=$(printf '%s\n' "$out" | grep -cE '^--- PASS')
+  skipped=$(printf '%s\n' "$out" | grep -cE '^--- SKIP')
+  if [ "$passed" -eq 0 ] && [ "$skipped" -gt 0 ]; then
+    echo "---- $id output ----"; echo "$out" | tail -15
+    record "$id" "$name" "FAIL (all ${skipped} SKIP)"
+    return
+  fi
+  record "$id" "$name" PASS
 }
 
 echo "=============================================="
@@ -114,7 +129,7 @@ if (cd sdk/python && python3 -m pytest tests/ -q >/dev/null 2>&1); then
 else
   record T10b "C3 SDK worker (Python)" FAIL
 fi
-if (cd sdk/typescript && npx tsc --noEmit >/dev/null 2>&1); then
+if (cd sdk/typescript && npx tsc --noEmit >/dev/null 2>&1 && npm test --silent >/dev/null 2>&1); then
   record T10c "C3 SDK worker (TypeScript)" PASS
 else
   record T10c "C3 SDK worker (TypeScript)" FAIL

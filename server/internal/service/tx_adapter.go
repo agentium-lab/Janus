@@ -88,8 +88,16 @@ func (a AttemptRepoTxAdapter) UpdateFinishedWithCheckTx(ctx context.Context, _ p
 	return a.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt, status, errJSON, usageJSON)
 }
 
+func (a AttemptRepoTxAdapter) FinishOpenAttemptsTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, status string) (int64, error) {
+	return a.FinishOpenAttempts(ctx, tenantID, taskID, status)
+}
+
 type ApprovalRepoTxAdapter struct {
 	ApprovalRepo
+}
+
+func (a ApprovalRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, approval core.Approval) error {
+	return a.Create(ctx, approval)
 }
 
 func (a ApprovalRepoTxAdapter) UpdateDecisionTx(ctx context.Context, _ pgx.Tx, tenantID, approvalID, decision, approver, reason string) error {

@@ -285,7 +285,7 @@ func TestWorker_HeartbeatLoop_KeepsBeatingUntilCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); w.heartbeatLoop(ctx, "task-1", 1, "lease-1") }()
+	go func() { defer close(done); w.heartbeatLoop(ctx, func() {}, "task-1", 1, "lease-1") }()
 
 	time.Sleep(70 * time.Millisecond)
 	cancel()
@@ -307,7 +307,7 @@ func TestWorker_HeartbeatLoop_StopsOnHeartbeatError(t *testing.T) {
 	})
 
 	done := make(chan struct{})
-	go func() { defer close(done); w.heartbeatLoop(context.Background(), "task-1", 1, "lease-1") }()
+	go func() { defer close(done); w.heartbeatLoop(context.Background(), func() {}, "task-1", 1, "lease-1") }()
 
 	select {
 	case <-done:

@@ -27,6 +27,11 @@ export interface ClientConfig {
   timeout?: number;
 }
 
+function done0(timer: ReturnType<typeof setTimeout>, signal: AbortSignal | undefined, onAbort: () => void): void {
+  clearTimeout(timer);
+  signal?.removeEventListener("abort", onAbort);
+}
+
 export class Client {
   private baseURL: string;
   private tenantID: string;
@@ -48,12 +53,18 @@ export class Client {
     return `${this.baseURL}${this.prefix}${path}`;
   }
 
-  private async doFetch(method: string, path: string, body?: unknown): Promise<Response> {
+  // The timeout covers connect, headers, AND body reads: aborting the
+  // controller interrupts an in-flight body read too, so the timer stays
+  // armed until the caller has consumed the body.
+  private async doFetch(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ resp: Response; done: () => void }> {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.apiKey) headers["X-API-Key"] = this.apiKey;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeout);
+    // Caller cancellation composes with the timeout.
+    const onAbort = () => controller.abort();
+    signal?.addEventListener("abort", onAbort);
 
     try {
       const resp = await fetch(this.url(path), {
@@ -67,15 +78,24 @@ export class Client {
         try { errBody = await resp.json() as any; } catch { /* non-JSON error */ }
         throw new JanusAPIError(resp.status, errBody);
       }
-      return resp;
-    } finally {
-      clearTimeout(timer);
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      return { resp, done };
+    } catch (e) {
+      done0(timer, signal, onAbort);
+      throw e;
     }
   }
 
-  private async json<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const resp = await this.doFetch(method, path, body);
-    return resp.json() as Promise<T>;
+  private async json<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const { resp, done } = await this.doFetch(method, path, body, signal);
+    try {
+      return await resp.json() as T;
+    } finally {
+      done();
+    }
   }
 
   // --- Tenant ---
@@ -229,28 +249,32 @@ export class Client {
 
   // --- Dispatch lifecycle ---
 
-  async pullTask(mailboxID: string, agentID: string): Promise<PullResult | null> {
-    const resp = await this.doFetch("POST", `/mailboxes/${mailboxID}/pull`, { agent_id: agentID });
-    if (resp.status === 204) return null;
-    const text = await resp.text();
-    if (!text) return null;
-    return JSON.parse(text) as PullResult;
+  async pullTask(mailboxID: string, agentID: string, signal?: AbortSignal): Promise<PullResult | null> {
+    const { resp, done } = await this.doFetch("POST", `/mailboxes/${mailboxID}/pull`, { agent_id: agentID }, signal);
+    try {
+      if (resp.status === 204) return null;
+      const text = await resp.text();
+      if (!text) return null;
+      return JSON.parse(text) as PullResult;
+    } finally {
+      done();
+    }
   }
 
-  async startTask(taskID: string, attempt: number, leaseID: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/start`, { attempt, lease_id: leaseID });
+  async startTask(taskID: string, attempt: number, leaseID: string, agentID?: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/start`, { attempt, lease_id: leaseID, agent_id: agentID });
   }
 
-  async heartbeat(taskID: string, attempt: number, leaseID: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/heartbeat`, { attempt, lease_id: leaseID });
+  async heartbeat(taskID: string, attempt: number, leaseID: string, agentID?: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/heartbeat`, { attempt, lease_id: leaseID, agent_id: agentID });
   }
 
-  async ackTask(taskID: string, req: AckRequest): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/ack`, req);
+  async ackTask(taskID: string, req: AckRequest, agentID?: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/ack`, agentID ? { ...req, agent_id: agentID } : req);
   }
 
-  async nackTask(taskID: string, req: NackRequest): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/nack`, req);
+  async nackTask(taskID: string, req: NackRequest, agentID?: string): Promise<void> {
+    await this.doFetch("POST", `/tasks/${taskID}/nack`, agentID ? { ...req, agent_id: agentID } : req);
   }
 
   // --- API Keys ---

@@ -89,6 +89,7 @@ class AckRequest(BaseModel):
     attempt: int = 0
     result_ref: str = ""
     token_usage: Optional[dict[str, int]] = None
+    agent_id: str = ""
 
 
 class NackRequest(BaseModel):
@@ -96,6 +97,7 @@ class NackRequest(BaseModel):
     attempt: int = 0
     retriable: bool = False
     error: Optional[TaskError] = None
+    agent_id: str = ""
 
 
 # --- Governance / management models ---

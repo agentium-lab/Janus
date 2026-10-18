@@ -45,6 +45,7 @@ type TaskService struct {
 	pool           *pgxpool.Pool
 	policySvc      *PolicyService
 	approvalSvc    *ApprovalService
+	approvalTx     ApprovalTxRepo
 	intentResolver IntentResolver
 	contextRefSvc  *ContextRefService
 	router         *routing.Router
@@ -55,6 +56,7 @@ type TaskService struct {
 	// Unified transaction path (Priority 1): one code shape for PG and memory.
 	lifecycle Lifecycle
 	taskTx    TaskTxRepo
+	attemptTx AttemptTxRepo
 	txOutbox  OutboxDedupeWriter
 }
 
@@ -83,6 +85,13 @@ func (s *TaskService) initTxPath(outboxRepo *postgres.OutboxRepo) {
 	} else {
 		s.taskTx = &TaskRepoTxAdapter{TaskRepo: s.taskRepo}
 	}
+	if s.attemptRepo != nil {
+		if pgAttempt, ok := s.attemptRepo.(*postgres.TaskAttemptRepository); ok {
+			s.attemptTx = pgAttempt
+		} else {
+			s.attemptTx = AttemptRepoTxAdapter{TaskAttemptRepo: s.attemptRepo}
+		}
+	}
 	if outboxRepo != nil {
 		s.txOutbox = outboxRepo
 	} else {
@@ -97,6 +106,13 @@ func (s *TaskService) WithPolicy(policySvc *PolicyService) *TaskService {
 
 func (s *TaskService) WithApproval(approvalSvc *ApprovalService) *TaskService {
 	s.approvalSvc = approvalSvc
+	if approvalSvc != nil {
+		if pgApproval, ok := approvalSvc.repo.(*postgres.ApprovalRepo); ok {
+			s.approvalTx = pgApproval
+		} else if approvalSvc.repo != nil {
+			s.approvalTx = ApprovalRepoTxAdapter{ApprovalRepo: approvalSvc.repo}
+		}
+	}
 	return s
 }
 
@@ -117,6 +133,11 @@ func (s *TaskService) WithContextRefService(svc *ContextRefService) *TaskService
 
 func (s *TaskService) WithAttemptRepo(r TaskAttemptRepo) *TaskService {
 	s.attemptRepo = r
+	if pgAttempt, ok := r.(*postgres.TaskAttemptRepository); ok {
+		s.attemptTx = pgAttempt
+	} else {
+		s.attemptTx = AttemptRepoTxAdapter{TaskAttemptRepo: r}
+	}
 	return s
 }
 
@@ -233,6 +254,25 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 			return nil, fmt.Errorf("idempotency key lookup: %w", err)
 		}
 		if existing != nil {
+			// Compensate partial writes from a failed earlier attempt with
+			// the same key: the task may have committed without its gating
+			// approval or bound context refs.
+			if existing.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
+				if appr, aerr := s.approvalSvc.repo.GetPendingByTask(ctx, existing.TenantID, existing.ID); aerr == nil && appr == nil {
+					approval := core.Approval{
+						TenantID: existing.TenantID, TaskID: existing.ID,
+						RequestedBy: existing.SourceAgent,
+						Reason:      "policy: approval required (idempotent retry)", Status: "pending",
+					}
+					approval.ID = ulid()
+					if cerr := s.approvalSvc.repo.Create(ctx, approval); cerr != nil {
+						return nil, fmt.Errorf("idempotent retry: compensating approval create: %w", cerr)
+					}
+				}
+			}
+			if s.contextRefSvc != nil && len(existing.Envelope.ContextRefs) > 0 {
+				_ = s.contextRefSvc.NormalizeAndBind(ctx, existing.TenantID, existing.ID, existing.Envelope.ContextRefs)
+			}
 			return existing, nil
 		}
 	}
@@ -250,18 +290,11 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 
 	if task.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
-		if _, err := s.approvalSvc.RequestApproval(ctx, core.Approval{
-			TenantID:    task.TenantID,
-			TaskID:      task.ID,
-			RequestedBy: task.SourceAgent,
-			Reason:      "policy: approval required",
-		}); err != nil {
-			// An approval-gated task whose approval record failed to persist
-			// would sit in approval_pending with NO approval to approve —
-			// an orphan. Surface the error so the caller knows the task
-			// is not properly gated (the task itself IS durable; the
-			// approval is not — the caller retries or cancels).
-			return result, fmt.Errorf("approval gate: task %s persisted but approval creation failed: %w", task.ID, err)
+		// The approval was created in the same transaction as the task
+		// (createAtomic). Verify it survived: a missing record here means
+		// an external writer removed it, not a create failure.
+		if existing, aerr := s.approvalSvc.repo.GetPendingByTask(ctx, task.TenantID, task.ID); aerr == nil && existing == nil {
+			return result, fmt.Errorf("approval gate: task %s persisted but its approval record is missing", task.ID)
 		}
 	}
 
@@ -293,6 +326,23 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 		})
 		if err := s.txOutbox.Insert(ctx, tx, ulid(), task.TenantID, "event_publish", createdPayload); err != nil {
 			return fmt.Errorf("outbox insert created: %w", err)
+		}
+
+		// The gating approval commits with the task: a separate
+		// post-commit write left an approval_pending orphan whenever it
+		// failed (task durable, approval missing).
+		if task.Status == core.TaskStatusApprovalPending && s.approvalTx != nil {
+			approval := core.Approval{
+				TenantID:    task.TenantID,
+				TaskID:      task.ID,
+				RequestedBy: task.SourceAgent,
+				Reason:      "policy: approval required",
+				Status:      "pending",
+			}
+			approval.ID = ulid()
+			if err := s.approvalTx.CreateTx(ctx, tx, approval); err != nil {
+				return fmt.Errorf("approval gate in tx: %w", err)
+			}
 		}
 
 		if task.MailboxID != "" && task.Status != core.TaskStatusApprovalPending {
@@ -366,18 +416,34 @@ func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr
 // live lease, letting the old holder revive the task (Start/Ack moved it
 // back to running/completed).
 func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID string) error {
-	if err := s.transition(ctx, tenantID, taskID, core.TaskStatusCancelled, core.EventTaskCancelled, 0); err != nil {
-		return err
+	if tenantID == "" || taskID == "" {
+		return fmt.Errorf("tenant id and task id are required")
 	}
-	if s.attemptRepo != nil {
-		if attempt, aerr := s.attemptRepo.GetLatest(ctx, tenantID, taskID); aerr == nil && attempt != nil {
-			if attempt.Status == "claimed" || attempt.Status == "running" {
-				_, _ = s.attemptRepo.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt.Attempt,
-					"cancelled", nil, nil)
+	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for transition: %w", err)
+	}
+	if current.Status.IsTerminal() {
+		return fmt.Errorf("%w: task %s is %s, cannot transition to %s", core.ErrTaskInTerminalState, taskID, current.Status, core.TaskStatusCancelled)
+	}
+	if !core.CanTransition(current.Status, core.TaskStatusCancelled) {
+		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, core.TaskStatusCancelled, taskID)
+	}
+	// Status transition and open-attempt cleanup commit atomically: a
+	// finish that runs after the transition's commit could miss an attempt
+	// created by a Pull racing the cancel (the audit's deterministic
+	// interleaving), and its error was previously discarded.
+	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		if terr := s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, core.TaskStatusCancelled, core.EventTaskCancelled, 0); terr != nil {
+			return terr
+		}
+		if s.attemptTx != nil {
+			if _, ferr := s.attemptTx.FinishOpenAttemptsTx(ctx, tx, tenantID, taskID, "cancelled"); ferr != nil {
+				return fmt.Errorf("finish open attempts for cancel: %w", ferr)
 			}
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string) error {
@@ -412,6 +478,26 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	}
 	if !task.Status.IsTerminal() {
 		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
+	}
+	// Replay re-evaluates policy: a task cancelled after its approval was
+	// rejected (or denied by a rule added since first publish) must not
+	// re-enter the queue just because its status became terminal.
+	if s.policySvc != nil {
+		decision, perr := s.policySvc.Evaluate(ctx, core.PolicyInput{
+			TenantID: task.TenantID,
+			Actor:    core.PolicyActor{Type: "agent", ID: task.SourceAgent},
+			Action:   "task.replay",
+			Resource: core.PolicyResource{Type: string(task.TargetType), Value: task.TargetValue},
+		})
+		if perr != nil {
+			return nil, fmt.Errorf("replay policy check: %w", perr)
+		}
+		if decision.Decision == core.PolicyDecisionDeny {
+			return nil, fmt.Errorf("replay denied: %s", decision.Reason)
+		}
+		if decision.Decision == core.PolicyDecisionApprovalRequired {
+			return nil, fmt.Errorf("replay requires approval; approve through the approval workflow before replaying")
+		}
 	}
 
 	// Atomic replay: reset + republish + status transition + created event

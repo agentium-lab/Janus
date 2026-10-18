@@ -453,12 +453,23 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 	}
 	n := tag.RowsAffected()
 	if n > 0 {
+		// Finish any open attempts of the expired batch: an expired task
+		// with a claimed/running attempt keeps a live lease and pins the
+		// agent's concurrency slot forever.
+		if _, aerr := tx.Exec(ctx,
+			`UPDATE task_attempts ta SET status = 'expired', finished_at = now()
+			 FROM tasks t
+			 WHERE ta.tenant_id = t.tenant_id AND ta.task_id = t.id
+			   AND t.status = 'expired'
+			   AND ta.status IN ('claimed', 'running')`); aerr != nil {
+			return 0, fmt.Errorf("expiry attempt finish: %w", aerr)
+		}
 		// One task.expired event per newly expired task.
 		if _, ierr := tx.Exec(ctx,
 			`INSERT INTO outbox_events (id, tenant_id, kind, payload)
-			 SELECT 'exp-' || t.id, t.tenant_id, 'event_publish',
+			 SELECT 'exp-' || t.tenant_id || '-' || t.id, t.tenant_id, 'event_publish',
 			        jsonb_build_object('event_type','task.expired','tenant_id',t.tenant_id,'task_id',t.id,
-			                           'event_id','obx-exp-'||t.id,
+			                           'event_id','obx-exp-'||t.tenant_id||'-'||t.id,
 			                           'timestamp',to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 			 FROM tasks t
 			 WHERE t.status = 'expired'

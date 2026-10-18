@@ -381,6 +381,10 @@ func newMemAttemptRepo() *memAttemptRepo {
 	return &memAttemptRepo{latest: map[string]*core.TaskAttempt{}}
 }
 
+func (r *memAttemptRepo) FinishOpenAttempts(_ context.Context, _, _ string, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (r *memAttemptRepo) Create(_ context.Context, a core.TaskAttempt) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -545,6 +549,22 @@ func (a *dispatchAdapter) TaskHeartbeat(ctx context.Context, tenantID, taskID, l
 
 func (a *dispatchAdapter) AckTask(ctx context.Context, tenantID, taskID, leaseID, resultRef string, usage *core.TokenUsage) error {
 	return a.svc.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (a *dispatchAdapter) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *dispatchAdapter) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *dispatchAdapter) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	return a.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (a *dispatchAdapter) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	return a.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
 }
 
 func (a *dispatchAdapter) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {

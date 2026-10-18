@@ -34,6 +34,28 @@ func (r *BudgetRepository) Upsert(ctx context.Context, spec core.BudgetSpec) err
 	return err
 }
 
+func (r *BudgetRepository) GetTx(ctx context.Context, tx pgx.Tx, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error) {
+	var spec core.BudgetSpec
+	var rpm, tpm, maxConc *int
+	var dailyCost, monthlyCost *float64
+	var createdAt, updatedAt time.Time
+
+	err := tx.QueryRow(ctx,
+		`SELECT tenant_id, scope_type, scope_id, rpm, tpm, max_concurrency,
+		        daily_cost_usd, monthly_cost_usd, created_at, updated_at
+		 FROM budgets WHERE tenant_id = $1 AND scope_type = $2 AND scope_id = $3`,
+		tenantID, string(scopeType), scopeID,
+	).Scan(
+		&spec.TenantID, &spec.ScopeType, &spec.ScopeID,
+		&rpm, &tpm, &maxConc, &dailyCost, &monthlyCost,
+		&createdAt, &updatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &spec, nil
+}
+
 func (r *BudgetRepository) Get(ctx context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error) {
 	var spec core.BudgetSpec
 	var rpm, tpm, maxConc *int

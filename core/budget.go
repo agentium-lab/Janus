@@ -59,6 +59,7 @@ func (e *BackpressureError) Error() string {
 type LedgerEntry struct {
 	TenantID         string
 	TaskID           string
+	Generation       int `json:"generation,omitempty"` // replay round the attempt belongs to
 	Attempt          int
 	ScopeType        string // "tenant" | "agent"
 	ScopeID          string

@@ -103,6 +103,16 @@ const defaultOutboxLeaseDuration = 60 * time.Second
 // 'publishing' rows whose lease has expired). Each claimed row is atomically
 // moved to 'publishing' with attempts+1, locked_by, locked_at and
 // lease_expires_at set, so a crashed worker's rows eventually become reclaimable.
+// CountPending reports the total backlog size (pending + reclaimable
+// publishing) across all tenants — the gauge on the queue-backlog alert.
+// FetchPending's row count cannot serve: it is capped by the batch limit.
+func (r *OutboxRepo) CountPending(ctx context.Context) (int64, error) {
+	var n int64
+	err := r.pool.QueryRow(ctx,
+		`SELECT count(*) FROM outbox_events WHERE status IN ('pending','publishing')`).Scan(&n)
+	return n, err
+}
+
 func (r *OutboxRepo) FetchPending(ctx context.Context, limit int) ([]OutboxEntry, error) {
 	lease := defaultOutboxLeaseDuration
 	if r.leaseDuration > 0 {

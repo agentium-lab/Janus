@@ -38,6 +38,22 @@ func (m *mockDispatchSvc) TaskHeartbeat(_ context.Context, tenantID, taskID, lea
 func (m *mockDispatchSvc) AckTask(_ context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {
 	return m.ackErr
 }
+func (m *mockDispatchSvc) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return m.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (m *mockDispatchSvc) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return m.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (m *mockDispatchSvc) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	return m.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (m *mockDispatchSvc) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	return m.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
 func (m *mockDispatchSvc) NackTask(_ context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
 	return m.nackErr
 }

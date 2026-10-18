@@ -107,6 +107,8 @@ postgres:
   maxConns: 20
   existingSecret: ""
   secretKey: "password"
+  # Must match the API's PG sslmode; the migration Job DSN uses the same value.
+  sslMode: "disable"
 
 queue:
   driver: "nats"  # "pg" runs without NATS (single-dependency mode)

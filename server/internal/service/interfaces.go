@@ -58,12 +58,20 @@ type TaskAttemptRepo interface {
 	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) error
 	UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error
 	UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error)
+	FinishOpenAttempts(ctx context.Context, tenantID, taskID, status string) (int64, error)
 }
 
 type BudgetRepo interface {
 	Upsert(ctx context.Context, spec core.BudgetSpec) error
 	Get(ctx context.Context, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error)
 	ListByTenant(ctx context.Context, tenantID string) ([]*core.BudgetSpec, error)
+}
+
+// BudgetTxRepo is implemented by PG-backed budget repos: callers holding a
+// transaction MUST read through the tx executor — a nested pool query
+// acquires a second connection and self-starves single-connection pools.
+type BudgetTxRepo interface {
+	GetTx(ctx context.Context, tx pgx.Tx, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error)
 }
 
 type PolicyRuleRepo interface {
@@ -103,10 +111,12 @@ type AttemptTxRepo interface {
 	TaskAttemptRepo
 	CreateTx(ctx context.Context, tx pgx.Tx, attempt core.TaskAttempt) error
 	UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON, usageJSON []byte) (bool, error)
+	FinishOpenAttemptsTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, status string) (int64, error)
 }
 
 type ApprovalTxRepo interface {
 	ApprovalRepo
+	CreateTx(ctx context.Context, tx pgx.Tx, a core.Approval) error
 	UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error
 }
 

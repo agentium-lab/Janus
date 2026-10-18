@@ -109,6 +109,19 @@ func (m *mockDispatchAttemptRepo) UpdateFinished(_ context.Context, tenantID, ta
 	return nil
 }
 
+func (m *mockDispatchAttemptRepo) FinishOpenAttempts(_ context.Context, tenantID, taskID, status string) (int64, error) {
+	var n int64
+	for _, a := range m.attempts {
+		if a.TaskID == taskID && (a.Status == "claimed" || a.Status == "running") {
+			a.Status = status
+			now := time.Now()
+			a.FinishedAt = &now
+			n++
+		}
+	}
+	return n, nil
+}
+
 func (m *mockDispatchAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
 	for i := len(m.attempts) - 1; i >= 0; i-- {
 		a := m.attempts[i]

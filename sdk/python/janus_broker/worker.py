@@ -57,6 +57,7 @@ class JanusWorker:
         error_backoff: float = 1.0,
         max_error_backoff: float = 30.0,
         agent_heartbeat_interval: float = 30.0,
+        on_lease_lost: Optional[Callable[[str], None]] = None,
     ):
         self._client = client
         self._agent_id = agent_id
@@ -66,6 +67,7 @@ class JanusWorker:
         self._error_backoff = error_backoff
         self._max_error_backoff = max_error_backoff
         self._agent_heartbeat_interval = agent_heartbeat_interval
+        self._on_lease_lost = on_lease_lost
         self._stop = threading.Event()
 
     def run(self, handler: TaskHandler) -> None:
@@ -114,7 +116,7 @@ class JanusWorker:
         attempt = result.lease.attempt
 
         try:
-            self._client.start_task(task.id, lease_id)
+            self._client.start_task(task.id, lease_id, agent_id=self._agent_id)
         except JanusAPIError as e:
             raise WorkerError(f"start task {task.id}: {e}") from e
 
@@ -122,11 +124,24 @@ class JanusWorker:
         hb_stop = threading.Event()
 
         def _heartbeat():
+            failures = 0
             while not hb_stop.is_set() and not self._stop.is_set():
                 try:
-                    self._client.heartbeat(task.id, lease_id)
+                    self._client.heartbeat(task.id, lease_id, agent_id=self._agent_id)
+                    failures = 0
                 except Exception:
-                    pass
+                    failures += 1
+                    if failures >= 5:
+                        logger.warning(
+                            "janus worker: lease for task %s presumed lost after %d heartbeat failures",
+                            task.id, failures,
+                        )
+                        if self._on_lease_lost is not None:
+                            try:
+                                self._on_lease_lost(task.id)
+                            except Exception:
+                                pass
+                        return
                 hb_stop.wait(self._heartbeat_interval)
 
         hb_thread = threading.Thread(target=_heartbeat, daemon=True)
@@ -155,7 +170,7 @@ class JanusWorker:
         hb_stop.set()
 
         if success:
-            ack = AckRequest(lease_id=lease_id, attempt=attempt, result_ref=result_ref)
+            ack = AckRequest(lease_id=lease_id, attempt=attempt, result_ref=result_ref, agent_id=self._agent_id)
             if usage:
                 ack.token_usage = usage
             self._client.ack_task(task.id, ack)
@@ -167,5 +182,6 @@ class JanusWorker:
                     attempt=attempt,
                     retriable=True,
                     error=TaskError(code="HANDLER_ERROR", message=error_msg or "unknown"),
+                    agent_id=self._agent_id,
                 ),
             )

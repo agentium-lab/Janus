@@ -80,6 +80,44 @@ func (s *BudgetService) WithRateLimiter(rl RateLimiter) *BudgetService {
 // agentRunning is the count of in-flight tasks for this specific agent;
 // tenantRunning is the count for the whole tenant. These must be computed
 // separately because agent and tenant budgets are independent limits.
+// CheckConcurrencyTx is CheckConcurrency for callers inside a transaction:
+// budget reads run on the tx executor (single-connection pools deadlock
+// when the tx callback takes a second pool connection).
+func (s *BudgetService) CheckConcurrencyTx(ctx context.Context, tx pgx.Tx, tenantID, agentID string, agentRunning, tenantRunning int) error {
+	txRepo, ok := s.repo.(BudgetTxRepo)
+	if !ok {
+		return s.CheckConcurrency(ctx, tenantID, agentID, agentRunning, tenantRunning)
+	}
+	if tenantID == "" {
+		return fmt.Errorf("tenant id is required")
+	}
+	agentBudget, err := txRepo.GetTx(ctx, tx, tenantID, core.BudgetScopeAgent, agentID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("agent budget lookup: %w", err)
+	}
+	if err == nil && agentBudget.MaxConcurrency > 0 {
+		if agentRunning >= agentBudget.MaxConcurrency {
+			return &core.BackpressureError{
+				Reason:  core.ReasonAgentConcurrencyExceeded,
+				Message: fmt.Sprintf("agent %s: %d/%d concurrent tasks", agentID, agentRunning, agentBudget.MaxConcurrency),
+			}
+		}
+	}
+	tenantBudget, err := txRepo.GetTx(ctx, tx, tenantID, core.BudgetScopeTenant, tenantID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("tenant budget lookup: %w", err)
+	}
+	if err == nil && tenantBudget.MaxConcurrency > 0 {
+		if tenantRunning >= tenantBudget.MaxConcurrency {
+			return &core.BackpressureError{
+				Reason:  core.ReasonAgentConcurrencyExceeded,
+				Message: fmt.Sprintf("tenant %s: %d/%d concurrent tasks", tenantID, tenantRunning, tenantBudget.MaxConcurrency),
+			}
+		}
+	}
+	return nil
+}
+
 func (s *BudgetService) CheckConcurrency(ctx context.Context, tenantID, agentID string, agentRunning, tenantRunning int) error {
 	if tenantID == "" {
 		return fmt.Errorf("tenant id is required")

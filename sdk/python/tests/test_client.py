@@ -188,8 +188,8 @@ class TestWorkerSignatureCompat:
         w = self._make_worker()
         called = {}
         w._client.pull_task = lambda mb, ag: self._fake_pull("t1")
-        w._client.start_task = lambda tid, lid: called.setdefault("started", tid)
-        w._client.heartbeat = lambda tid, lid: None
+        w._client.start_task = lambda tid, lid, agent_id="": called.setdefault("started", tid)
+        w._client.heartbeat = lambda tid, lid, agent_id="": None
         w._client.ack_task = lambda tid, req: called.setdefault("acked", True)
         w._client.nack_task = lambda tid, req: called.setdefault("nacked", True)
 
@@ -205,8 +205,8 @@ class TestWorkerSignatureCompat:
         w = self._make_worker()
         called = {}
         w._client.pull_task = lambda mb, ag: self._fake_pull("t2")
-        w._client.start_task = lambda tid, lid: None
-        w._client.heartbeat = lambda tid, lid: None
+        w._client.start_task = lambda tid, lid, agent_id="": None
+        w._client.heartbeat = lambda tid, lid, agent_id="": None
         w._client.ack_task = lambda tid, req: None
         w._client.nack_task = lambda tid, req: None
 

@@ -16,7 +16,7 @@ spec:
         app.kubernetes.io/component: migration
     spec:
       restartPolicy: OnFailure
-      serviceAccountName: {{ include "janus-core.serviceAccountName" . }}
+      serviceAccountName: {{ include "janus-core.serviceAccountName" . }}-migration
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -29,13 +29,13 @@ spec:
             - -path
             - {{ .Values.config.migration.path }}
             - -database
-            - postgres://{{ .Values.postgres.user }}:$(JANUS_PG_PASSWORD)@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode=disable
+            - postgres://{{ .Values.postgres.user }}:$(JANUS_PG_PASSWORD)@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode={{ .Values.postgres.sslMode | default "disable" }}
             - up
           env:
             - name: JANUS_PG_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "janus-core.postgresPasswordSecret" . }}
+                  name: {{ include "janus-core.postgresPasswordSecret" . }}-migration
                   key: {{ .Values.postgres.secretKey }}
           securityContext:
             runAsNonRoot: true

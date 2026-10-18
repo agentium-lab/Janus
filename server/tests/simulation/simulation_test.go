@@ -277,6 +277,10 @@ type simAttemptRepo struct {
 
 func (r *simAttemptRepo) key(tenantID, taskID string) string { return tenantID + ":" + taskID }
 
+func (r *simAttemptRepo) FinishOpenAttempts(_ context.Context, _, _ string, _ string) (int64, error) {
+	return 0, nil
+}
+
 func (r *simAttemptRepo) Create(_ context.Context, a core.TaskAttempt) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

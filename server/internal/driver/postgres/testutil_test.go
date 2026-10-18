@@ -21,7 +21,7 @@ func repoRoot() string {
 	return filepath.Join(filepath.Dir(thisFile), "..", "..", "..", "..")
 }
 
-func pgConfig() (host, port, user, dbname string) {
+func pgConfig() (host, port, user, password, dbname string) {
 	host = os.Getenv("JANUS_PG_HOST")
 	if host == "" {
 		host = "/tmp"
@@ -34,6 +34,7 @@ func pgConfig() (host, port, user, dbname string) {
 	if user == "" {
 		user = "silv"
 	}
+	password = os.Getenv("JANUS_PG_PASSWORD")
 	dbname = os.Getenv("JANUS_PG_DBNAME")
 	if dbname == "" {
 		dbname = "janus_test"
@@ -42,14 +43,14 @@ func pgConfig() (host, port, user, dbname string) {
 }
 
 func adminDSN() string {
-	host, port, user, dbname := pgConfig()
-	return fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, dbname)
+	host, port, user, password, dbname := pgConfig()
+	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
 }
 
 func openTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
-	host, port, user, _ := pgConfig()
+	host, port, user, password, _ := pgConfig()
 
 	testDB := fmt.Sprintf("janus_pgtest_%d", time.Now().UnixNano())
 
@@ -64,7 +65,7 @@ func openTestDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
 	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err, "connect to test DB")
 	require.NoError(t, pool.Ping(ctx), "ping test DB")

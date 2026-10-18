@@ -51,13 +51,14 @@ func openServiceTestDB(t *testing.T) *pgxpool.Pool {
 		port = "5432"
 	}
 	user := os.Getenv("JANUS_PG_USER")
+	password := os.Getenv("JANUS_PG_PASSWORD")
 	if user == "" {
 		user = "janus"
 	}
 	testDB := fmt.Sprintf("janus_svctest_%d", time.Now().UnixNano())
 
 	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
+	adminDSN := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
 	adminConn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Skipf("postgres not reachable (set JANUS_PG_HOST/PORT/USER to enable): %v", err)
@@ -66,7 +67,7 @@ func openServiceTestDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
 	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
 	require.NoError(t, pool.Ping(ctx))
@@ -992,4 +993,150 @@ func TestSingleConnectionPool_FullTaskFlow(t *testing.T) {
 	got, _ := taskRepo.Get(ctx, "acme", "sc-task")
 	require.Equal(t, core.TaskStatusCompleted, got.Status)
 	_ = taskSvc
+}
+
+// cancelWinningDriver delays the delivery until AFTER a concurrent Cancel
+// has committed — the audit's deterministic interleaving: Pull reads
+// 'queued', Cancel commits (sees no attempt to finish), Pull inserts the
+// attempt and CAS-claims. Before the fix, the discarded CAS result let the
+// claim commit onto a cancelled task.
+type cancelWinningDriver struct {
+	mockDispatchQueueDriver
+	onFetch func()
+}
+
+func (d *cancelWinningDriver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+	if d.onFetch != nil {
+		d.onFetch()
+		d.onFetch = nil
+	}
+	return d.mockDispatchQueueDriver.FetchTasks(ctx, tenantID, mailbox, opts)
+}
+
+func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	createTestTask(t, env, "race-task")
+
+	drv := &cancelWinningDriver{}
+	drv.deliveries = []core.TaskDelivery{{
+		TaskID: "race-task", DeliveryRef: core.DeliveryRef("race-ref"),
+		Payload: []byte(`{"task_id":"race-task"}`),
+	}}
+	drv.onFetch = func() {
+		// Cancel commits while the pull is between its status read and the
+		// claim transaction: task goes queued -> cancelled with no attempt.
+		_, cerr := env.pool.Exec(ctx,
+			`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id='race-task'`)
+		require.NoError(t, cerr)
+	}
+	env.dispatch = env.dispatch.WithQueueDriver(drv)
+
+	result, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.Error(t, err, "claim must fail when Cancel wins the race")
+	require.Nil(t, result)
+
+	task, gerr := env.taskRepo.Get(ctx, "acme", "race-task")
+	require.NoError(t, gerr)
+	require.Equal(t, core.TaskStatusCancelled, task.Status, "task stays cancelled")
+
+	var attempts int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id='race-task'`).Scan(&attempts))
+	require.Zero(t, attempts, "the racing claim's attempt must roll back with the transaction")
+}
+
+// The single-connection proof must cover PullTask too: the claim
+// transaction's budget lookups previously took a SECOND pool connection
+// (BudgetRepo.Get on the pool) and self-starved. This run uses the REAL PG
+// budget repo with a tenant cap set, not a mock.
+func TestSingleConnectionPool_PullTask_RealBudgetRepo(t *testing.T) {
+	pool := openServiceTestDB(t)
+	ctx := context.Background()
+
+	cfg := pool.Config().Copy()
+	cfg.MaxConns = 1
+	cfg.MinConns = 1
+	single, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Skipf("single-conn pool: %v", err)
+	}
+	defer single.Close()
+
+	taskRepo := postgres.NewTaskRepository(single)
+	attemptRepo := postgres.NewTaskAttemptRepository(single)
+	mailboxRepo := postgres.NewMailboxRepository(single)
+	budgetRepo := postgres.NewBudgetRepository(single)
+	budgetSvc := NewBudgetService(budgetRepo)
+
+	drv := &cancelWinningDriver{}
+	drv.deliveries = []core.TaskDelivery{{
+		TaskID: "sc-pull-task", DeliveryRef: core.DeliveryRef("sc-pull-ref"),
+		Payload: []byte(`{"task_id":"sc-pull-task"}`),
+	}}
+	dispatch := NewDispatchService(taskRepo, attemptRepo, mailboxRepo, drv,
+		NewPolicyService(&mockPolicyRuleRepo{}), budgetSvc).
+		WithTxPath(NewPGLifecycle(single), nil, nil)
+
+	_, _ = single.Exec(ctx, `INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('acme','sc2-agent','S','a2a','online') ON CONFLICT DO NOTHING`)
+	_, _ = single.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','sc2-mb','sc2-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
+	_, _ = single.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','sc-pull-task','sc2-agent','mailbox','sc2-mb','sc2-mb','queued','normal','{"task_id":"sc-pull-task","tenant_id":"acme","source_agent":"sc2-agent"}')`)
+	// Tenant cap exists — the claim MUST read it (through the tx now).
+	_, _ = single.Exec(ctx, `INSERT INTO budgets (tenant_id, scope_type, scope_id, max_concurrency)
+		VALUES ('acme','tenant','acme',5)`)
+
+	done := make(chan error, 1)
+	var result *PullResult
+	go func() {
+		r, perr := dispatch.PullTask(ctx, "acme", "sc2-mb", "sc2-agent")
+		result = r
+		done <- perr
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err, "pull under 1-conn pool with real budget repo must complete")
+		require.NotNil(t, result)
+		require.NotEmpty(t, result.LeaseID)
+	case <-time.After(5 * time.Second):
+		t.Fatal("PullTask deadlocked under single-connection pool (budget Get on pool inside claim tx)")
+	}
+}
+
+// B2 regression: replay restarts attempt numbering at 1, so the settlement
+// ledger must key on (generation, attempt) — without generation, round 2's
+// attempt-1 usage hit round 1's ledger row and was swallowed by ON CONFLICT.
+func TestReplay_SecondRound_UsageNotSwallowedByLedger(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('acme','lg-agent','L','a2a','online') ON CONFLICT DO NOTHING`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','lg-mb','lg-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','lg-task','lg-agent','mailbox','lg-mb','lg-mb','claimed','normal','{"task_id":"lg-task","tenant_id":"acme","source_agent":"lg-agent"}')`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
+		VALUES ('acme','lg-task',1,'lg-agent','lease-lg1','claimed')`)
+
+	u1 := &core.TokenUsage{PromptTokens: 100, CompletionTokens: 100, TotalTokens: 200}
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "lg-task", "lease-lg1"))
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "lg-task", "lease-lg1", "s3://lg1", u1))
+
+	_, err := env.taskSvc.Replay(ctx, "acme", "lg-task")
+	require.NoError(t, err)
+
+	// Round 2: attempt numbering restarted at 1.
+	_, _ = env.pool.Exec(ctx, `UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id='lg-task'`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
+		VALUES ('acme','lg-task',1,'lg-agent','lease-lg2','claimed')`)
+	u2 := &core.TokenUsage{PromptTokens: 50, CompletionTokens: 50, TotalTokens: 100}
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "lg-task", "lease-lg2"))
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "lg-task", "lease-lg2", "s3://lg2", u2))
+
+	// Tenant-scope ledger rows: one per generation, both settled.
+	var rows, totalTokens int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*), COALESCE(sum(total_tokens),0) FROM budget_usage_ledger
+		 WHERE tenant_id='acme' AND task_id='lg-task' AND scope_type='tenant'`).Scan(&rows, &totalTokens))
+	require.Equal(t, 2, rows, "both replay generations must settle their own ledger row")
+	require.Equal(t, 300, totalTokens, "round 1 (200) + round 2 (100) tokens must both be billed")
 }

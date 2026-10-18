@@ -24,12 +24,13 @@ func openLeaseBadTestDB(t *testing.T) *pgxpool.Pool {
 		port = "5432"
 	}
 	user := os.Getenv("JANUS_PG_USER")
+	password := os.Getenv("JANUS_PG_PASSWORD")
 	if user == "" {
 		user = "silv"
 	}
 	testDB := fmt.Sprintf("janus_leasetest_%d", time.Now().UnixNano())
 	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
+	adminDSN := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
 	adminConn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Skipf("postgres not reachable: %v", err)
@@ -38,7 +39,7 @@ func openLeaseBadTestDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err)
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
+	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
 	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
 	require.NoError(t, pool.Ping(ctx))

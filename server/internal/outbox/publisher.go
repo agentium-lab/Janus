@@ -88,7 +88,17 @@ func (p *Publisher) publishBatch(ctx context.Context) {
 		log.Printf("outbox fetch: %v", err)
 		return
 	}
-	metrics.OutboxPending.Set(float64(len(entries)))
+	if counter, ok := p.repo.(interface {
+		CountPending(context.Context) (int64, error)
+	}); ok {
+		if total, cerr := counter.CountPending(batchCtx); cerr == nil {
+			metrics.OutboxPending.Set(float64(total))
+		} else {
+			metrics.OutboxPending.Set(float64(len(entries)))
+		}
+	} else {
+		metrics.OutboxPending.Set(float64(len(entries)))
+	}
 
 	for _, e := range entries {
 		metrics.OutboxPublishTotal.Inc()

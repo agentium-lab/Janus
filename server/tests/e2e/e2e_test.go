@@ -672,6 +672,22 @@ func (a *e2eDispatchAdapter) AckTask(ctx context.Context, tenantID, taskID, leas
 	return a.svc.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
 }
 
+func (a *e2eDispatchAdapter) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *e2eDispatchAdapter) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return a.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (a *e2eDispatchAdapter) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	return a.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (a *e2eDispatchAdapter) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	return a.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
 func (a *e2eDispatchAdapter) NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error {
 	return a.svc.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
 }
