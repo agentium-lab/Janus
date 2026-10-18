@@ -258,12 +258,13 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 			// the same key: the task may have committed without its gating
 			// approval or bound context refs.
 			if existing.Status == core.TaskStatusApprovalPending && s.approvalSvc != nil {
-				if appr, aerr := s.approvalSvc.repo.GetPendingByTask(ctx, existing.TenantID, existing.ID); aerr == nil && appr == nil {
-					approval := core.Approval{
-						TenantID: existing.TenantID, TaskID: existing.ID,
-						RequestedBy: existing.SourceAgent,
-						Reason:      "policy: approval required (idempotent retry)", Status: "pending",
-					}
+				appr, aerr := s.approvalSvc.repo.GetPendingByTask(ctx, existing.TenantID, existing.ID)
+				if aerr != nil && !errors.Is(aerr, pgx.ErrNoRows) {
+					return nil, fmt.Errorf("idempotent retry: approval lookup: %w", aerr)
+				}
+				if appr == nil {
+					approval := gatingApproval(existing.TenantID, existing.ID, existing.SourceAgent,
+						"policy: approval required (idempotent retry)")
 					approval.ID = ulid()
 					if cerr := s.approvalSvc.repo.Create(ctx, approval); cerr != nil {
 						return nil, fmt.Errorf("idempotent retry: compensating approval create: %w", cerr)
@@ -271,7 +272,9 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 				}
 			}
 			if s.contextRefSvc != nil && len(existing.Envelope.ContextRefs) > 0 {
-				_ = s.contextRefSvc.NormalizeAndBind(ctx, existing.TenantID, existing.ID, existing.Envelope.ContextRefs)
+				if berr := s.contextRefSvc.NormalizeAndBind(ctx, existing.TenantID, existing.ID, existing.Envelope.ContextRefs); berr != nil {
+					return nil, fmt.Errorf("idempotent retry: context ref bind: %w", berr)
+				}
 			}
 			return existing, nil
 		}
@@ -332,13 +335,7 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 		// post-commit write left an approval_pending orphan whenever it
 		// failed (task durable, approval missing).
 		if task.Status == core.TaskStatusApprovalPending && s.approvalTx != nil {
-			approval := core.Approval{
-				TenantID:    task.TenantID,
-				TaskID:      task.ID,
-				RequestedBy: task.SourceAgent,
-				Reason:      "policy: approval required",
-				Status:      "pending",
-			}
+			approval := gatingApproval(task.TenantID, task.ID, task.SourceAgent, "policy: approval required")
 			approval.ID = ulid()
 			if err := s.approvalTx.CreateTx(ctx, tx, approval); err != nil {
 				return fmt.Errorf("approval gate in tx: %w", err)
@@ -415,6 +412,20 @@ func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr
 // released — a bare status change left the attempt claimed/running with a
 // live lease, letting the old holder revive the task (Start/Ack moved it
 // back to running/completed).
+// gatingApproval builds the approval record for a policy-gated task. All
+// creation paths (atomic, idempotent-retry compensation) share it so the
+// 24h expiry default cannot drift between them.
+func gatingApproval(tenantID, taskID, requestedBy, reason string) core.Approval {
+	return core.Approval{
+		TenantID:    tenantID,
+		TaskID:      taskID,
+		RequestedBy: requestedBy,
+		Reason:      reason,
+		Status:      "pending",
+		ExpiresAt:   time.Now().Add(24 * time.Hour),
+	}
+}
+
 func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID string) error {
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
@@ -479,14 +490,29 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	if !task.Status.IsTerminal() {
 		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
 	}
-	// Replay re-evaluates policy: a task cancelled after its approval was
-	// rejected (or denied by a rule added since first publish) must not
-	// re-enter the queue just because its status became terminal.
+	// Replay must not bypass the original gate. Two checks:
+	//  1. the approval verdict: a pending or rejected approval keeps the
+	//     task out of the queue (pending -> Cancel -> Replay and
+	//     Reject -> Replay were both re-queueing);
+	//  2. the ORIGINAL publish policy (action=task.publish, the same rule
+	//     set that gated first publication — a dedicated task.replay
+	//     action matched nothing and defaulted to Allow).
+	if s.approvalSvc != nil {
+		latest, aerr := s.approvalSvc.repo.GetLatestByTask(ctx, task.TenantID, task.ID)
+		if aerr == nil && latest != nil {
+			if latest.Decision == "rejected" {
+				return nil, fmt.Errorf("replay denied: the task's approval was rejected")
+			}
+			if latest.Decision == "" && latest.Status == "pending" {
+				return nil, fmt.Errorf("replay denied: an approval is still pending for this task")
+			}
+		}
+	}
 	if s.policySvc != nil {
 		decision, perr := s.policySvc.Evaluate(ctx, core.PolicyInput{
 			TenantID: task.TenantID,
 			Actor:    core.PolicyActor{Type: "agent", ID: task.SourceAgent},
-			Action:   "task.replay",
+			Action:   "task.publish",
 			Resource: core.PolicyResource{Type: string(task.TargetType), Value: task.TargetValue},
 		})
 		if perr != nil {

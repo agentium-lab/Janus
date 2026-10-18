@@ -33,9 +33,15 @@ export GOPROXY
 PASS=0; FAIL=0; SKIP=0
 declare -a RESULTS
 
-record() { # id name status
-  RESULTS+=("$1|$2|$3")
-  case "$3" in
+record() { # id name status [note] — status MUST be exactly PASS|FAIL|SKIP;
+  # annotations ride in note so the counters can never miss a failure.
+  local id="$1" name="$2" status="$3" note="${4:-}"
+  case "$status" in
+    PASS|FAIL|SKIP) ;;
+    *) echo "internal error: bad status '$status' for $id"; exit 2 ;;
+  esac
+  RESULTS+=("$id|$name|$status${note:+ ($note)}")
+  case "$status" in
     PASS) PASS=$((PASS+1)) ;;
     FAIL) FAIL=$((FAIL+1)) ;;
     SKIP) SKIP=$((SKIP+1)) ;;
@@ -54,7 +60,7 @@ go_check() { # id name pkg run_pattern
   ran=$(printf '%s\n' "$out" | grep -cE '^(=== RUN|--- PASS|--- FAIL)')
   if [ "$ran" -eq 0 ] || printf '%s\n' "$out" | grep -q "no tests to run"; then
     echo "---- $id output ----"; echo "$out" | tail -15
-    record "$id" "$name" "FAIL (0 tests matched)"
+    record "$id" "$name" FAIL "0 tests matched"
     return
   fi
   local passed skipped
@@ -62,7 +68,7 @@ go_check() { # id name pkg run_pattern
   skipped=$(printf '%s\n' "$out" | grep -cE '^--- SKIP')
   if [ "$passed" -eq 0 ] && [ "$skipped" -gt 0 ]; then
     echo "---- $id output ----"; echo "$out" | tail -15
-    record "$id" "$name" "FAIL (all ${skipped} SKIP)"
+    record "$id" "$name" FAIL "all ${skipped} SKIP"
     return
   fi
   record "$id" "$name" PASS

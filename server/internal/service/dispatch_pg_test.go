@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
@@ -1013,6 +1014,26 @@ func (d *cancelWinningDriver) FetchTasks(ctx context.Context, tenantID, mailbox 
 	return d.mockDispatchQueueDriver.FetchTasks(ctx, tenantID, mailbox, opts)
 }
 
+// perCallDriver hands out ONE delivery per FetchTasks call (mutex-guarded):
+// concurrent pulls each observe a claimable candidate, so the capacity
+// recheck inside the claim transaction is what decides admission.
+type perCallDriver struct {
+	mockDispatchQueueDriver
+	mu    sync.Mutex
+	queue []core.TaskDelivery
+}
+
+func (d *perCallDriver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts core.FetchOptions) ([]core.TaskDelivery, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.queue) == 0 {
+		return nil, nil
+	}
+	one := d.queue[0]
+	d.queue = d.queue[1:]
+	return []core.TaskDelivery{one}, nil
+}
+
 func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
 	env := setupServiceTestEnv(t)
 	ctx := context.Background()
@@ -1156,4 +1177,200 @@ func TestReplay_SecondRound_UsageNotSwallowedByLedger(t *testing.T) {
 		`SELECT COALESCE(sum(tokens_used),0) FROM budget_usage
 		 WHERE tenant_id='acme' AND scope_type='tenant'`).Scan(&aggTokens))
 	require.Equal(t, 300, aggTokens, "aggregate bills round 1 (200) + round 2 (100)")
+}
+
+// B3 regression: GetTx once returned the spec without filling the nullable
+// columns, so CheckConcurrencyTx read every cap as zero. A tenant cap of 1
+// with two racing pulls must admit exactly one claim — the in-transaction
+// recheck under the concurrency lock is the only guard that matters here.
+func TestPull_TenantCap1_TwoRacingPulls_OneClaims_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	_, cerr := env.pool.Exec(ctx,
+		`INSERT INTO budgets (tenant_id, scope_type, scope_id, max_concurrency) VALUES ('acme','tenant','acme',1)`)
+	require.NoError(t, cerr)
+
+	mkTask := func(id string) {
+		_, err := env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+			VALUES ('acme',$1,'agent-1','mailbox','mb-1','mb-1','queued','normal',
+			jsonb_build_object('task_id',$1::text,'tenant_id','acme','source_agent','agent-1'))`, id)
+		require.NoError(t, err)
+	}
+	mkTask("cap-task-1")
+	mkTask("cap-task-2")
+
+	drv := &perCallDriver{queue: []core.TaskDelivery{
+		{TaskID: "cap-task-1", DeliveryRef: core.DeliveryRef("cap-ref-1"), Payload: []byte(`{}`)},
+		{TaskID: "cap-task-2", DeliveryRef: core.DeliveryRef("cap-ref-2"), Payload: []byte(`{}`)},
+	}}
+	env.dispatch = env.dispatch.WithQueueDriver(drv)
+
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+			results <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	var backpressure int
+	for err := range results {
+		if _, ok := err.(*core.BackpressureError); ok {
+			backpressure++
+		}
+	}
+	var claimed int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM tasks WHERE tenant_id='acme' AND id LIKE 'cap-task-%' AND status='claimed'`).Scan(&claimed))
+	require.Equal(t, 1, claimed, "cap=1 must admit exactly one claim")
+	require.Equal(t, 1, backpressure, "the second pull must be backpressured")
+
+	var attempts int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id LIKE 'cap-task-%'`).Scan(&attempts))
+	require.Equal(t, 1, attempts, "exactly one attempt row may exist")
+}
+
+// A1 regression: owner verification must come from the authenticated
+// principal, not the self-reported agent_id. A key bound to agent A must
+// not finish agent B's attempt — with the field omitted AND when forged.
+func TestAckAs_BoundPrincipalCannotFinishForeignAttempt_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','own-task','agent-b','mailbox','mb-1','mb-1','claimed','normal',
+		jsonb_build_object('task_id','own-task','tenant_id','acme','source_agent','agent-b'))`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		VALUES ('acme','own-task',1,'agent-b','lease-b','running','dr-own')`)
+
+	boundCtx := context.WithValue(ctx, auth.PrincipalCtxKey, auth.Principal{
+		TenantID: "acme", BoundAgentID: "agent-a",
+	})
+
+	for _, tc := range []struct {
+		name  string
+		agent string
+	}{
+		{"omitted", ""},
+		{"forged", "agent-b"},
+	} {
+		err := env.dispatch.AckTaskAs(boundCtx, "acme", "own-task", "lease-b", tc.agent, "s3://stolen", nil)
+		require.Error(t, err, "agent-a's key must not finish agent-b's attempt (%s)", tc.name)
+		require.Contains(t, err.Error(), "does not own")
+	}
+
+	var status string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='own-task' AND attempt=1`).Scan(&status))
+	require.Equal(t, "running", status, "foreign ack must leave the attempt untouched (zero side effects)")
+
+	var taskStatus string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='own-task'`).Scan(&taskStatus))
+	require.Equal(t, "claimed", taskStatus, "foreign ack must not complete the task")
+
+	// The rightful owner still succeeds through the same path.
+	require.NoError(t, env.dispatch.AckTaskAs(ctx, "acme", "own-task", "lease-b", "agent-b", "s3://ok", nil))
+}
+
+// A2 regression: replay must not bypass the original approval verdict.
+// pending -> Cancel -> Replay and Reject -> Replay both used to re-queue.
+func TestReplay_ApprovalVerdictBlocksRequeue_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	approvalRepo := postgres.NewApprovalRepo(env.pool)
+	approvalSvc := NewApprovalService(approvalRepo, env.taskSvc, nil).WithTxPath(env.lifecycle, env.outboxRepo)
+	env.taskSvc.WithApproval(approvalSvc)
+
+	mk := func(id string) {
+		_, err := env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+			VALUES ('acme',$1,'agent-1','mailbox','mb-1','mb-1','approval_pending','normal',
+			jsonb_build_object('task_id',$1::text,'tenant_id','acme','source_agent','agent-1'))`, id)
+		require.NoError(t, err)
+	}
+	request := func(id string) *core.Approval {
+		a, err := approvalSvc.RequestApproval(ctx, core.Approval{
+			TenantID: "acme", TaskID: id, RequestedBy: "agent-1",
+		})
+		require.NoError(t, err)
+		return a
+	}
+
+	mk("rej-task")
+	a := request("rej-task")
+	require.NoError(t, approvalSvc.Reject(ctx, "acme", a.ID, "admin", "not allowed"))
+	_, err := env.taskSvc.Replay(ctx, "acme", "rej-task")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "rejected")
+
+	mk("pend-task")
+	request("pend-task")
+	_, err = env.taskSvc.Replay(ctx, "acme", "pend-task")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "pending")
+
+	// Approved tasks replay after completing a full run.
+	mk("ok-task")
+	a2 := request("ok-task")
+	require.NoError(t, approvalSvc.Approve(ctx, "acme", a2.ID, "admin", ""))
+	_, uerr := env.pool.Exec(ctx, `UPDATE tasks SET status='completed' WHERE tenant_id='acme' AND id='ok-task'`)
+	require.NoError(t, uerr)
+	_, err = env.taskSvc.Replay(ctx, "acme", "ok-task")
+	require.NoError(t, err)
+}
+
+// B2 regression: attempt numbers restart at 1 after a replay. An ACK that
+// read the OLD attempt (pre-replay) and resumes after a replay + fresh pull
+// must NOT finish the new round's same-numbered attempt — lease_id is part
+// of the finish CAS.
+func TestAck_ReplayRace_OldAckCannotFinishNewAttempt_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','rr-task','agent-1','mailbox','mb-1','mb-1','claimed','normal',
+		jsonb_build_object('task_id','rr-task','tenant_id','acme','source_agent','agent-1'))`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		VALUES ('acme','rr-task',1,'agent-1','lease-old','running','dr-old')`)
+
+	// Complete round 1 so Replay is legal, then replay: attempts are wiped.
+	_, err := env.pool.Exec(ctx, `UPDATE tasks SET status='completed' WHERE tenant_id='acme' AND id='rr-task'`)
+	require.NoError(t, err)
+	_, err = env.taskSvc.Replay(ctx, "acme", "rr-task")
+	require.NoError(t, err)
+
+	// Round 2 pull creates a NEW attempt=1 under a NEW lease.
+	drv := &perCallDriver{queue: []core.TaskDelivery{
+		{TaskID: "rr-task", DeliveryRef: core.DeliveryRef("rr-ref-2"), Payload: []byte(`{}`)},
+	}}
+	env.dispatch = env.dispatch.WithQueueDriver(drv)
+	res, perr := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, perr)
+	require.NotNil(t, res)
+	newLease := res.LeaseID
+	require.NotEqual(t, "lease-old", newLease)
+
+	// The stale ACK (round-1 lease) must not finish the round-2 attempt.
+	err = env.dispatch.AckTask(ctx, "acme", "rr-task", "lease-old", "s3://stale", nil)
+	require.Error(t, err, "stale-lease ack must be rejected")
+	require.Contains(t, err.Error(), "lease mismatch")
+
+	var aStatus string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='rr-task' AND attempt=1`).Scan(&aStatus))
+	require.Equal(t, "claimed", aStatus, "the new round's attempt must be untouched by the stale ack")
+
+	var tStatus string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='rr-task'`).Scan(&tStatus))
+	require.Equal(t, "claimed", tStatus, "the new round's task must stay claimed")
+
+	// The new round's own lease still acks fine.
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "rr-task", newLease, "s3://fresh", nil))
 }

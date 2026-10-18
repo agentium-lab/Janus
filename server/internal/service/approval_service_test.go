@@ -36,6 +36,10 @@ func (m *mockApprovalRepo) Get(_ context.Context, tenantID, approvalID string) (
 	return m.approvals[tenantID+":"+approvalID], nil
 }
 
+func (m *mockApprovalRepo) GetLatestByTask(_ context.Context, _, _ string) (*core.Approval, error) {
+	return nil, nil
+}
+
 func (m *mockApprovalRepo) GetPendingByTask(_ context.Context, tenantID, taskID string) (*core.Approval, error) {
 	if m.err != nil {
 		return nil, m.err

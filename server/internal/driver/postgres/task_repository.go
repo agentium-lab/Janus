@@ -480,9 +480,9 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 		// One task.expired event per newly expired task.
 		if _, ierr := tx.Exec(ctx,
 			`INSERT INTO outbox_events (id, tenant_id, kind, payload)
-			 SELECT 'exp-' || t.tenant_id || '-' || t.id, t.tenant_id, 'event_publish',
+			 SELECT 'exp-' || length(t.tenant_id) || '-' || t.tenant_id || '-' || t.id, t.tenant_id, 'event_publish',
 			        jsonb_build_object('event_type','task.expired','tenant_id',t.tenant_id,'task_id',t.id,
-			                           'event_id','obx-exp-'||t.tenant_id||'-'||t.id,
+			                           'event_id','obx-exp-'||length(t.tenant_id)||'-'||t.tenant_id||'-'||t.id,
 			                           'timestamp',to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'))
 			 FROM tasks t
 			 WHERE t.status = 'expired'

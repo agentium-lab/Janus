@@ -89,6 +89,13 @@ export class Client {
     }
   }
 
+  // Body-less request: consumes nothing, so the timeout timer MUST be
+  // cleaned up here — leaking it kept a live abort timer per call.
+  private async voidCall(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<void> {
+    const { done } = await this.doFetch(method, path, body, signal);
+    done();
+  }
+
   private async json<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
     const { resp, done } = await this.doFetch(method, path, body, signal);
     try {
@@ -120,7 +127,7 @@ export class Client {
   }
 
   async heartbeatAgent(agentID: string): Promise<void> {
-    await this.doFetch("POST", `/agents/${agentID}/heartbeat`);
+    await this.voidCall("POST", `/agents/${agentID}/heartbeat`);
   }
 
   // --- Mailbox ---
@@ -181,7 +188,7 @@ export class Client {
   }
 
   async cancelTask(taskID: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/cancel`);
+    await this.voidCall("POST", `/tasks/${taskID}/cancel`);
   }
 
   async reportProgress(taskID: string, message: string, opts?: {
@@ -262,19 +269,19 @@ export class Client {
   }
 
   async startTask(taskID: string, attempt: number, leaseID: string, agentID?: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/start`, { attempt, lease_id: leaseID, agent_id: agentID });
+    await this.voidCall("POST", `/tasks/${taskID}/start`, { attempt, lease_id: leaseID, agent_id: agentID });
   }
 
   async heartbeat(taskID: string, attempt: number, leaseID: string, agentID?: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/heartbeat`, { attempt, lease_id: leaseID, agent_id: agentID });
+    await this.voidCall("POST", `/tasks/${taskID}/heartbeat`, { attempt, lease_id: leaseID, agent_id: agentID });
   }
 
   async ackTask(taskID: string, req: AckRequest, agentID?: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/ack`, agentID ? { ...req, agent_id: agentID } : req);
+    await this.voidCall("POST", `/tasks/${taskID}/ack`, agentID ? { ...req, agent_id: agentID } : req);
   }
 
   async nackTask(taskID: string, req: NackRequest, agentID?: string): Promise<void> {
-    await this.doFetch("POST", `/tasks/${taskID}/nack`, agentID ? { ...req, agent_id: agentID } : req);
+    await this.voidCall("POST", `/tasks/${taskID}/nack`, agentID ? { ...req, agent_id: agentID } : req);
   }
 
   // --- API Keys ---
@@ -333,7 +340,7 @@ export class Client {
   }
 
   async discardDLQ(taskID: string): Promise<void> {
-    await this.doFetch("POST", `/dlq/${taskID}/discard`);
+    await this.voidCall("POST", `/dlq/${taskID}/discard`);
   }
 
   async createPolicyRule(req: { name: string; status?: string; priority?: number; condition?: unknown; action?: unknown }): Promise<PolicyRule> {

@@ -16,6 +16,7 @@ type ApprovalRepo interface {
 	Create(ctx context.Context, approval core.Approval) error
 	Get(ctx context.Context, tenantID, approvalID string) (*core.Approval, error)
 	GetPendingByTask(ctx context.Context, tenantID, taskID string) (*core.Approval, error)
+	GetLatestByTask(ctx context.Context, tenantID, taskID string) (*core.Approval, error)
 	UpdateDecision(ctx context.Context, tenantID, approvalID, decision, approver, reason string) error
 	ListPending(ctx context.Context, tenantID string, limit int) ([]*core.Approval, error)
 }

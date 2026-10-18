@@ -34,6 +34,27 @@ func (r *BudgetRepository) Upsert(ctx context.Context, spec core.BudgetSpec) err
 	return err
 }
 
+// decodeBudgetRow fills the spec from the nullable row columns. Get and
+// GetTx MUST share this: GetTx once scanned into the locals and returned
+// without filling the spec, silently reading every cap as zero.
+func decodeBudgetRow(spec *core.BudgetSpec, rpm, tpm, maxConc *int, dailyCost, monthlyCost *float64) {
+	if rpm != nil {
+		spec.RPM = *rpm
+	}
+	if tpm != nil {
+		spec.TPM = *tpm
+	}
+	if maxConc != nil {
+		spec.MaxConcurrency = *maxConc
+	}
+	if dailyCost != nil {
+		spec.DailyCostUSD = *dailyCost
+	}
+	if monthlyCost != nil {
+		spec.MonthlyCostUSD = *monthlyCost
+	}
+}
+
 func (r *BudgetRepository) GetTx(ctx context.Context, tx pgx.Tx, tenantID string, scopeType core.BudgetScopeType, scopeID string) (*core.BudgetSpec, error) {
 	var spec core.BudgetSpec
 	var rpm, tpm, maxConc *int
@@ -53,6 +74,7 @@ func (r *BudgetRepository) GetTx(ctx context.Context, tx pgx.Tx, tenantID string
 	if err != nil {
 		return nil, err
 	}
+	decodeBudgetRow(&spec, rpm, tpm, maxConc, dailyCost, monthlyCost)
 	return &spec, nil
 }
 
@@ -75,21 +97,7 @@ func (r *BudgetRepository) Get(ctx context.Context, tenantID string, scopeType c
 	if err != nil {
 		return nil, err
 	}
-	if rpm != nil {
-		spec.RPM = *rpm
-	}
-	if tpm != nil {
-		spec.TPM = *tpm
-	}
-	if maxConc != nil {
-		spec.MaxConcurrency = *maxConc
-	}
-	if dailyCost != nil {
-		spec.DailyCostUSD = *dailyCost
-	}
-	if monthlyCost != nil {
-		spec.MonthlyCostUSD = *monthlyCost
-	}
+	decodeBudgetRow(&spec, rpm, tpm, maxConc, dailyCost, monthlyCost)
 	spec.CreatedAt = createdAt
 	spec.UpdatedAt = updatedAt
 	return &spec, nil

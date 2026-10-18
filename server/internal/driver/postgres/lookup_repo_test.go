@@ -93,3 +93,30 @@ func TestTaskRepo_ExpireTasks_SameTaskIDAcrossTenants(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 2, events, "both tenants must get their own task.expired outbox event")
 }
+
+// B7: the tenant/task concatenation must be injective — plain dashes let
+// tenant=a-b/task=c collide with tenant=a/task=b-c on the global outbox PK.
+func TestTaskRepo_ExpireTasks_AmbiguousNamesDoNotCollide(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	ctx := context.Background()
+	repo := NewTaskRepository(pool)
+
+	for _, tn := range []string{"a-b", "a"} {
+		_, err := pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ($1, $1)`, tn)
+		require.NoError(t, err)
+	}
+	for _, pair := range []struct{ tenant, task string }{{"a-b", "c"}, {"a", "b-c"}} {
+		_, err := pool.Exec(ctx, `
+			INSERT INTO tasks (id, tenant_id, source_agent, target_type, target_value,
+			                   status, priority, ttl_seconds, envelope, created_at, updated_at)
+			VALUES ($1, $2, 'src', 'mailbox', 'mb', 'queued', 'normal', 1,
+			        '{}'::jsonb, now() - interval '1 hour', now() - interval '1 hour')`,
+			pair.task, pair.tenant)
+		require.NoError(t, err)
+	}
+
+	n, err := repo.ExpireTasks(ctx)
+	require.NoError(t, err, "ambiguous tenant/task names must not collide on the outbox PK")
+	require.Equal(t, int64(2), n)
+}

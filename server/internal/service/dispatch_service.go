@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
@@ -394,10 +395,23 @@ func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, lease
 	return s.StartTaskAs(ctx, tenantID, taskID, leaseID, "")
 }
 
+// actingAgent resolves the agent identity for owner checks: a bound
+// principal is authoritative (a self-reported agent_id cannot bypass it —
+// omitting or forging the request field must not skip verification);
+// without an authenticated bound identity the self-reported value applies
+// (dev/no-auth mode and unbound tenant keys).
+func actingAgent(ctx context.Context, selfReported string) string {
+	if p, ok := auth.PrincipalFromContext(ctx); ok && p.BoundAgentID != "" {
+		return p.BoundAgentID
+	}
+	return selfReported
+}
+
 // StartTaskAs additionally verifies the acting agent owns the attempt.
 // agentID == "" skips the owner check (pre-v1.10 callers); the API handler
 // always forwards the request's agent_id.
 func (s *DispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	agentID = actingAgent(ctx, agentID)
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
@@ -442,6 +456,7 @@ func (s *DispatchService) TaskHeartbeat(ctx context.Context, tenantID, taskID, l
 
 // TaskHeartbeatAs additionally verifies the acting agent owns the attempt.
 func (s *DispatchService) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	agentID = actingAgent(ctx, agentID)
 	if tenantID == "" || taskID == "" || leaseID == "" {
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
@@ -466,6 +481,7 @@ func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID
 
 // AckTaskAs additionally verifies the acting agent owns the attempt.
 func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	agentID = actingAgent(ctx, agentID)
 	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.AckTask",
 		trace.WithAttributes(
 			attribute.String("tenant.id", tenantID),
@@ -498,7 +514,7 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 
 	committed := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "completed", nil, usageJSON)
+		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, leaseID, "completed", nil, usageJSON)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}
@@ -606,6 +622,7 @@ func (s *DispatchService) NackTask(ctx context.Context, tenantID, taskID, leaseI
 
 // NackTaskAs additionally verifies the acting agent owns the attempt.
 func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	agentID = actingAgent(ctx, agentID)
 	ctx, span := otel.Tracer("janus").Start(ctx, "DispatchService.NackTask",
 		trace.WithAttributes(
 			attribute.String("tenant.id", tenantID),
@@ -651,7 +668,7 @@ func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leas
 	committed := false
 	attemptFinished := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, "failed", errJSON, nil)
+		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, leaseID, "failed", errJSON, nil)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
 		}

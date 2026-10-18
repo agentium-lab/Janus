@@ -109,12 +109,14 @@ func (r *TaskAttemptRepository) UpdateFinished(ctx context.Context, tenantID, ta
 	return err
 }
 
-func (r *TaskAttemptRepository) UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+func (r *TaskAttemptRepository) UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error) {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE task_attempts SET status = $1, finished_at = now(), error = $2, token_usage = $3
-		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6 AND status IN ('claimed', 'running')`,
+		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6
+		   AND lease_id = NULLIF($7, '')
+		   AND status IN ('claimed', 'running')`,
 		status, jsonOrNull(errJSON), jsonOrNull(usageJSON),
-		tenantID, taskID, attempt,
+		tenantID, taskID, attempt, leaseID,
 	)
 	if err != nil {
 		return false, err
@@ -124,12 +126,17 @@ func (r *TaskAttemptRepository) UpdateFinishedWithCheck(ctx context.Context, ten
 
 // UpdateFinishedWithCheckTx is the transactional variant of UpdateFinishedWithCheck.
 // It only updates attempts currently in claimed/running status (CAS guard).
-func (r *TaskAttemptRepository) UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+func (r *TaskAttemptRepository) UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+	// lease_id is part of the CAS: attempt numbers restart at 1 after a
+	// replay, so an ACK that read the OLD attempt before the replay must
+	// not complete the NEW round's same-numbered attempt.
 	tag, err := tx.Exec(ctx,
 		`UPDATE task_attempts SET status = $1, finished_at = now(), error = $2, token_usage = $3
-		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6 AND status IN ('claimed', 'running')`,
+		 WHERE tenant_id = $4 AND task_id = $5 AND attempt = $6
+		   AND lease_id = NULLIF($7, '')
+		   AND status IN ('claimed', 'running')`,
 		status, jsonOrNull(errJSON), jsonOrNull(usageJSON),
-		tenantID, taskID, attempt,
+		tenantID, taskID, attempt, leaseID,
 	)
 	if err != nil {
 		return false, err

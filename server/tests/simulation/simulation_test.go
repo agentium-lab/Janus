@@ -309,7 +309,7 @@ func (r *simAttemptRepo) UpdateFinished(_ context.Context, tenantID, taskID stri
 	return nil
 }
 
-func (r *simAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+func (r *simAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error) {
 	return true, nil
 }
 
@@ -378,6 +378,10 @@ func (r *simApprovalRepo) Get(_ context.Context, tenantID, approvalID string) (*
 		return nil, fmt.Errorf("not found")
 	}
 	return a, nil
+}
+
+func (r *simApprovalRepo) GetLatestByTask(_ context.Context, _, _ string) (*core.Approval, error) {
+	return nil, nil
 }
 
 func (r *simApprovalRepo) GetPendingByTask(_ context.Context, tenantID, taskID string) (*core.Approval, error) {

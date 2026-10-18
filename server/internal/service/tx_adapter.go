@@ -84,8 +84,8 @@ func (a AttemptRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, attempt co
 	return a.Create(ctx, attempt)
 }
 
-func (a AttemptRepoTxAdapter) UpdateFinishedWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON, usageJSON []byte) (bool, error) {
-	return a.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt, status, errJSON, usageJSON)
+func (a AttemptRepoTxAdapter) UpdateFinishedWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, attempt int, leaseID, status string, errJSON, usageJSON []byte) (bool, error) {
+	return a.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt, leaseID, status, errJSON, usageJSON)
 }
 
 func (a AttemptRepoTxAdapter) FinishOpenAttemptsTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, status string) (int64, error) {
@@ -94,6 +94,10 @@ func (a AttemptRepoTxAdapter) FinishOpenAttemptsTx(ctx context.Context, _ pgx.Tx
 
 type ApprovalRepoTxAdapter struct {
 	ApprovalRepo
+}
+
+func (a ApprovalRepoTxAdapter) GetLatestByTask(ctx context.Context, tenantID, taskID string) (*core.Approval, error) {
+	return a.ApprovalRepo.GetLatestByTask(ctx, tenantID, taskID)
 }
 
 func (a ApprovalRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, approval core.Approval) error {

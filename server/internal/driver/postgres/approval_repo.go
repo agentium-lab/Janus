@@ -20,9 +20,9 @@ func NewApprovalRepo(pool *pgxpool.Pool) *ApprovalRepo {
 
 func (r *ApprovalRepo) Create(ctx context.Context, a core.Approval) error {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO approvals (tenant_id, id, task_id, status, requested_by, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		a.TenantID, a.ID, a.TaskID, a.Status, a.RequestedBy, a.ExpiresAt,
+		`INSERT INTO approvals (tenant_id, id, task_id, status, requested_by, decision, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+		a.TenantID, a.ID, a.TaskID, a.Status, a.RequestedBy, a.Decision, a.ExpiresAt,
 	)
 	return err
 }
@@ -31,9 +31,9 @@ func (r *ApprovalRepo) Create(ctx context.Context, a core.Approval) error {
 // its gating approval must commit atomically or neither does.
 func (r *ApprovalRepo) CreateTx(ctx context.Context, tx pgx.Tx, a core.Approval) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO approvals (tenant_id, id, task_id, status, requested_by, expires_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		a.TenantID, a.ID, a.TaskID, a.Status, a.RequestedBy, a.ExpiresAt,
+		`INSERT INTO approvals (tenant_id, id, task_id, status, requested_by, decision, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7)`,
+		a.TenantID, a.ID, a.TaskID, a.Status, a.RequestedBy, a.Decision, a.ExpiresAt,
 	)
 	return err
 }
@@ -63,6 +63,31 @@ func (r *ApprovalRepo) Get(ctx context.Context, tenantID, approvalID string) (*c
 		a.Decision = *decision
 	}
 	a.DecidedAt = decidedAt
+	return &a, nil
+}
+
+// GetLatestByTask returns the task's most recent approval record with its
+// decision (nil when none exists) — replay gating needs the verdict, not
+// just the pending set.
+func (r *ApprovalRepo) GetLatestByTask(ctx context.Context, tenantID, taskID string) (*core.Approval, error) {
+	var a core.Approval
+	var decidedAt *time.Time
+	var requestedBy, approver, reason, decision *string
+	err := r.pool.QueryRow(ctx,
+		`SELECT tenant_id, id, task_id, status, requested_by, approver, reason, decision, expires_at, created_at, decided_at
+		 FROM approvals WHERE tenant_id = $1 AND task_id = $2
+		 ORDER BY created_at DESC LIMIT 1`,
+		tenantID, taskID,
+	).Scan(&a.TenantID, &a.ID, &a.TaskID, &a.Status, &requestedBy, &approver, &reason, &decision, &a.ExpiresAt, &a.CreatedAt, &decidedAt)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if decision != nil {
+		a.Decision = *decision
+	}
 	return &a, nil
 }
 

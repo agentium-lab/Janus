@@ -255,6 +255,10 @@ func (r *memApprovalRepo) Get(_ context.Context, tenantID, approvalID string) (*
 	return &cp, nil
 }
 
+func (r *memApprovalRepo) GetLatestByTask(_ context.Context, _, _ string) (*core.Approval, error) {
+	return nil, nil
+}
+
 func (r *memApprovalRepo) GetPendingByTask(_ context.Context, tenantID, taskID string) (*core.Approval, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -407,7 +411,7 @@ func (r *memAttemptRepo) UpdateHeartbeat(_ context.Context, _, _ string, _ int) 
 func (r *memAttemptRepo) UpdateFinished(_ context.Context, _, _ string, _ int, _ string, _, _ []byte) error {
 	return nil
 }
-func (r *memAttemptRepo) UpdateFinishedWithCheck(_ context.Context, _, _ string, _ int, _ string, _, _ []byte) (bool, error) {
+func (r *memAttemptRepo) UpdateFinishedWithCheck(_ context.Context, _, _ string, _ int, _, _ string, _, _ []byte) (bool, error) {
 	return true, nil
 }
 

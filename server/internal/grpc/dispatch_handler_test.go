@@ -43,6 +43,22 @@ func (m *mockDispatchService) AckTask(_ context.Context, _, _, _, _ string, _ *c
 	return m.err
 }
 
+func (m *mockDispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return m.StartTask(ctx, tenantID, taskID, leaseID)
+}
+
+func (m *mockDispatchService) TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error {
+	return m.TaskHeartbeat(ctx, tenantID, taskID, leaseID)
+}
+
+func (m *mockDispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error {
+	return m.AckTask(ctx, tenantID, taskID, leaseID, resultRef, usage)
+}
+
+func (m *mockDispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error {
+	return m.NackTask(ctx, tenantID, taskID, leaseID, retriable, taskErr)
+}
+
 func (m *mockDispatchService) NackTask(_ context.Context, _, _, _ string, _ bool, _ *core.TaskError) error {
 	m.nacked = true
 	return m.err

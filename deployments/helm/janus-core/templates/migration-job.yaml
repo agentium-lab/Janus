@@ -35,7 +35,11 @@ spec:
             - name: JANUS_PG_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "janus-core.postgresPasswordSecret" . }}-migration
+                  {{- if .Values.postgres.existingSecret }}
+                  name: {{ .Values.postgres.existingSecret }}
+                  {{- else }}
+                  name: {{ include "janus-core.fullname" . }}-migration
+                  {{- end }}
                   key: {{ .Values.postgres.secretKey }}
           securityContext:
             runAsNonRoot: true

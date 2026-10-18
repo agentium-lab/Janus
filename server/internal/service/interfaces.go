@@ -57,7 +57,7 @@ type TaskAttemptRepo interface {
 	GetLatest(ctx context.Context, tenantID, taskID string) (*core.TaskAttempt, error)
 	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) error
 	UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error
-	UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error)
+	UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error)
 	FinishOpenAttempts(ctx context.Context, tenantID, taskID, status string) (int64, error)
 }
 
@@ -110,7 +110,7 @@ type TaskTxRepo interface {
 type AttemptTxRepo interface {
 	TaskAttemptRepo
 	CreateTx(ctx context.Context, tx pgx.Tx, attempt core.TaskAttempt) error
-	UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, status string, errJSON, usageJSON []byte) (bool, error)
+	UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, leaseID, status string, errJSON, usageJSON []byte) (bool, error)
 	FinishOpenAttemptsTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, status string) (int64, error)
 }
 

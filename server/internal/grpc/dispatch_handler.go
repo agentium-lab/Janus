@@ -12,9 +12,13 @@ import (
 type dispatchService interface {
 	PullTask(ctx context.Context, tenantID, mailboxID, agentID string) (*svc.PullResult, error)
 	StartTask(ctx context.Context, tenantID, taskID, leaseID string) error
+	StartTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error
 	TaskHeartbeat(ctx context.Context, tenantID, taskID, leaseID string) error
+	TaskHeartbeatAs(ctx context.Context, tenantID, taskID, leaseID, agentID string) error
 	AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error
+	AckTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID, resultRef string, usage *core.TokenUsage) error
 	NackTask(ctx context.Context, tenantID, taskID, leaseID string, retriable bool, taskErr *core.TaskError) error
+	NackTaskAs(ctx context.Context, tenantID, taskID, leaseID, agentID string, retriable bool, taskErr *core.TaskError) error
 }
 
 type DispatchServiceServer struct {
@@ -45,14 +49,14 @@ func (s *DispatchServiceServer) PullTask(ctx context.Context, req *pb.PullTaskRe
 }
 
 func (s *DispatchServiceServer) StartTask(ctx context.Context, req *pb.StartTaskRequest) (*pb.StartTaskResponse, error) {
-	if err := s.svc.StartTask(ctx, req.TenantId, req.TaskId, req.LeaseId); err != nil {
+	if err := s.svc.StartTaskAs(ctx, req.TenantId, req.TaskId, req.LeaseId, ""); err != nil {
 		return nil, err
 	}
 	return &pb.StartTaskResponse{}, nil
 }
 
 func (s *DispatchServiceServer) TaskHeartbeat(ctx context.Context, req *pb.TaskHeartbeatRequest) (*pb.TaskHeartbeatResponse, error) {
-	if err := s.svc.TaskHeartbeat(ctx, req.TenantId, req.TaskId, req.LeaseId); err != nil {
+	if err := s.svc.TaskHeartbeatAs(ctx, req.TenantId, req.TaskId, req.LeaseId, ""); err != nil {
 		return nil, err
 	}
 	return &pb.TaskHeartbeatResponse{}, nil
@@ -67,7 +71,7 @@ func (s *DispatchServiceServer) AckTask(ctx context.Context, req *pb.AckTaskRequ
 			TotalTokens:      int(req.TokenUsage.TotalTokens),
 		}
 	}
-	if err := s.svc.AckTask(ctx, req.TenantId, req.TaskId, req.LeaseId, req.ResultRef, usage); err != nil {
+	if err := s.svc.AckTaskAs(ctx, req.TenantId, req.TaskId, req.LeaseId, "", req.ResultRef, usage); err != nil {
 		return nil, err
 	}
 	return &pb.AckTaskResponse{}, nil
@@ -81,7 +85,7 @@ func (s *DispatchServiceServer) NackTask(ctx context.Context, req *pb.NackTaskRe
 			Message: req.Error.Message,
 		}
 	}
-	if err := s.svc.NackTask(ctx, req.TenantId, req.TaskId, req.LeaseId, req.Retriable, taskErr); err != nil {
+	if err := s.svc.NackTaskAs(ctx, req.TenantId, req.TaskId, req.LeaseId, "", req.Retriable, taskErr); err != nil {
 		return nil, err
 	}
 	return &pb.NackTaskResponse{}, nil

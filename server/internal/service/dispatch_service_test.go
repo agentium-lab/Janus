@@ -122,7 +122,7 @@ func (m *mockDispatchAttemptRepo) FinishOpenAttempts(_ context.Context, tenantID
 	return n, nil
 }
 
-func (m *mockDispatchAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) (bool, error) {
+func (m *mockDispatchAttemptRepo) UpdateFinishedWithCheck(_ context.Context, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error) {
 	for i := len(m.attempts) - 1; i >= 0; i-- {
 		a := m.attempts[i]
 		if a.TaskID == taskID && a.Attempt == attempt {
