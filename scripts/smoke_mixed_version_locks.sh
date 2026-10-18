@@ -65,12 +65,16 @@ echo "  ✓ binaries built"
 # NATS restarts and deliver ghost tasks (rows in dropped databases) that
 # fail pull with task-not-found. The mixed run must start from an empty
 # broker, like CI's throwaway containers.
-JANUS_NATS_URL="$NATS_URL" python3 - <<'PYEOF' || { echo "FATAL: NATS stream purge failed"; exit 1; }
+JANUS_NATS_URL="$NATS_URL" python3 - <<'PYEOF' || { echo "FATAL: NATS stream purge failed (pip install nats-py)"; exit 1; }
 import asyncio
 import os
 
-async def purge():
+try:
     import nats
+except ImportError:
+    raise SystemExit("nats-py missing: pip install nats-py")
+
+async def purge():
     nc = await nats.connect(os.environ["JANUS_NATS_URL"])
     js = nc.jetstream()
     for s in await js.streams_info():

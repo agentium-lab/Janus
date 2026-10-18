@@ -142,6 +142,7 @@ jobs:
 
       - name: Mixed-version lock contention (v1.9.0 + HEAD)
         run: |
+          python3 -m pip install --quiet nats-py
           JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
           bash scripts/smoke_mixed_version_locks.sh
 
