@@ -90,7 +90,7 @@ COMMON_ENV="JANUS_QUEUE_DRIVER=nats JANUS_PG_HOST=$PG_HOST JANUS_PG_USER=$PG_USE
 
 # NEW migrates alone (rolling-upgrade order: migrate before mixed replicas).
 env $COMMON_ENV JANUS_MIGRATION_AUTO=true JANUS_MIGRATION_PATH="$REPO_ROOT/migrations" \
-  JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8099 "$WORKDIR/janus-new" > "$WORKDIR/migrate.log" 2>&1 &
+  JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8099 JANUS_GRPC_PORT=9098 "$WORKDIR/janus-new" > "$WORKDIR/migrate.log" 2>&1 &
 MIG_PID=$!
 for i in $(seq 1 60); do curl -sf http://localhost:8099/readyz >/dev/null 2>&1 && break; sleep 1; done
 curl -sf http://localhost:8099/readyz >/dev/null || { echo "FATAL: migration boot failed"; cat "$WORKDIR/migrate.log"; exit 1; }
@@ -103,16 +103,16 @@ start_replica() { # bin port pidfile logfile extra-env...
     "$bin" > "$logfile" 2>&1 &
   echo $! > "$pidfile"
 }
-start_replica "$WORKDIR/janus-old" 8080 "$WORKDIR/old.pid" "$WORKDIR/old.log" JANUS_MIGRATION_AUTO=false
-for i in $(seq 1 60); do curl -sf http://localhost:8080/readyz >/dev/null 2>&1 && break; sleep 1; done
-curl -sf http://localhost:8080/readyz >/dev/null || { echo "FATAL: OLD replica not ready"; tail -20 "$WORKDIR/old.log"; exit 1; }
-start_replica "$WORKDIR/janus-new" 8081 "$WORKDIR/new.pid" "$WORKDIR/new.log" JANUS_MIGRATION_AUTO=false JANUS_GRPC_PORT=9091
-for i in $(seq 1 60); do curl -sf http://localhost:8081/readyz >/dev/null 2>&1 && break; sleep 1; done
-curl -sf http://localhost:8081/readyz >/dev/null || { echo "FATAL: NEW replica not ready"; tail -20 "$WORKDIR/new.log"; exit 1; }
-echo "  ✓ OLD :8080 (lockless) + NEW :8081 (advisory locks) both ready"
+start_replica "$WORKDIR/janus-old" 8082 "$WORKDIR/old.pid" "$WORKDIR/old.log" JANUS_MIGRATION_AUTO=false JANUS_GRPC_PORT=9092
+for i in $(seq 1 60); do curl -sf http://localhost:8082/readyz >/dev/null 2>&1 && break; sleep 1; done
+curl -sf http://localhost:8082/readyz >/dev/null || { echo "FATAL: OLD replica not ready"; tail -20 "$WORKDIR/old.log"; exit 1; }
+start_replica "$WORKDIR/janus-new" 8083 "$WORKDIR/new.pid" "$WORKDIR/new.log" JANUS_MIGRATION_AUTO=false JANUS_GRPC_PORT=9093
+for i in $(seq 1 60); do curl -sf http://localhost:8083/readyz >/dev/null 2>&1 && break; sleep 1; done
+curl -sf http://localhost:8083/readyz >/dev/null || { echo "FATAL: NEW replica not ready"; tail -20 "$WORKDIR/new.log"; exit 1; }
+echo "  ✓ OLD :8082 (lockless) + NEW :8083 (advisory locks) both ready"
 
 # --- Stage 3: raced config updates across versions ---------------------------
-JANUS_URL_A=http://localhost:8080 JANUS_URL_B=http://localhost:8081 \
+JANUS_URL_A=http://localhost:8082 JANUS_URL_B=http://localhost:8083 \
 JANUS_PG_HOST="$PG_HOST" JANUS_PG_USER="$PG_USER" JANUS_PG_DBNAME="$DB_NAME" \
 CONVERGE_TRIES=90 \
   bash "$SCRIPT_DIR/smoke_two_replica_convergence.sh"
@@ -125,7 +125,7 @@ echo "  ✓ convergence smoke PASS under mixed versions"
 TENANT="mix-ver"; MB="mix-mb"; TASK_ID="mix-task-$(date +%s%N)"
 post() { curl -s -o /dev/null -w "%{http_code}" --max-time 5 -X POST "$@"; }
 tolerate_dup() { [ "$1" = 201 ] || [ "$1" = 400 ]; }
-for U in http://localhost:8080 http://localhost:8081; do
+for U in http://localhost:8082 http://localhost:8083; do
   c=$(post "$U/v1/tenants" -H 'Content-Type: application/json' -d "{\"id\":\"$TENANT\",\"name\":\"Mix\"}")
   tolerate_dup "$c" || { echo "FATAL: tenant create via $U -> $c"; exit 1; }
   c=$(post "$U/v1/tenants/$TENANT/agents" -H 'Content-Type: application/json' -d '{"id":"mix-agent","display_name":"M","protocol":"a2a"}')
@@ -134,13 +134,13 @@ for U in http://localhost:8080 http://localhost:8081; do
   tolerate_dup "$c" || { echo "FATAL: mailbox create via $U -> $c"; exit 1; }
 done
 
-c=$(post "http://localhost:8081/v1/tenants/$TENANT/tasks" -H 'Content-Type: application/json' \
+c=$(post "http://localhost:8083/v1/tenants/$TENANT/tasks" -H 'Content-Type: application/json' \
   -d "{\"id\":\"$TASK_ID\",\"source_agent\":\"mix-agent\",\"target_type\":\"mailbox\",\"target_value\":\"$MB\",\"envelope\":{\"janus_version\":\"0.3\",\"task_id\":\"$TASK_ID\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"mix-agent\",\"target\":{\"type\":\"mailbox\",\"value\":\"$MB\"},\"payload\":{\"type\":\"smoke\",\"content\":\"mix\"},\"trace\":{\"trace_id\":\"mix-$TASK_ID\"}}}")
 [ "$c" = 201 ] || { echo "FATAL: task publish via NEW -> $c"; exit 1; }
 
 PULLED=""; LEASE=""
 for _ in $(seq 1 90); do
-  PULL=$(curl -sf --max-time 5 -X POST "http://localhost:8080/v1/tenants/$TENANT/mailboxes/$MB/pull" \
+  PULL=$(curl -sf --max-time 5 -X POST "http://localhost:8082/v1/tenants/$TENANT/mailboxes/$MB/pull" \
     -H 'Content-Type: application/json' -d '{"agent_id":"mix-agent"}' 2>/dev/null || echo "")
   GOT=$(echo "$PULL" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
   [ "$GOT" = "$TASK_ID" ] && { PULLED="$GOT"; LEASE=$(echo "$PULL" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))"); break; }
@@ -157,7 +157,7 @@ done
 }
 echo "  ✓ task published via NEW, pulled via OLD"
 
-c=$(curl -s -o /tmp/opencode/ack-body.txt -w "%{http_code}" --max-time 5 -X POST "http://localhost:8080/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
+c=$(curl -s -o /tmp/opencode/ack-body.txt -w "%{http_code}" --max-time 5 -X POST "http://localhost:8082/v1/tenants/$TENANT/tasks/$TASK_ID/ack" -H 'Content-Type: application/json' \
   -d "{\"lease_id\":\"$LEASE\",\"result_ref\":\"smoke://mix-ok\"}")
 [ "$c" = 200 ] || { echo "FATAL: ack via OLD -> $c body=$(cat /tmp/opencode/ack-body.txt 2>/dev/null)"; exit 1; }
 echo "  ✓ acked via OLD"
@@ -168,8 +168,8 @@ STATUS=$(psql -h "$PG_HOST" -U "$PG_USER" -d "$DB_NAME" -t -A -c \
 [ "$STATUS" = "completed" ] || { echo "FATAL: task status after cross-version ack = '$STATUS' (want completed)"; exit 1; }
 echo "  ✓ durable status = completed"
 
-curl -sf http://localhost:8080/readyz >/dev/null || { echo "FATAL: OLD replica degraded after race"; exit 1; }
-curl -sf http://localhost:8081/readyz >/dev/null || { echo "FATAL: NEW replica degraded after race"; exit 1; }
+curl -sf http://localhost:8082/readyz >/dev/null || { echo "FATAL: OLD replica degraded after race"; exit 1; }
+curl -sf http://localhost:8083/readyz >/dev/null || { echo "FATAL: NEW replica degraded after race"; exit 1; }
 echo "  ✓ both replicas healthy post-race"
 
 echo ""
