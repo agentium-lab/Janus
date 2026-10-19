@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/jackc/pgx/v5"
 )
 
 type mockPolicyRuleRepo struct {
@@ -292,7 +293,8 @@ func TestPolicyService_DifferentTenant(t *testing.T) {
 
 // stubAgentRepoForEnrich is a minimal AgentRepo for actor-enrichment tests.
 type stubAgentRepoForEnrich struct {
-	agents map[string]*core.Agent
+	agents      map[string]*core.Agent
+	failLookups bool
 }
 
 func (s *stubAgentRepoForEnrich) Register(ctx context.Context, agent core.Agent) error {
@@ -302,10 +304,13 @@ func (s *stubAgentRepoForEnrich) UpsertCapabilities(ctx context.Context, agent c
 	return nil
 }
 func (s *stubAgentRepoForEnrich) Get(ctx context.Context, tenantID, agentID string) (*core.Agent, error) {
+	if s.failLookups {
+		return nil, fmt.Errorf("db unavailable")
+	}
 	if a, ok := s.agents[tenantID+"/"+agentID]; ok {
 		return a, nil
 	}
-	return nil, fmt.Errorf("agent %s not found", agentID)
+	return nil, pgx.ErrNoRows
 }
 func (s *stubAgentRepoForEnrich) List(ctx context.Context, tenantID string) ([]*core.Agent, error) {
 	return nil, nil
@@ -364,4 +369,19 @@ func TestPolicyService_ActorEnrichment_TeamScopedRuleMatches(t *testing.T) {
 	})
 	require.NoError(t, err2)
 	assert.NotEqual(t, core.PolicyDecisionDeny, decision2.Decision)
+}
+
+// Lookup FAILURE must be fatal (fail-closed): proceeding without trusted
+// attributes reads as satisfying every constraint.
+func TestPolicyService_ActorEnrichment_LookupFailureFailsClosed(t *testing.T) {
+	svc := NewPolicyService(&mockPolicyRuleRepo{}).WithAgentRepo(&stubAgentRepoForEnrich{
+		failLookups: true,
+	})
+	_, err := svc.Evaluate(context.Background(), core.PolicyInput{
+		TenantID: "acme",
+		Actor:    core.PolicyActor{Type: "agent", ID: "agent-1"},
+		Action:   "execute",
+	})
+	require.Error(t, err, "agent-record lookup failure must fail the evaluation")
+	require.Contains(t, err.Error(), "actor enrichment")
 }

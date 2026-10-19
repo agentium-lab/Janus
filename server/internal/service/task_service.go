@@ -141,6 +141,16 @@ func (s *TaskService) WithAttemptRepo(r TaskAttemptRepo) *TaskService {
 	return s
 }
 
+// WithQueueDriver swaps the queue driver (full-chain integration tests run
+// the real NATS pipeline instead of the in-memory one).
+func (s *TaskService) WithQueueDriver(d QueueDriver) *TaskService {
+	s.queueDriver = d
+	if s.txOutbox == nil {
+		s.txOutbox = NewPublishingOutbox(d)
+	}
+	return s
+}
+
 func (s *TaskService) WithAgentExistence(c AgentExistenceChecker) *TaskService {
 	s.agentExistence = c
 	return s
@@ -386,12 +396,41 @@ func (s *TaskService) Start(ctx context.Context, tenantID, taskID string) error 
 	return s.transition(ctx, tenantID, taskID, core.TaskStatusRunning, core.EventTaskStarted, 0)
 }
 
+// transitionAndFinish wraps transition with same-transaction closure of any
+// open attempt — every terminal entry point must leave no live lease behind.
+func (s *TaskService) transitionAndFinish(ctx context.Context, tenantID, taskID string, status core.TaskStatus, eventType core.EventType, attemptInc int, attemptStatus string) error {
+	if tenantID == "" || taskID == "" {
+		return fmt.Errorf("tenant id and task id are required")
+	}
+	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for transition: %w", err)
+	}
+	if current.Status.IsTerminal() {
+		return fmt.Errorf("%w: task %s is %s, cannot transition to %s", core.ErrTaskInTerminalState, taskID, current.Status, status)
+	}
+	if !core.CanTransition(current.Status, status) {
+		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, status, taskID)
+	}
+	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		if terr := s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, status, eventType, attemptInc); terr != nil {
+			return terr
+		}
+		if s.attemptTx != nil {
+			if _, ferr := s.attemptTx.FinishOpenAttemptsTx(ctx, tx, tenantID, taskID, attemptStatus); ferr != nil {
+				return fmt.Errorf("finish open attempts: %w", ferr)
+			}
+		}
+		return nil
+	})
+}
+
 func (s *TaskService) Complete(ctx context.Context, tenantID, taskID string) error {
-	return s.transition(ctx, tenantID, taskID, core.TaskStatusCompleted, core.EventTaskCompleted, 0)
+	return s.transitionAndFinish(ctx, tenantID, taskID, core.TaskStatusCompleted, core.EventTaskCompleted, 0, "completed")
 }
 
 func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr *core.TaskError) error {
-	if err := s.transition(ctx, tenantID, taskID, core.TaskStatusFailed, core.EventTaskFailed, 1); err != nil {
+	if err := s.transitionAndFinish(ctx, tenantID, taskID, core.TaskStatusFailed, core.EventTaskFailed, 1, "failed"); err != nil {
 		return err
 	}
 

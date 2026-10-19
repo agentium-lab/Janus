@@ -70,7 +70,14 @@ spec:
             - name: JANUS_QUEUE_DRIVER
               value: "{{ .Values.queue.driver }}"
             - name: JANUS_NATS_URL
+              {{- if .Values.nats.existingSecret }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.nats.existingSecret }}
+                  key: url
+              {{- else }}
               value: "{{ .Values.nats.url }}"
+              {{- end }}
             - name: JANUS_REDIS_ADDR
               value: "{{ .Values.redis.addr }}"
             - name: JANUS_REDIS_PASSWORD

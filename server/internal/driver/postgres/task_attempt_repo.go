@@ -90,13 +90,17 @@ func (r *TaskAttemptRepository) GetLatest(ctx context.Context, tenantID, taskID 
 	return &a, nil
 }
 
-func (r *TaskAttemptRepository) UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) error {
-	_, err := r.pool.Exec(ctx,
+func (r *TaskAttemptRepository) UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) (bool, error) {
+	tag, err := r.pool.Exec(ctx,
 		`UPDATE task_attempts SET heartbeat_at = now()
-		 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3`,
+		 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3
+		   AND status IN ('claimed', 'running')`,
 		tenantID, taskID, attempt,
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (r *TaskAttemptRepository) UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error {

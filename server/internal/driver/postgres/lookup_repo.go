@@ -23,7 +23,7 @@ func (r *agentLookupRepo) ListOnlineByCapability(ctx context.Context, tenantID, 
 	// tasks table on the agent's mailbox. Without these, the router's
 	// capacity/data-class filters silently pass every candidate.
 	rows, err := r.pool.Query(ctx,
-		`SELECT a.id, m.id, a.max_concurrency,
+		`SELECT a.id, COALESCE(m.id, ''), a.max_concurrency,
 		        COALESCE(m.status, '') as mailbox_status,
 		        COALESCE(a.team_id, ''),
 		        COALESCE(a.metadata->>'data_classification', ''),
@@ -52,6 +52,12 @@ func (r *agentLookupRepo) ListOnlineByCapability(ctx context.Context, tenantID, 
 		if err := rows.Scan(&c.AgentID, &c.MailboxID, &c.MaxConcurrency, &c.Status,
 			&c.TeamID, &c.DataClass, &c.RunningCount, &c.Backlog); err != nil {
 			return nil, fmt.Errorf("scan candidate: %w", err)
+		}
+		if c.MailboxID == "" {
+			// LEFT JOIN miss: an online capable agent with no mailbox is
+			// unroutable — previously the NULL scan aborted the WHOLE
+			// capability listing.
+			continue
 		}
 		if capRow == "active" || capRow == "" {
 			candidates = append(candidates, c)

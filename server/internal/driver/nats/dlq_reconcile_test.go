@@ -305,3 +305,20 @@ func TestSanitize_NoDotCollision(t *testing.T) {
 		t.Fatalf("collision: sanitize(mb.x)=%s == sanitize(mb_x)=%s", c, d)
 	}
 }
+
+// The encoding must be injective across its whole domain: escaping the
+// escape marker itself (a.b vs the literal a__DOT__b previously collided).
+func TestSanitize_Injective(t *testing.T) {
+	inputs := []string{
+		"a.b", "a__DOT__b", "a_b", "a-b", "a--b", "a-Db", "a.Z", "a:Z", "a b",
+		"mb.x", "mb_x", "x.y.z", "x.y_z", "x_z.y",
+	}
+	seen := make(map[string]string)
+	for _, in := range inputs {
+		out := sanitize(in)
+		if prev, dup := seen[out]; dup {
+			t.Fatalf("collision: sanitize(%q) == sanitize(%q) == %q", in, prev, out)
+		}
+		seen[out] = in
+	}
+}

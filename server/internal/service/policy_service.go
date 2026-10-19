@@ -3,10 +3,12 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/jackc/pgx/v5"
 )
 
 type PolicyService struct {
@@ -27,18 +29,30 @@ func (s *PolicyService) WithAgentRepo(repo AgentRepo) *PolicyService {
 	return s
 }
 
-// enrichActor loads trusted governance attributes for agent actors.
-// Failures are non-fatal: evaluation proceeds without the attributes
-// (same behavior as before enrichment existed).
-func (s *PolicyService) enrichActor(ctx context.Context, input *core.PolicyInput) {
+// enrichActor loads trusted governance attributes for agent actors. A
+// lookup FAILURE is fatal: proceeding without the attributes would treat
+// an unknown trust state as satisfying every constraint (fail-open). An
+// agent that simply has no team is fine — attributes absent, rules that
+// need them just do not match.
+func (s *PolicyService) enrichActor(ctx context.Context, input *core.PolicyInput) error {
 	if s.agentRepo == nil || input.Actor.Type != "agent" || input.Actor.ID == "" || input.Actor.TeamID != "" {
-		return
+		return nil
 	}
 	agent, err := s.agentRepo.Get(ctx, input.TenantID, input.Actor.ID)
-	if err != nil || agent == nil {
-		return
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// The agent record simply does not exist: no attributes to
+			// load — rules that need them just do not match. A missing
+			// row is not a trust failure; a broken store is.
+			return nil
+		}
+		return fmt.Errorf("actor enrichment: %w", err)
+	}
+	if agent == nil {
+		return nil
 	}
 	input.Actor.TeamID = agent.TeamID
+	return nil
 }
 
 func (s *PolicyService) Evaluate(ctx context.Context, input core.PolicyInput) (core.PolicyDecision, error) {
@@ -46,7 +60,9 @@ func (s *PolicyService) Evaluate(ctx context.Context, input core.PolicyInput) (c
 		return core.PolicyDecision{}, fmt.Errorf("tenant id is required")
 	}
 
-	s.enrichActor(ctx, &input)
+	if eerr := s.enrichActor(ctx, &input); eerr != nil {
+		return core.PolicyDecision{}, eerr
+	}
 
 	rules, err := s.repo.ListActive(ctx, input.TenantID)
 	if err != nil {

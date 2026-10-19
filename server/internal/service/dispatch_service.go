@@ -472,7 +472,14 @@ func (s *DispatchService) TaskHeartbeatAs(ctx context.Context, tenantID, taskID,
 		return fmt.Errorf("agent %s does not own the current attempt", agentID)
 	}
 
-	return s.attemptRepo.UpdateHeartbeat(ctx, tenantID, taskID, attempt.Attempt)
+	active, herr := s.attemptRepo.UpdateHeartbeat(ctx, tenantID, taskID, attempt.Attempt)
+	if herr != nil {
+		return herr
+	}
+	if !active {
+		return fmt.Errorf("attempt is no longer active; lease presumed lost")
+	}
+	return nil
 }
 
 func (s *DispatchService) AckTask(ctx context.Context, tenantID, taskID, leaseID string, resultRef string, usage *core.TokenUsage) error {

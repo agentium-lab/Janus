@@ -120,3 +120,40 @@ func TestTaskRepo_ExpireTasks_AmbiguousNamesDoNotCollide(t *testing.T) {
 	require.NoError(t, err, "ambiguous tenant/task names must not collide on the outbox PK")
 	require.Equal(t, int64(2), n)
 }
+
+// A3: an online capable agent with NO mailbox must not abort the whole
+// capability listing (LEFT JOIN NULL previously failed the scan).
+func TestAgentLookupRepo_AgentWithoutMailboxDoesNotBreakListing(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO agents (id, tenant_id, display_name, protocol, status, max_concurrency)
+		VALUES ('mb-less', 'acme', 'No MB', 'a2a', 'online', 2)`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO agent_capabilities (tenant_id, agent_id, capability)
+		VALUES ('acme', 'mb-less', 'code-review')`)
+	require.NoError(t, err)
+	// A second agent WITH a mailbox must still be listed.
+	_, err = pool.Exec(ctx, `
+		INSERT INTO agents (id, tenant_id, display_name, protocol, status, max_concurrency)
+		VALUES ('mb-full', 'acme', 'Has MB', 'a2a', 'online', 2)`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO agent_capabilities (tenant_id, agent_id, capability)
+		VALUES ('acme', 'mb-full', 'code-review')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ('mb-ok', 'acme', 'mb-full', 'active')`)
+	require.NoError(t, err)
+
+	repo := NewAgentLookupRepo(pool)
+	candidates, err := repo.ListOnlineByCapability(ctx, "acme", "code-review")
+	require.NoError(t, err, "mailbox-less agent must not fail the listing")
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "mb-full", candidates[0].AgentID)
+}

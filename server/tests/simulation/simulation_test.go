@@ -301,8 +301,8 @@ func (r *simAttemptRepo) GetLatest(_ context.Context, tenantID, taskID string) (
 	return a, nil
 }
 
-func (r *simAttemptRepo) UpdateHeartbeat(_ context.Context, tenantID, taskID string, attempt int) error {
-	return nil
+func (r *simAttemptRepo) UpdateHeartbeat(_ context.Context, tenantID, taskID string, attempt int) (bool, error) {
+	return true, nil
 }
 
 func (r *simAttemptRepo) UpdateFinished(_ context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error {

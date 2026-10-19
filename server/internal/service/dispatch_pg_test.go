@@ -1,10 +1,13 @@
 package service
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -15,8 +18,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
+	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
@@ -153,6 +159,7 @@ func setupServiceTestEnv(t *testing.T) *serviceTestEnv {
 
 	taskSvc := NewTaskService(taskRepo, drv, pool, outboxRepo).WithPolicy(policySvc)
 	taskSvc = taskSvc.WithLifecycle(lifecycle)
+	taskSvc = taskSvc.WithAttemptRepo(attemptRepo)
 
 	// Seed a tenant + agent + mailbox.
 	tenantRepo.Create(ctx, "acme", "Acme")
@@ -1373,4 +1380,218 @@ func TestAck_ReplayRace_OldAckCannotFinishNewAttempt_PG(t *testing.T) {
 
 	// The new round's own lease still acks fine.
 	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "rr-task", newLease, "s3://fresh", nil))
+}
+
+// B1 residual: the legacy Complete/Fail terminal paths must close open
+// attempts in the same transaction (a live lease used to survive them),
+// and heartbeats on finished attempts must be no-ops.
+func TestComplete_FinishesOpenAttempt_Atomic_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','cf-task','agent-1','mailbox','mb-1','mb-1','running','normal',
+		jsonb_build_object('task_id','cf-task','tenant_id','acme','source_agent','agent-1'))`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		VALUES ('acme','cf-task',1,'agent-1','lease-cf','running','dr-cf')`)
+
+	require.NoError(t, env.taskSvc.Complete(ctx, "acme", "cf-task"))
+
+	var aStatus string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='cf-task' AND attempt=1`).Scan(&aStatus))
+	require.Equal(t, "completed", aStatus, "legacy Complete must finish the open attempt in the same tx")
+
+	// Heartbeats on the finished attempt must be rejected (worker stops).
+	hbErr := env.dispatch.TaskHeartbeat(ctx, "acme", "cf-task", "lease-cf")
+	require.Error(t, hbErr, "heartbeat on a finished attempt must error")
+	require.Contains(t, hbErr.Error(), "no longer active")
+	var hb *time.Time
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT heartbeat_at FROM task_attempts WHERE tenant_id='acme' AND task_id='cf-task' AND attempt=1`).Scan(&hb))
+	require.Nil(t, hb, "no heartbeat may be stamped on a finished attempt")
+}
+
+// B4 acceptance: the FULL dead-letter chain against a real broker and PG —
+// non-retriable NACK -> task dead_lettered (no illegal status overwrite)
+// -> DLQ message published -> Replay -> re-queued -> delivered again.
+func TestB4_NonRetriableNack_To_DLQ_To_Replay_FullChain_PG(t *testing.T) {
+	natsURL := os.Getenv("JANUS_NATS_URL")
+	if natsURL == "" {
+		if _, err := exec.LookPath(os.ExpandEnv("$HOME/go/bin/nats-server")); err != nil {
+			t.Skip("no nats-server and JANUS_NATS_URL unset; skipping full-chain DLQ test")
+		}
+		srv := startNATSIfNeeded(t)
+		natsURL = srv
+	}
+
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	nc, nerr := natsgo.Connect(natsURL)
+	require.NoError(t, nerr)
+	defer nc.Close()
+	js, jerr := nc.JetStream()
+	require.NoError(t, jerr)
+
+	drv, derr := natsdriver.NewDriver(natsdriver.Config{URL: natsURL})
+	require.NoError(t, derr)
+	defer drv.Close()
+	require.NoError(t, drv.EnsureTenant(ctx, "acme"))
+	require.NoError(t, drv.EnsureMailbox(ctx, core.MailboxSpec{
+		TenantID: "acme", MailboxID: "mb-1", AgentID: "agent-1", ACKWaitSeconds: 30,
+	}))
+	require.NoError(t, drv.EnsureConsumer(ctx, core.ConsumerSpec{
+		TenantID: "acme", MailboxID: "mb-1", DurableName: "mb-1", ACKWaitSeconds: 30, MaxDeliver: 5,
+	}))
+	env.dispatch = env.dispatch.WithQueueDriver(&driverCloser{QueueDriver: drv})
+	env.taskSvc.WithQueueDriver(drv)
+
+	// Publish a real task through the broker-backed pipeline.
+	task := core.Task{
+		ID: "b4-task", TenantID: "acme", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "mb-1", MailboxID: "mb-1",
+		Status: core.TaskStatusQueued, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{JanusVersion: "0.3", TaskID: "b4-task", TenantID: "acme", SourceAgent: "agent-1",
+			Target: core.Target{Type: "mailbox", Value: "mb-1"}, Payload: core.Payload{Type: "text", Content: "b4"},
+			Trace: core.TraceContext{TraceID: "b4-trace"}},
+	}
+	_, cerr2 := env.taskSvc.Create(ctx, task)
+	require.NoError(t, cerr2)
+
+	// Pull through the service (claim + attempt). The outbox publisher is
+	// not running in this harness, so drain it manually: PG outbox -> broker.
+	drainOutbox := func() {
+		entries, _ := env.outboxRepo.FetchPending(ctx, 10)
+		for _, e := range entries {
+			switch e.Kind {
+			case "task_publish":
+				var msg core.TaskMessage
+				if json.Unmarshal(e.Payload, &msg) == nil {
+					_ = drv.PublishTask(ctx, msg)
+				}
+			case "dlq_publish":
+				var msg core.TaskMessage
+				if json.Unmarshal(e.Payload, &msg) == nil {
+					_ = drv.PublishDLQ(ctx, msg, []byte(msg.Headers["error"]))
+				}
+			}
+		}
+	}
+	var res *PullResult
+	require.NoError(t, withDeadline(t, 10*time.Second, func() error {
+		drainOutbox()
+		r, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+		if err != nil {
+			return err
+		}
+		if r == nil {
+			return fmt.Errorf("not delivered yet")
+		}
+		res = r
+		return nil
+	}), "task must deliver through the broker")
+
+	// Non-retriable NACK: task must go dead_lettered, never an illegal
+	// status overwrite, and a DLQ message must exist.
+	nerr2 := env.dispatch.NackTask(ctx, "acme", "b4-task", res.LeaseID, false,
+		&core.TaskError{Code: "PERMANENT", Message: "b4"})
+	require.NoError(t, nerr2)
+
+	got, gerr := env.taskRepo.Get(ctx, "acme", "b4-task")
+	require.NoError(t, gerr)
+	require.Equal(t, core.TaskStatusDeadLettered, got.Status, "non-retriable nack must dead-letter the task")
+
+	require.NoError(t, withDeadline(t, 10*time.Second, func() error {
+		drainOutbox()
+		_, _, cerr := fetchDLQ(t, js, "acme", "mb-1")
+		return cerr
+	}), "a DLQ message must be published")
+
+	// Replay: dead_lettered -> queued, and the task delivers again.
+	_, rerr := env.taskSvc.Replay(ctx, "acme", "b4-task")
+	require.NoError(t, rerr)
+	got2, _ := env.taskRepo.Get(ctx, "acme", "b4-task")
+	require.Equal(t, core.TaskStatusQueued, got2.Status)
+
+	var res2 *PullResult
+	require.NoError(t, withDeadline(t, 10*time.Second, func() error {
+		drainOutbox()
+		r, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+		if err != nil {
+			return err
+		}
+		if r == nil {
+			return fmt.Errorf("replayed task not delivered yet")
+		}
+		res2 = r
+		return nil
+	}), "replayed task must redeliver")
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "b4-task", res2.LeaseID, "s3://b4", nil))
+	got3, _ := env.taskRepo.Get(ctx, "acme", "b4-task")
+	require.Equal(t, core.TaskStatusCompleted, got3.Status)
+}
+
+func startNATSIfNeeded(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// Fixed high port: other packages spawn their own servers on 4222
+	// during full-suite runs and this nats-server build binds -p 0 there.
+	cmd := exec.Command(os.ExpandEnv("$HOME/go/bin/nats-server"), "-p", "4299", "-js", "--store_dir", dir)
+	stderr, err := cmd.StderrPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { cmd.Process.Signal(os.Interrupt); cmd.Wait() })
+	addrCh := make(chan string, 1)
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			if m := regexp.MustCompile(`Listening for client connections on (.+)`).FindStringSubmatch(sc.Text()); len(m) > 1 {
+				addrCh <- m[1]
+				return
+			}
+		}
+	}()
+	select {
+	case addr := <-addrCh:
+		return "nats://" + addr
+	case <-time.After(5 * time.Second):
+		t.Fatal("nats-server did not start")
+		return ""
+	}
+}
+
+func withDeadline(t *testing.T, d time.Duration, fn func() error) error {
+	t.Helper()
+	deadline := time.Now().Add(d)
+	for {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+}
+
+func fetchDLQ(t *testing.T, js natsgo.JetStream, tenant, mailbox string) (string, []byte, error) {
+	t.Helper()
+	sub, err := js.PullSubscribe(fmt.Sprintf("janus.%s.tasks_dlq.%s", tenant, mailbox),
+		"", natsgo.Durable("b4-dlq-consumer-"+mailbox))
+	if err != nil {
+		return "", nil, err
+	}
+	defer sub.Unsubscribe()
+	msgs, err := sub.Fetch(1, natsgo.MaxWait(2*time.Second))
+	if err != nil || len(msgs) == 0 {
+		return "", nil, fmt.Errorf("no DLQ message: %v", err)
+	}
+	return string(msgs[0].Subject), msgs[0].Data, nil
+}
+
+// driverCloser keeps the QueueDriver interface while owning the real NATS
+// driver's lifecycle in the test.
+type driverCloser struct {
+	QueueDriver
 }

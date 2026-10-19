@@ -340,6 +340,10 @@ func TestCovPG_ReportProgress_OutboxPersisted(t *testing.T) {
 	task := createTestTask(t, env, "task-prog-1")
 	_, err := env.taskRepo.UpdateStatusWithCheck(ctx, "acme", task.ID, core.TaskStatusQueued, core.TaskStatusClaimed, 1)
 	require.NoError(t, err)
+	require.NoError(t, env.attemptRepo.Create(ctx, core.TaskAttempt{
+		TenantID: "acme", TaskID: task.ID, Attempt: 1, AgentID: "agent-1",
+		LeaseID: "lease-prog", Status: "claimed", DeliveryRef: "dr-prog",
+	}))
 
 	_, err = env.taskSvc.ReportProgress(ctx, "acme", task.ID, "agent-1", core.TaskProgress{Message: "halfway"})
 	require.NoError(t, err)

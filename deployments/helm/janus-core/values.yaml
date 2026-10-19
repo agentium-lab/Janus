@@ -36,6 +36,11 @@ ingress:
   enabled: false
   className: ""
   annotations: {}
+  # hosts:
+  #   - host: janus.example.com
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
   hosts: []
   tls: []
 
@@ -113,8 +118,11 @@ postgres:
 queue:
   driver: "nats"  # "pg" runs without NATS (single-dependency mode)
 nats:
-  # Use tls:// scheme for transport encryption; credentials via existingSecret.
+  # Use tls:// scheme for transport encryption. Credentials ride inside the
+  # URL (nats://user:pass@host) — put that URL in a Secret and point
+  # existingSecret at it instead of committing it here.
   url: "nats://nats:4222"
+  existingSecret: ""
 
 redis:
   addr: "redis:6379"

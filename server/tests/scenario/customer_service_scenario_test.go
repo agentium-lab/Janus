@@ -407,7 +407,9 @@ func (r *memAttemptRepo) GetLatest(_ context.Context, tenantID, taskID string) (
 	cp := *a
 	return &cp, nil
 }
-func (r *memAttemptRepo) UpdateHeartbeat(_ context.Context, _, _ string, _ int) error { return nil }
+func (r *memAttemptRepo) UpdateHeartbeat(_ context.Context, _, _ string, _ int) (bool, error) {
+	return true, nil
+}
 func (r *memAttemptRepo) UpdateFinished(_ context.Context, _, _ string, _ int, _ string, _, _ []byte) error {
 	return nil
 }

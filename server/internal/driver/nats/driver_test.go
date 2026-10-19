@@ -431,9 +431,11 @@ func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 }
 
 func TestSanitize(t *testing.T) {
-	assert.Equal(t, "hello_world", sanitize("hello world"))
-	assert.Equal(t, "abc-123__DOT__def", sanitize("abc-123.def"))
-	assert.Equal(t, "ALL_CAPS", sanitize("ALL CAPS"))
+	assert.Equal(t, "hello_Zworld", sanitize("hello world"))
+	assert.Equal(t, "abc-123_Ddef", sanitize("abc-123.def"))
+	assert.Equal(t, "ALL_ZCAPS", sanitize("ALL CAPS"))
+	assert.Equal(t, "a__b", sanitize("a_b"))
+	assert.Equal(t, "a-b", sanitize("a-b"), "hyphen passes through (v1.9.0 parity)")
 }
 
 func TestStreamName(t *testing.T) {
@@ -453,7 +455,7 @@ func TestDLQSubject(t *testing.T) {
 }
 
 func TestConsumerName(t *testing.T) {
-	assert.Equal(t, "consumer_acme_reviewer_default", consumerName("acme", "reviewer_default"))
+	assert.Equal(t, "consumer_acme_reviewer__default", consumerName("acme", "reviewer_default"))
 }
 
 func TestContextWithTenant(t *testing.T) {

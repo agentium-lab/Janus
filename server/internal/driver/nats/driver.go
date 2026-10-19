@@ -743,17 +743,25 @@ func consumerName(tenantID, mailboxID string) string {
 // mailbox's consumer silently attached to the first mailbox's stream and
 // could never receive a delivery. Disambiguate by escaping each dot to a
 // distinct, stream-safe two-char token.
+// sanitize maps an arbitrary ID to a NATS stream-name-safe token
+// INJECTIVELY: '_' escapes to "__", '.' to "_D", every other disallowed
+// byte to "_Z"; '-' passes through so hyphenated names keep the encoding
+// they already had on v1.9.0 (rolling-upgrade stream-name parity). Two
+// distinct inputs can never share an encoding — the previous __DOT__
+// scheme collided a.b with the literal a__DOT__b.
 func sanitize(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
 		c := s[i]
 		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '-':
 			b.WriteByte(c)
+		case c == '_':
+			b.WriteString("__")
 		case c == '.':
-			b.WriteString("__DOT__")
+			b.WriteString("_D")
 		default:
-			b.WriteByte('_')
+			b.WriteString("_Z")
 		}
 	}
 	return b.String()
