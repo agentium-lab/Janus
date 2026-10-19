@@ -2,6 +2,8 @@ package nats
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -588,4 +590,80 @@ func TestDriver_MultipleTenants(t *testing.T) {
 		require.Len(t, deliveries, 1)
 		assert.Contains(t, deliveries[0].TaskID, tn)
 	}
+}
+
+// B6: cross-replica settlement must be REAL. Replica A fetches (ref carries
+// the globally routable $JS.ACK subject); replica B — which never pulled —
+// acks the ref and the broker's ack-pending must drop to zero immediately,
+// with no AckWait window.
+func TestDriver_CrossReplicaAck_SettlesBrokerImmediately(t *testing.T) {
+	dA := openDriver(t)
+	ctx := ContextWithTenant(context.Background(), genTenant(t))
+	require.NoError(t, dA.EnsureTenant(ctx, tenantFromCtx(ctx)))
+	mb := "mb-b6-" + strings.ToLower(tenantFromCtx(ctx))[3:10]
+	require.NoError(t, dA.EnsureMailbox(ctx, core.MailboxSpec{
+		TenantID: tenantFromCtx(ctx), MailboxID: mb, ACKWaitSeconds: 300,
+	}))
+	require.NoError(t, dA.EnsureConsumer(ctx, core.ConsumerSpec{
+		TenantID: tenantFromCtx(ctx), MailboxID: mb, DurableName: mb, ACKWaitSeconds: 300, MaxDeliver: 5,
+	}))
+	require.NoError(t, dA.PublishTask(ctx, core.TaskMessage{
+		TenantID: tenantFromCtx(ctx), MailboxID: mb, TaskID: "b6-task", Priority: "normal",
+		Payload: []byte(`{}`), Headers: map[string]string{"JANUS-Task-ID": "b6-task"},
+	}))
+
+	// Replica A fetches the delivery.
+	var ref core.DeliveryRef
+	var got bool
+	for i := 0; i < 20 && !got; i++ {
+		deliveries, err := dA.FetchTasks(ctx, tenantFromCtx(ctx), mb, core.FetchOptions{MaxMessages: 1, WaitTime: 500 * time.Millisecond})
+		require.NoError(t, err)
+		if len(deliveries) > 0 {
+			ref = deliveries[0].DeliveryRef
+			got = true
+		}
+	}
+	require.True(t, got, "delivery must be fetched")
+	require.True(t, strings.HasPrefix(string(ref), "$JS.ACK."), "refs must carry the portable ack subject, got %s", ref)
+
+	// Replica B (separate driver handle — empty pending map — on the SAME
+	// broker) acks.
+	dB, derr := NewDriver(Config{URL: natsURL})
+	require.NoError(t, derr)
+	defer dB.Close()
+	require.NoError(t, dB.AckTask(ctx, tenantFromCtx(ctx), ref))
+
+	// Broker ack-pending must be zero NOW — not after AckWait.
+	require.NoError(t, withDeadlineNATS(func() error {
+		return assertAckPendingZero(t, dA, tenantFromCtx(ctx), mb)
+	}))
+}
+
+func withDeadlineNATS(fn func() error) error {
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := fn(); err == nil {
+			return nil
+		} else if time.Now().After(deadline) {
+			return err
+		} else {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+}
+
+func assertAckPendingZero(t *testing.T, d *Driver, tenant, mb string) error {
+	t.Helper()
+	c, cerr := d.js.Consumer(context.Background(), streamName(tenant, "TASKS"), consumerName(tenant, mb))
+	if cerr != nil {
+		return cerr
+	}
+	info, ierr := c.Info(context.Background())
+	if ierr != nil {
+		return ierr
+	}
+	if info.NumAckPending != 0 {
+		return fmt.Errorf("ack pending = %d, want 0 (portable ack must settle immediately)", info.NumAckPending)
+	}
+	return nil
 }

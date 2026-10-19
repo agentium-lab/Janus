@@ -165,7 +165,14 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 			msg.Nak()
 			continue
 		}
-		ref := core.DeliveryRef(fmt.Sprintf("%s:%d", msg.Subject(), meta.Sequence.Stream))
+		// The ack reply subject ($JS.ACK.<stream>.<consumer>...) is globally
+		// routable: encoding it into the ref lets ANY replica settle the
+		// broker delivery later, not just the one that fetched it.
+		refKey := msg.Reply()
+		if refKey == "" {
+			refKey = fmt.Sprintf("%s:%d", msg.Subject(), meta.Sequence.Stream)
+		}
+		ref := core.DeliveryRef(refKey)
 		d.StorePending(ref, msg)
 		deliveries = append(deliveries, core.TaskDelivery{
 			TaskID:          msg.Headers().Get("JANUS-Task-ID"),
@@ -181,13 +188,18 @@ func (d *Driver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) erro
 	if msg, ok := d.popPending(ref); ok {
 		return msg.Ack()
 	}
-	// Cross-replica settlement: this replica never pulled the delivery
-	// (the pending map is per-replica). PG is already committed; the
-	// broker's delivery is settled by AckWait expiry + PullTask's
-	// terminal-state reconciliation. Returning nil lets the DB-first
-	// commit succeed — the previous "not found" error broke cross-replica
-	// ACK even though PG was consistent.
-	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation", ref)
+	// Cross-replica settlement: this replica never pulled the delivery.
+	// $JS.ACK refs carry the globally routable ack subject — publishing to
+	// it settles the broker side IMMEDIATELY instead of waiting out the
+	// AckWait + redelivery-reconciliation path. Legacy refs (subject:seq)
+	// still converge the old way.
+	if strings.HasPrefix(string(ref), "$JS.ACK.") {
+		if err := d.nc.Publish(string(ref), nil); err != nil {
+			return fmt.Errorf("portable ack %s: %w", ref, err)
+		}
+		return d.nc.Flush()
+	}
+	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation (legacy ref)", ref)
 	return nil
 }
 
@@ -198,7 +210,17 @@ func (d *Driver) NackTask(_ context.Context, _ string, ref core.DeliveryRef, rea
 		}
 		return msg.Nak()
 	}
-	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation", ref)
+	if strings.HasPrefix(string(ref), "$JS.ACK.") {
+		payload := []byte("-NAK")
+		if reason == core.NackNonRetriable {
+			payload = []byte("+TERM")
+		}
+		if err := d.nc.Publish(string(ref), payload); err != nil {
+			return fmt.Errorf("portable nack %s: %w", ref, err)
+		}
+		return d.nc.Flush()
+	}
+	log.Printf("nats: cross-replica delivery %s settled via AckWait+reconciliation (legacy ref)", ref)
 	return nil
 }
 
