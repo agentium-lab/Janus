@@ -1382,6 +1382,82 @@ func TestAck_ReplayRace_OldAckCannotFinishNewAttempt_PG(t *testing.T) {
 	require.NoError(t, env.dispatch.AckTask(ctx, "acme", "rr-task", newLease, "s3://fresh", nil))
 }
 
+// B1 regression: StartTaskAs validated lease+owner on the POOL before the
+// transaction. Between that read and the tx body, Cancel -> Replay -> a
+// fresh Pull swaps the attempt (same attempt NUMBER, new lease) and the
+// stale start used to transition the task to running inside the tx without
+// revalidation. The tx now re-reads the latest attempt via GetLatestTx and
+// that check is authoritative.
+func TestStart_ReplayRace_OldLeaseCannotStartNewRound_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO tasks (tenant_id, id, source_agent, target_type, target_value, mailbox_id, status, priority, envelope)
+		VALUES ('acme','sr-task','agent-1','mailbox','mb-1','mb-1','queued','normal',
+		jsonb_build_object('task_id','sr-task','tenant_id','acme','source_agent','agent-1'))`)
+
+	// Round 1: pull hands out lease A on attempt 1.
+	env.dispatch = env.dispatch.WithQueueDriver(&perCallDriver{queue: []core.TaskDelivery{
+		{TaskID: "sr-task", DeliveryRef: core.DeliveryRef("sr-ref-1"), Payload: []byte(`{}`)},
+	}})
+	res1, perr := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, perr)
+	require.NotNil(t, res1)
+	oldLease := res1.LeaseID
+
+	// Cancel closes round 1 (terminal, attempt finished); Replay wipes the
+	// attempts and resets attempt_count to 0.
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", "sr-task"))
+	_, rerr := env.taskSvc.Replay(ctx, "acme", "sr-task")
+	require.NoError(t, rerr)
+
+	// Round 2: pull again — attempt 1 AGAIN, under a NEW lease.
+	env.dispatch = env.dispatch.WithQueueDriver(&perCallDriver{queue: []core.TaskDelivery{
+		{TaskID: "sr-task", DeliveryRef: core.DeliveryRef("sr-ref-2"), Payload: []byte(`{}`)},
+	}})
+	res2, perr2 := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, perr2)
+	require.NotNil(t, res2)
+	newLease := res2.LeaseID
+	require.NotEqual(t, oldLease, newLease)
+
+	var tStatus, leaseRow string
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='sr-task'`).Scan(&tStatus))
+	require.Equal(t, "claimed", tStatus, "round 2 must be claimed")
+
+	// Simulate the race window: the pre-tx GetLatest read the pre-replay
+	// attempt (old lease) just before the swap committed. The transaction
+	// re-reads through GetLatestTx — the stale start must be rejected INSIDE
+	// the tx and leave the round-2 state untouched.
+	real := env.dispatch.attemptRepo
+	env.dispatch.attemptRepo = &staleLatestAttemptRepo{
+		TaskAttemptRepo: real,
+		stale: core.TaskAttempt{
+			TenantID: "acme", TaskID: "sr-task", Attempt: 1,
+			AgentID: "agent-1", LeaseID: oldLease, DeliveryRef: "sr-ref-1", Status: "claimed",
+		},
+	}
+	serr := env.dispatch.StartTask(ctx, "acme", "sr-task", oldLease)
+	env.dispatch.attemptRepo = real
+	require.Error(t, serr, "stale-lease start must be rejected even when its pre-check read the old attempt")
+	assert.Contains(t, serr.Error(), "lease mismatch")
+
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='sr-task'`).Scan(&tStatus))
+	require.Equal(t, "claimed", tStatus, "the new round's task must stay claimed, startable only by the new lease")
+
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT lease_id FROM task_attempts WHERE tenant_id='acme' AND task_id='sr-task' AND attempt=1`).Scan(&leaseRow))
+	require.Equal(t, newLease, leaseRow, "the new round's attempt must be untouched by the stale start")
+
+	// The new lease's start succeeds.
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", "sr-task", newLease))
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='sr-task'`).Scan(&tStatus))
+	require.Equal(t, "running", tStatus)
+}
+
 // B1 residual: the legacy Complete/Fail terminal paths must close open
 // attempts in the same transaction (a live lease used to survive them),
 // and heartbeats on finished attempts must be no-ops.

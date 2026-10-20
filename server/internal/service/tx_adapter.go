@@ -84,6 +84,10 @@ func (a AttemptRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, attempt co
 	return a.Create(ctx, attempt)
 }
 
+func (a AttemptRepoTxAdapter) GetLatestTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string) (*core.TaskAttempt, error) {
+	return a.GetLatest(ctx, tenantID, taskID)
+}
+
 func (a AttemptRepoTxAdapter) UpdateFinishedWithCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, attempt int, leaseID, status string, errJSON, usageJSON []byte) (bool, error) {
 	return a.UpdateFinishedWithCheck(ctx, tenantID, taskID, attempt, leaseID, status, errJSON, usageJSON)
 }

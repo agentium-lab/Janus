@@ -411,6 +411,76 @@ func TestDispatchService_StartTask_Validation(t *testing.T) {
 	assert.EqualError(t, err, "tenant id, task id, and lease id are required")
 }
 
+// staleLatestAttemptRepo serves one frozen pre-replay attempt from
+// GetLatest — it simulates a StartTaskAs pre-check that read the attempt
+// BEFORE a Cancel -> Replay -> Pull swap committed. Every other method
+// (and GetLatestTx through the tx path) still reads live state.
+type staleLatestAttemptRepo struct {
+	TaskAttemptRepo
+	stale core.TaskAttempt
+}
+
+func (s *staleLatestAttemptRepo) GetLatest(_ context.Context, _, _ string) (*core.TaskAttempt, error) {
+	c := s.stale
+	return &c, nil
+}
+
+// B1 regression: StartTaskAs validated lease+owner on the repo BEFORE the
+// transaction; the tx body is now authoritative and re-reads the latest
+// attempt via GetLatestTx. A start whose pre-check read the pre-replay
+// attempt (old lease) must be rejected INSIDE the tx once the replayed
+// round holds a new lease.
+func TestDispatchService_StartTask_ReplayRace_StaleLeaseRejected(t *testing.T) {
+	svc, _, tRepo, aRepo := newTestDispatchSvc()
+	ctx := context.Background()
+
+	// Post-swap world: replayed round, attempt 1 re-claimed under a NEW lease.
+	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 0)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusClaimed
+	aRepo.attempts = []*core.TaskAttempt{{
+		TenantID: "acme", TaskID: "task-1", Attempt: 1,
+		AgentID: "agent-1", LeaseID: "lease-new", DeliveryRef: "ref-2", Status: "claimed",
+	}}
+
+	// The pre-check read is stale: it still sees the pre-replay attempt.
+	real := svc.attemptRepo
+	svc.attemptRepo = &staleLatestAttemptRepo{
+		TaskAttemptRepo: real,
+		stale: core.TaskAttempt{
+			TenantID: "acme", TaskID: "task-1", Attempt: 1,
+			AgentID: "agent-1", LeaseID: "lease-old", DeliveryRef: "ref-1", Status: "claimed",
+		},
+	}
+	err := svc.StartTask(ctx, "acme", "task-1", "lease-old")
+	svc.attemptRepo = real
+	require.Error(t, err, "a start whose pre-check read the pre-replay attempt must be rejected in the tx")
+	assert.Contains(t, err.Error(), "lease mismatch")
+	assert.Equal(t, core.TaskStatusClaimed, tRepo.tasks["acme:task-1"].Status, "task must stay claimed")
+
+	// The new lease's start still succeeds through the same path.
+	require.NoError(t, svc.StartTask(ctx, "acme", "task-1", "lease-new"))
+	assert.Equal(t, core.TaskStatusRunning, tRepo.tasks["acme:task-1"].Status)
+}
+
+// The in-tx attempt-status check: a finished attempt's lease must not
+// start the task again even though the lease id matches.
+func TestDispatchService_StartTask_FinishedAttemptNotStartable(t *testing.T) {
+	svc, _, tRepo, aRepo := newTestDispatchSvc()
+	ctx := context.Background()
+
+	tRepo.tasks["acme:task-1"] = makeDispatchTestTask("acme", "task-1", "mb-1", 1)
+	tRepo.tasks["acme:task-1"].Status = core.TaskStatusClaimed
+	aRepo.attempts = []*core.TaskAttempt{{
+		TenantID: "acme", TaskID: "task-1", Attempt: 1,
+		AgentID: "agent-1", LeaseID: "lease-abc", DeliveryRef: "ref-1", Status: "completed",
+	}}
+
+	err := svc.StartTask(ctx, "acme", "task-1", "lease-abc")
+	require.Error(t, err, "a finished attempt must not start the task")
+	assert.Contains(t, err.Error(), "not startable")
+	assert.Equal(t, core.TaskStatusClaimed, tRepo.tasks["acme:task-1"].Status)
+}
+
 func TestDispatchService_TaskHeartbeat_Success(t *testing.T) {
 	svc, _, _, aRepo := newTestDispatchSvc()
 	ctx := context.Background()

@@ -416,6 +416,11 @@ func (s *DispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, lea
 		return fmt.Errorf("tenant id, task id, and lease id are required")
 	}
 
+	// Cheap fast path only — the authoritative validation runs inside the
+	// transaction below. Between this pool read and the tx body, Cancel ->
+	// Replay -> a new Pull can swap the attempt (attempt numbers restart at 1
+	// after a replay, under a NEW lease); a stale start reading the old
+	// attempt here must not run the task once the tx re-checks.
 	attempt, err := s.attemptRepo.GetLatest(ctx, tenantID, taskID)
 	if err != nil {
 		return fmt.Errorf("get latest attempt: %w", err)
@@ -431,6 +436,24 @@ func (s *DispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, lea
 		task, gerr := s.taskTx.GetTx(ctx, tx, tenantID, taskID)
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
+		}
+		// Authoritative re-validation ON the transaction: the attempt may
+		// have been swapped since the pre-check read above.
+		latest, aerr := s.attemptTx.GetLatestTx(ctx, tx, tenantID, taskID)
+		if aerr != nil {
+			return fmt.Errorf("get latest attempt in tx: %w", aerr)
+		}
+		if latest.LeaseID != leaseID {
+			return fmt.Errorf("lease mismatch: task %s is held by a newer attempt", taskID)
+		}
+		if agentID != "" && latest.AgentID != agentID {
+			return fmt.Errorf("agent %s does not own the current attempt", agentID)
+		}
+		if latest.Status != "claimed" && latest.Status != "running" {
+			return fmt.Errorf("attempt %d of task %s is %s, not startable", latest.Attempt, taskID, latest.Status)
+		}
+		if task.Status.IsTerminal() {
+			return fmt.Errorf("%w: task %s is %s, cannot start", core.ErrInvalidTransition, taskID, task.Status)
 		}
 		if !core.CanTransition(task.Status, core.TaskStatusRunning) {
 			return fmt.Errorf("%w: %s -> running for task %s", core.ErrInvalidTransition, task.Status, taskID)

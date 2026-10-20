@@ -57,18 +57,36 @@ func (r *TaskAttemptRepository) CreateTx(ctx context.Context, tx pgx.Tx, a core.
 }
 
 func (r *TaskAttemptRepository) GetLatest(ctx context.Context, tenantID, taskID string) (*core.TaskAttempt, error) {
-	var a core.TaskAttempt
-	var errorJSON, usageJSON []byte
-	var heartbeatAt, finishedAt *time.Time
-
-	err := r.pool.QueryRow(ctx,
+	return scanLatestAttempt(r.pool.QueryRow(ctx,
 		`SELECT tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
 		        started_at, heartbeat_at, finished_at, error, token_usage
 		 FROM task_attempts
 		 WHERE tenant_id = $1 AND task_id = $2
 		 ORDER BY attempt DESC LIMIT 1`,
 		tenantID, taskID,
-	).Scan(
+	))
+}
+
+// GetLatestTx is the transactional variant of GetLatest: it reads through
+// the tx executor so an in-transaction caller re-validates against the row
+// state visible to its transaction, not a pool snapshot taken before it.
+func (r *TaskAttemptRepository) GetLatestTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (*core.TaskAttempt, error) {
+	return scanLatestAttempt(tx.QueryRow(ctx,
+		`SELECT tenant_id, task_id, attempt, agent_id, lease_id, delivery_ref, status,
+		        started_at, heartbeat_at, finished_at, error, token_usage
+		 FROM task_attempts
+		 WHERE tenant_id = $1 AND task_id = $2
+		 ORDER BY attempt DESC LIMIT 1`,
+		tenantID, taskID,
+	))
+}
+
+func scanLatestAttempt(row pgx.Row) (*core.TaskAttempt, error) {
+	var a core.TaskAttempt
+	var errorJSON, usageJSON []byte
+	var heartbeatAt, finishedAt *time.Time
+
+	err := row.Scan(
 		&a.TenantID, &a.TaskID, &a.Attempt, &a.AgentID, &a.LeaseID, &a.DeliveryRef, &a.Status,
 		&a.StartedAt, &heartbeatAt, &finishedAt, &errorJSON, &usageJSON,
 	)

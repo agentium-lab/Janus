@@ -110,6 +110,7 @@ type TaskTxRepo interface {
 type AttemptTxRepo interface {
 	TaskAttemptRepo
 	CreateTx(ctx context.Context, tx pgx.Tx, attempt core.TaskAttempt) error
+	GetLatestTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (*core.TaskAttempt, error)
 	UpdateFinishedWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, attempt int, leaseID, status string, errJSON, usageJSON []byte) (bool, error)
 	FinishOpenAttemptsTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, status string) (int64, error)
 }
