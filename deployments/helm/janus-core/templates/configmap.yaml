@@ -24,6 +24,7 @@ data:
       user: {{ .Values.postgres.user | quote }}
       database: {{ .Values.postgres.database | quote }}
       max_conns: {{ .Values.postgres.maxConns }}
+      sslmode: {{ .Values.postgres.sslMode | default "disable" | quote }}
     nats:
       url: {{ .Values.nats.url | quote }}
     redis:

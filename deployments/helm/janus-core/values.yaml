@@ -130,7 +130,10 @@ redis:
   password: ""
   db: 0
   existingSecret: ""
-  secretKey: "password"
+  # Key inside the Secret holding the Redis password. The chart-generated
+  # Secret stores it under "redis-password"; only override when pointing at
+  # an existingSecret that uses a different key.
+  secretKey: "redis-password"
 
 artifacts:
   # Disabled by default: result refs use object storage / external URIs.

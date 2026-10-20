@@ -29,7 +29,7 @@ spec:
               service:
                 name: {{ include "janus-core.fullname" $ }}
                 port:
-                  number: {{ $.Values.service.port }}
+                  number: {{ $.Values.service.httpPort }}
           {{- end }}
     {{- end }}
 {{- end }}
