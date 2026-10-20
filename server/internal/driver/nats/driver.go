@@ -397,44 +397,23 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 			}
 		}()
 	}
-	fix := func(name string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
-		if st, err := d.js.Stream(ctx, name); err == nil {
-			// Legacy drift repair: streams created by an older version may
-			// carry different limits (e.g. EVENTS once capped at 10k msgs
-			// by the pre-parity restore path). Verify and UPDATE the config
-			// in place so existing streams converge to the current spec —
-			// not just newly created ones.
-			if info, ierr := st.Info(ctx); ierr == nil && streamConfigDrifted(info.Config, cfg) {
-				updated, uerr := d.js.UpdateStream(ctx, cfg)
-				if uerr != nil {
-					return nil, fmt.Errorf("update drifted stream %s: %w", name, uerr)
-				}
-				log.Printf("nats: updated drifted stream config %s for tenant %s", name, tenantID)
-				return updated, nil
-			}
-			return st, nil
-		}
-		st, err := d.js.CreateStream(ctx, cfg)
-		if err != nil {
-			return nil, err
-		}
-		log.Printf("nats: recreated missing stream %s for tenant %s", name, tenantID)
-		return st, nil
+	fix := func(suffix string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+		return d.ensureStream(ctx, tenantID, suffix, suffix, cfg)
 	}
 
-	tasks, err := fix(streamName(tenantID, "TASKS"), taskStreamConfig(tenantID))
+	tasks, err := fix("TASKS", taskStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile task stream for tenant %s: %w", tenantID, err)
 	}
 	ts.taskStream = tasks
 
-	events, err := fix(streamName(tenantID, "EVENTS"), eventStreamConfig(tenantID))
+	events, err := fix("EVENTS", eventStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile event stream for tenant %s: %w", tenantID, err)
 	}
 	ts.eventStream = events
 
-	retry, err := fix(streamName(tenantID, "RETRY"), retryStreamConfig(tenantID))
+	retry, err := fix("RETRY", retryStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("reconcile retry stream for tenant %s: %w", tenantID, err)
 	}
@@ -455,27 +434,21 @@ func (d *Driver) EnsureTenant(ctx context.Context, tenantID string) error {
 	// legacy capped EVENTS) is verified and UPDATED, not just found — cold
 	// start converges existing streams the same way the periodic reconcile
 	// does.
-	fixStream := func(cfg jetstream.StreamConfig) (jetstream.Stream, error) {
-		if st, err := d.js.Stream(ctx, cfg.Name); err == nil {
-			if info, ierr := st.Info(ctx); ierr == nil && !streamConfigDrifted(info.Config, cfg) {
-				return st, nil
-			}
-			return d.js.UpdateStream(ctx, cfg)
-		}
-		return d.js.CreateStream(ctx, cfg)
+	fixStream := func(suffix string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+		return d.ensureStream(ctx, tenantID, suffix, suffix, cfg)
 	}
 
-	taskStream, err := fixStream(taskStreamConfig(tenantID))
+	taskStream, err := fixStream("TASKS", taskStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("ensure task stream for tenant %s: %w", tenantID, err)
 	}
 
-	eventStream, err := fixStream(eventStreamConfig(tenantID))
+	eventStream, err := fixStream("EVENTS", eventStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("ensure event stream for tenant %s: %w", tenantID, err)
 	}
 
-	retryStream, err := fixStream(retryStreamConfig(tenantID))
+	retryStream, err := fixStream("RETRY", retryStreamConfig(tenantID))
 	if err != nil {
 		return fmt.Errorf("ensure retry stream for tenant %s: %w", tenantID, err)
 	}
@@ -507,12 +480,11 @@ func (d *Driver) ReconcileMailboxDLQ(ctx context.Context, tenantID, mailboxID st
 		ts.dlqStreams[mailboxID] = st
 		return nil
 	}
-	st, err := d.js.CreateStream(ctx, dlqStreamConfig(tenantID, mailboxID))
+	st, err := d.ensureStream(ctx, tenantID, "DLQ_"+sanitize(mailboxID), "DLQ_"+legacySanitize(mailboxID), dlqStreamConfig(tenantID, mailboxID))
 	if err != nil {
 		return fmt.Errorf("reconcile DLQ stream for mailbox %s: %w", mailboxID, err)
 	}
 	ts.dlqStreams[mailboxID] = st
-	log.Printf("nats: recreated missing DLQ stream %s", name)
 	return nil
 }
 
@@ -529,7 +501,7 @@ func (d *Driver) EnsureMailbox(ctx context.Context, spec core.MailboxSpec) error
 		return nil
 	}
 
-	dlqStream, err := d.js.CreateStream(ctx, dlqStreamConfig(spec.TenantID, spec.MailboxID))
+	dlqStream, err := d.ensureStream(ctx, spec.TenantID, "DLQ_"+sanitize(spec.MailboxID), "DLQ_"+legacySanitize(spec.MailboxID), dlqStreamConfig(spec.TenantID, spec.MailboxID))
 	if err != nil {
 		return fmt.Errorf("create DLQ stream for mailbox %s: %w", spec.MailboxID, err)
 	}
@@ -563,8 +535,15 @@ func (d *Driver) EnsureConsumer(ctx context.Context, spec core.ConsumerSpec) err
 
 	maxDeliver := runawayBackstopDeliver(spec.MaxDeliver)
 
-	cons, err := d.js.CreateConsumer(ctx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
-		Durable:        cname,
+	sName, durable := d.taskConsumerTarget(ctx, spec.TenantID, spec.MailboxID)
+
+	// CreateOrUpdate, not plain Create: an adopted legacy durable already
+	// exists (rolling upgrade); Create would fail with "consumer already
+	// exists" and the error text would misleadingly carry the NEW name.
+	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cons, err := d.js.CreateOrUpdateConsumer(writeCtx, sName, jetstream.ConsumerConfig{
+		Durable:        durable,
 		FilterSubjects: []string{taskSubject(spec.TenantID, spec.MailboxID)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        ackWait,
@@ -575,6 +554,9 @@ func (d *Driver) EnsureConsumer(ctx context.Context, spec core.ConsumerSpec) err
 	if err != nil {
 		return fmt.Errorf("create consumer %s: %w", cname, err)
 	}
+	// Cache under the NEW-encoding key even when the broker durable keeps
+	// its legacy name (rolling upgrade): every runtime path (FetchTasks,
+	// DeleteConsumer) addresses consumers through this cache.
 	ts.consumers[cname] = cons
 	return nil
 }
@@ -621,12 +603,14 @@ func (d *Driver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) 
 	}
 	maxDeliver := runawayBackstopDeliver(spec.MaxDeliver)
 
+	sName, durable := d.taskConsumerTarget(ctx, spec.TenantID, spec.MailboxID)
+
 	// The periodic reconcile calls this for EVERY mailbox; skipping the
 	// broker write when the durable config already matches turns the pass
 	// into read-only verification instead of N unconditional consumer
 	// updates serialized on the driver mutex (write amplification).
 	if cons, ok := ts.consumers[cname]; ok {
-		if info, err := cons.Info(ctx); err == nil && consumerConfigMatches(info.Config, cname, spec.TenantID, spec.MailboxID, ackWait, maxDeliver, maxAckPending) {
+		if info, err := cons.Info(ctx); err == nil && consumerConfigMatches(info.Config, durable, spec.TenantID, spec.MailboxID, ackWait, maxDeliver, maxAckPending) {
 			return nil
 		}
 	}
@@ -635,8 +619,8 @@ func (d *Driver) ReconcileConsumer(ctx context.Context, spec core.ConsumerSpec) 
 	// goroutine (and any advisory lock the caller took) indefinitely.
 	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cons, err := d.js.CreateOrUpdateConsumer(writeCtx, streamName(spec.TenantID, "TASKS"), jetstream.ConsumerConfig{
-		Durable:        cname,
+	cons, err := d.js.CreateOrUpdateConsumer(writeCtx, sName, jetstream.ConsumerConfig{
+		Durable:        durable,
 		FilterSubjects: []string{taskSubject(spec.TenantID, spec.MailboxID)},
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		AckWait:        ackWait,
@@ -743,6 +727,10 @@ func streamName(tenantID, suffix string) string {
 	return fmt.Sprintf("JANUS_%s_%s", sanitize(tenantID), sanitize(suffix))
 }
 
+func legacyStreamName(tenantID, suffix string) string {
+	return fmt.Sprintf("JANUS_%s_%s", legacySanitize(tenantID), legacySanitize(suffix))
+}
+
 func taskSubject(tenantID, mailboxID string) string {
 	return fmt.Sprintf("janus.%s.tasks.%s", tenantID, mailboxID)
 }
@@ -759,6 +747,75 @@ func consumerName(tenantID, mailboxID string) string {
 	return fmt.Sprintf("consumer_%s_%s", sanitize(tenantID), sanitize(mailboxID))
 }
 
+func legacyConsumerName(tenantID, mailboxID string) string {
+	return fmt.Sprintf("consumer_%s_%s", legacySanitize(tenantID), legacySanitize(mailboxID))
+}
+
+// ensureStream returns the broker stream for cfg, creating it when
+// missing — and, during a rolling upgrade from the v1.9.0 name encoding,
+// adopting the legacy-named stream that already owns cfg.Subjects instead
+// of letting CreateStream fail with a subject overlap. newSuffix and
+// legacySuffix are the pre-encoding suffixes under the two schemes (equal
+// for the fixed TASKS/EVENTS/RETRY suffixes; mailbox-derived DLQ suffixes
+// differ). Adopted streams keep their legacy NAME forever — JetStream
+// cannot rename — but converge to the current config spec.
+func (d *Driver) ensureStream(ctx context.Context, tenantID, newSuffix, legacySuffix string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
+	name := cfg.Name
+	legacy := legacyStreamName(tenantID, legacySuffix)
+	if st, err := d.js.Stream(ctx, name); err == nil {
+		// Legacy drift repair: streams created by an older version may carry
+		// different limits. Verify and UPDATE in place so existing streams
+		// converge to the current spec — not just newly created ones.
+		if info, ierr := st.Info(ctx); ierr == nil && streamConfigDrifted(info.Config, cfg) {
+			updated, uerr := d.js.UpdateStream(ctx, cfg)
+			if uerr != nil {
+				return nil, fmt.Errorf("update drifted stream %s: %w", name, uerr)
+			}
+			log.Printf("nats: updated drifted stream config %s for tenant %s", name, tenantID)
+			return updated, nil
+		}
+		return st, nil
+	}
+	if legacy != name {
+		if st, err := d.js.Stream(ctx, legacy); err == nil {
+			lcfg := cfg
+			lcfg.Name = legacy
+			if info, ierr := st.Info(ctx); ierr == nil && streamConfigDrifted(info.Config, lcfg) {
+				if updated, uerr := d.js.UpdateStream(ctx, lcfg); uerr == nil {
+					st = updated
+				}
+			}
+			log.Printf("nats: adopted legacy stream %s for tenant %s (subjects stay owned by the legacy stream; new name %s not created)", legacy, tenantID, name)
+			return st, nil
+		}
+	}
+	st, err := d.js.CreateStream(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("nats: created stream %s for tenant %s", name, tenantID)
+	return st, nil
+}
+
+// taskConsumerTarget resolves where a mailbox's durable consumer lives:
+// an existing v1.9.0-named durable (on the v1.9.0-named TASKS stream) is
+// adopted — creating a fresh new-named durable would redeliver every
+// unacked message; a legacy-named TASKS stream without a durable gets the
+// NEW durable name on the legacy stream; otherwise the plain new names.
+func (d *Driver) taskConsumerTarget(ctx context.Context, tenantID, mailboxID string) (string, string) {
+	newS, legacyS := streamName(tenantID, "TASKS"), legacyStreamName(tenantID, "TASKS")
+	newC, legacyC := consumerName(tenantID, mailboxID), legacyConsumerName(tenantID, mailboxID)
+	if _, err := d.js.Consumer(ctx, legacyS, legacyC); err == nil {
+		return legacyS, legacyC
+	}
+	if _, err := d.js.Stream(ctx, legacyS); err == nil {
+		if _, err := d.js.Stream(ctx, newS); err != nil {
+			return legacyS, newC
+		}
+	}
+	return newS, newC
+}
+
 // sanitize maps a mailbox ID to a NATS stream-name-safe token. Dots are
 // ILLEGAL in stream names (they are subject separators) and the naive
 // dot→underscore replacement made "a.b" and "a_b" collide: the second
@@ -766,11 +823,12 @@ func consumerName(tenantID, mailboxID string) string {
 // could never receive a delivery. Disambiguate by escaping each dot to a
 // distinct, stream-safe two-char token.
 // sanitize maps an arbitrary ID to a NATS stream-name-safe token
-// INJECTIVELY: '_' escapes to "__", '.' to "_D", every other disallowed
-// byte to "_Z"; '-' passes through so hyphenated names keep the encoding
-// they already had on v1.9.0 (rolling-upgrade stream-name parity). Two
-// distinct inputs can never share an encoding — the previous __DOT__
-// scheme collided a.b with the literal a__DOT__b.
+// INJECTIVELY and reversibly: '_' escapes to "__", '.' to "_D", every
+// other disallowed byte to "_X" + two hex digits of that byte; '-' passes
+// through so hyphenated names keep the encoding they already had on
+// v1.9.0 (rolling-upgrade stream-name parity). Two distinct inputs can
+// never share an encoding — earlier schemes collided a.b with the literal
+// a__DOT__b, and a catch-all "_Z" alias a@b with a:b.
 func sanitize(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); i++ {
@@ -783,7 +841,33 @@ func sanitize(s string) string {
 		case c == '.':
 			b.WriteString("_D")
 		default:
-			b.WriteString("_Z")
+			b.WriteString("_X")
+			b.WriteByte(hexDigits[c>>4])
+			b.WriteByte(hexDigits[c&0xf])
+		}
+	}
+	return b.String()
+}
+
+const hexDigits = "0123456789ABCDEF"
+
+// legacySanitize reproduces the v1.9.0 stream-name encoding: safe bytes
+// and '_' pass through, '.' becomes "__DOT__", everything else collapses
+// to '_'. It is NOT injective — that is why sanitize was replaced — but
+// streams and durable consumers created by an old broker still carry
+// legacy-encoded names, and ensure/reconcile must adopt those resources
+// instead of failing on subject overlap during a rolling upgrade.
+func legacySanitize(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9', c == '_', c == '-':
+			b.WriteByte(c)
+		case c == '.':
+			b.WriteString("__DOT__")
+		default:
+			b.WriteByte('_')
 		}
 	}
 	return b.String()

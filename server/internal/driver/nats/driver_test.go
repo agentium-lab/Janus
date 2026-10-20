@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -431,11 +432,16 @@ func TestDriver_PublishMultipleFetchInOrder(t *testing.T) {
 }
 
 func TestSanitize(t *testing.T) {
-	assert.Equal(t, "hello_Zworld", sanitize("hello world"))
+	assert.Equal(t, "hello_X20world", sanitize("hello world"))
 	assert.Equal(t, "abc-123_Ddef", sanitize("abc-123.def"))
-	assert.Equal(t, "ALL_ZCAPS", sanitize("ALL CAPS"))
+	assert.Equal(t, "ALL_X20CAPS", sanitize("ALL CAPS"))
 	assert.Equal(t, "a__b", sanitize("a_b"))
 	assert.Equal(t, "a-b", sanitize("a-b"), "hyphen passes through (v1.9.0 parity)")
+	// Injective across byte classes: '@' (0x40) and ':' (0x3A) previously
+	// collapsed to the same catch-all token.
+	assert.NotEqual(t, sanitize("a@b"), sanitize("a:b"))
+	assert.Equal(t, "a_X40b", sanitize("a@b"))
+	assert.Equal(t, "a_X3Ab", sanitize("a:b"))
 }
 
 func TestStreamName(t *testing.T) {
@@ -636,4 +642,80 @@ func TestDriver_SubscribeEvents_BadJSON(t *testing.T) {
 
 func genTenant(t *testing.T) string {
 	return testTenant(t)
+}
+
+// TestRollingUpgrade_LegacyResourceAdoption covers the v1.9.0 → current
+// sanitize change: a tenant/mailbox whose encoded name CHANGED (any '_'
+// in the ID) has legacy-named streams and durable consumers on the broker.
+// A new-version driver must adopt them instead of failing CreateStream
+// with a subject overlap — and must not create a duplicate durable that
+// would redeliver every unacked message.
+func TestRollingUpgrade_LegacyResourceAdoption(t *testing.T) {
+	d := openDriver(t)
+	tn := genTenant(t) // contains '_', so new encoding renames every resource
+	mb := "upg_mb"     // '_' mailbox: DLQ stream + consumer rename too
+	ctx := context.Background()
+
+	require.NotEqual(t, streamName(tn, "TASKS"), legacyStreamName(tn, "TASKS"),
+		"test precondition: encodings must differ for this tenant")
+
+	// Seed the broker the way a v1.9.0 deployment left it.
+	legacyTasks := legacyStreamName(tn, "TASKS")
+	_, err := d.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:      legacyTasks,
+		Subjects:  []string{fmt.Sprintf("janus.%s.tasks.>", tn)},
+		Retention: jetstream.WorkQueuePolicy,
+	})
+	require.NoError(t, err)
+	_, err = d.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:      legacyStreamName(tn, "DLQ_"+legacySanitize(mb)),
+		Subjects:  []string{dlqSubject(tn, mb)},
+		Retention: jetstream.LimitsPolicy,
+	})
+	require.NoError(t, err)
+	legacyDurable := legacyConsumerName(tn, mb)
+	_, err = d.js.CreateConsumer(ctx, legacyTasks, jetstream.ConsumerConfig{
+		Durable:        legacyDurable,
+		FilterSubjects: []string{taskSubject(tn, mb)},
+		AckPolicy:      jetstream.AckExplicitPolicy,
+		AckWait:        30 * time.Second,
+		MaxDeliver:     3,
+		MaxAckPending:  10,
+		DeliverPolicy:  jetstream.DeliverAllPolicy,
+	})
+	require.NoError(t, err)
+
+	// Simulate a fresh process against the same broker: drop the driver's
+	// in-memory caches so the ensure path re-runs from scratch (the test
+	// harness cannot run two drivers in one test — startNATSServer would
+	// spawn a second server).
+	d.mu.Lock()
+	delete(d.tenant, tn)
+	d.mu.Unlock()
+	require.NoError(t, d.EnsureTenant(ctx, tn))
+	require.NoError(t, d.EnsureMailbox(ctx, core.MailboxSpec{
+		TenantID: tn, MailboxID: mb, AgentID: "upg-agent",
+		MaxConcurrency: 1, ACKWaitSeconds: 30, MaxDeliver: 3, RetentionSeconds: 3600,
+	}))
+	require.NoError(t, d.EnsureConsumer(ctx, core.ConsumerSpec{
+		TenantID: tn, MailboxID: mb, ACKWaitSeconds: 30, MaxDeliver: 3, MaxACKPending: 10,
+	}))
+
+	// The legacy stream still owns the subjects; the new-named twin must
+	// NOT have been created (that create would fail on overlap anyway).
+	if _, err := d.js.Stream(ctx, legacyTasks); err != nil {
+		t.Fatalf("legacy task stream must survive adoption: %v", err)
+	}
+
+	// End-to-end through the adopted resources: publish → fetch → ack.
+	tctx := ContextWithTenant(ctx, tn)
+	require.NoError(t, d.PublishTask(ctx, core.TaskMessage{
+		TenantID: tn, MailboxID: mb, TaskID: "upg-task-1",
+		Priority: core.PriorityNormal, Payload: []byte("upgrade"),
+	}))
+	time.Sleep(300 * time.Millisecond)
+	deliveries, err := d.FetchTasks(tctx, tn, mb, core.FetchOptions{MaxMessages: 1, WaitTime: 2 * time.Second})
+	require.NoError(t, err)
+	require.Len(t, deliveries, 1)
+	require.NoError(t, d.AckTask(ctx, tn, deliveries[0].DeliveryRef))
 }
