@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """GA readiness checker.
 
-Parses docs/Janus-core-capability-matrix.md and verifies all P0
+Parses scripts/ga-readiness-matrix.md and verifies all P0
 capabilities are 'Covered'. Exits non-zero if any P0 is not Covered.
 Also lists P1 items for risk acceptance documentation.
 """
@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-MATRIX = Path(__file__).resolve().parent.parent / "docs" / "Janus-core-capability-matrix.md"
+MATRIX = Path(__file__).resolve().parent / "ga-readiness-matrix.md"
 
 def main():
     if not MATRIX.exists():
