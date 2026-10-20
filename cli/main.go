@@ -14,6 +14,19 @@ var (
 )
 
 func main() {
+	if err := runCLI(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+
+func runCLI(args []string) error {
+	rootCmd := buildRootCmd()
+	rootCmd.SetArgs(args)
+	return rootCmd.Execute()
+}
+
+func buildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "janus",
 		Short: "Janus — A2A-native Durable Agent Broker CLI",
@@ -36,9 +49,5 @@ func main() {
 	rootCmd.AddCommand(projectDiffCmd())
 	rootCmd.AddCommand(projectApplyCmd())
 	rootCmd.AddCommand(dashboardCmd())
-
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	return rootCmd
 }
