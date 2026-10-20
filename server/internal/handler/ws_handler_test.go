@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -93,36 +92,47 @@ func TestFanoutBroadcaster_DifferentTenants(t *testing.T) {
 	b.Unsubscribe("tenant-b", chB)
 }
 
-// wsWaitSubscribed blocks until the handler has actually subscribed: the WS
-// upgrade completes BEFORE ServeHTTP subscribes, so an event sent right after
-// Dial can be fanned out to zero subscribers and lost. Spin warm-up events
-// (unique EventIDs, so the dedupe window never eats them) until one
-// round-trips — bounded, because slow CI runners widen the race window.
-func wsWaitSubscribed(t *testing.T, ws *websocket.Conn, inbound chan core.JanusEvent, tenantID string) {
+// wsWaitSubscribed dials fresh connections until one receives a warm-up
+// event round-trip, proving the handler has SUBSCRIBED (the WS upgrade
+// completes before ServeHTTP subscribes, so an event sent right after Dial
+// can be fanned out to zero subscribers and lost).
+//
+// One ReadMessage per CONNECTION, never a retry loop: gorilla's readErr is
+// sticky - after the FIRST read error (a 250ms timeout included) every
+// further read on that conn returns instantly, and a spin loop hits
+// gorilla's "repeated read on failed websocket connection" panic at
+// readErrCount 1000 (the CI failure on TestWebSocketHandler_NoTenant: slow
+// runner, first warmup read timed out, the loop then burned 1000 instant
+// reads on the poisoned conn). A timed-out conn is closed and re-dialed.
+func wsWaitSubscribed(t *testing.T, srv *httptest.Server, inbound chan core.JanusEvent, tenantID, query string) *websocket.Conn {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for i := 0; time.Now().Before(deadline); i++ {
+	for attempt := 0; time.Now().Before(deadline); attempt++ {
+		wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + query
+		hdr := http.Header{}
+		hdr.Set("Origin", srv.URL)
+		ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+		if err != nil {
+			t.Fatalf("dial websocket: %v", err)
+		}
+		if resp != nil {
+			resp.Body.Close()
+		}
+
 		inbound <- core.JanusEvent{
 			TenantID:  tenantID,
 			EventType: core.EventTaskCreated,
 			TaskID:    "warmup",
-			EventID:   fmt.Sprintf("warmup-%d", i),
+			EventID:   fmt.Sprintf("warmup-%d", attempt),
 		}
 		ws.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
 		if _, _, err := ws.ReadMessage(); err == nil {
-			return
-		} else if !isTimeout(err) {
-			return
+			return ws
 		}
+		ws.Close()
 	}
 	t.Fatal("websocket subscription never became ready")
-}
-
-func isTimeout(err error) bool {
-	if ne, ok := err.(net.Error); ok {
-		return ne.Timeout()
-	}
-	return false
+	return nil
 }
 
 func TestWebSocketHandler_BasicConnection(t *testing.T) {
@@ -133,17 +143,8 @@ func TestWebSocketHandler_BasicConnection(t *testing.T) {
 	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
-	hdr := http.Header{}
-	hdr.Set("Origin", srv.URL)
-	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
-	require.NoError(t, err)
+	ws := wsWaitSubscribed(t, srv, inbound, "test", "?tenant=test")
 	defer ws.Close()
-	if resp != nil {
-		resp.Body.Close()
-	}
-
-	wsWaitSubscribed(t, ws, inbound, "test")
 	inbound <- core.JanusEvent{
 		TenantID:  "test",
 		EventType: core.EventTaskCreated,
@@ -168,17 +169,8 @@ func TestWebSocketHandler_NoTenant(t *testing.T) {
 	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	hdr := http.Header{}
-	hdr.Set("Origin", srv.URL)
-	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
-	require.NoError(t, err)
+	ws := wsWaitSubscribed(t, srv, inbound, "default", "")
 	defer ws.Close()
-	if resp != nil {
-		resp.Body.Close()
-	}
-
-	wsWaitSubscribed(t, ws, inbound, "default")
 	inbound <- core.JanusEvent{
 		TenantID:  "default",
 		EventType: core.EventTaskCompleted,

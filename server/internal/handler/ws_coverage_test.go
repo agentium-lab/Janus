@@ -23,23 +23,15 @@ func TestWebSocketHandler_PongAndClientMessageKeepConnectionAlive(t *testing.T) 
 	srv := httptest.NewServer(withWSAuth(h))
 	defer srv.Close()
 
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test"
-	hdr := http.Header{}
-	hdr.Set("Origin", srv.URL)
-	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
-	require.NoError(t, err)
-	defer ws.Close()
-	if resp != nil {
-		resp.Body.Close()
-	}
+	wss := wsWaitSubscribed(t, srv, inbound, "test", "?tenant=test")
+	defer wss.Close()
 
-	require.NoError(t, ws.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)))
-	require.NoError(t, ws.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`)))
+	require.NoError(t, wss.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)))
+	require.NoError(t, wss.WriteMessage(websocket.TextMessage, []byte(`{"hello":true}`)))
 
-	wsWaitSubscribed(t, ws, inbound, "test")
 	inbound <- core.JanusEvent{TenantID: "test", TaskID: "still-alive"}
-	ws.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, msg, err := ws.ReadMessage()
+	wss.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, msg, err := wss.ReadMessage()
 	require.NoError(t, err)
 	assert.Contains(t, string(msg), "still-alive")
 }
