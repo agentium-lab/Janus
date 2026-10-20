@@ -1,6 +1,6 @@
 // Janus TypeScript SDK — HTTP client
 
-import { JanusAPIError } from "./error";
+import { JanusAPIError, LeaseLostError } from "./error";
 import type {
   Agent,
   RegisterAgentRequest,
@@ -203,43 +203,63 @@ export class Client {
     await this.json("POST", `/tasks/${taskID}/progress`, body);
   }
 
-  streamTask(taskID: string): AsyncGenerator<{ event_type: string; [key: string]: unknown }> {
+  streamTask(taskID: string, signal?: AbortSignal): AsyncGenerator<{ event_type: string; [key: string]: unknown }> {
     const url = `${this.baseURL}/v1/tenants/${this.tenantID}/tasks/${taskID}/stream`;
     const terminal = new Set([
       "task.completed", "task.failed", "task.cancelled",
       "task.dead_lettered", "task.expired",
     ]);
+    // Lease-loss terminal signals: the lease backing the stream is gone;
+    // the consumer gets a typed LeaseLostError instead of a stream that
+    // waits forever for a terminal state that will never arrive.
+    const leaseLost = new Set(["task.lease_lost", "lease.lost"]);
     const self = this;
     async function* gen() {
-      const resp = await fetch(url, {
-        headers: self.apiKey ? { "X-API-Key": self.apiKey } : {},
-      });
-      if (!resp.ok || !resp.body) throw new Error(`stream failed: ${resp.status}`);
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let eventType = "";
+      // Stream-stop semantics: whatever ends the generator — a terminal
+      // event, consumer break/return(), a thrown error, or an aborted
+      // caller signal — must tear down the underlying fetch. The finally
+      // block cancels the reader and aborts the request so the socket
+      // closes promptly; an aborted signal composes via onAbort.
+      const controller = new AbortController();
+      const onAbort = () => controller.abort();
+      signal?.addEventListener("abort", onAbort);
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) return;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() ?? "";
-          for (const line of lines) {
-            if (line.startsWith("event: ")) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith("data: ") && eventType) {
-              let data: Record<string, unknown> = {};
-              try { data = JSON.parse(line.slice(6)); } catch {}
-              const evt = { event_type: eventType, ...data };
-              yield evt;
-              if (terminal.has(eventType)) return;
+        const resp = await fetch(url, {
+          headers: self.apiKey ? { "X-API-Key": self.apiKey } : {},
+          signal: controller.signal,
+        });
+        if (resp.status === 409) throw new LeaseLostError(taskID);
+        if (!resp.ok || !resp.body) throw new Error(`stream failed: ${resp.status}`);
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        let eventType = "";
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) return;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split("\n");
+            buf = lines.pop() ?? "";
+            for (const line of lines) {
+              if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim();
+              } else if (line.startsWith("data: ") && eventType) {
+                let data: Record<string, unknown> = {};
+                try { data = JSON.parse(line.slice(6)); } catch {}
+                const evt = { event_type: eventType, ...data };
+                yield evt;
+                if (leaseLost.has(eventType)) throw new LeaseLostError(taskID);
+                if (terminal.has(eventType)) return;
+              }
             }
           }
+        } finally {
+          await reader.cancel().catch(() => {});
+          controller.abort();
         }
       } finally {
-        reader.releaseLock();
+        signal?.removeEventListener("abort", onAbort);
       }
     }
     return gen();

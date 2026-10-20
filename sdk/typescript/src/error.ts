@@ -24,3 +24,18 @@ export class JanusAPIError extends Error {
     this.code = (body.code as ErrorCode) || "UNKNOWN";
   }
 }
+
+// LeaseLostError: the stream surfaced a lease-lost terminal signal — the
+// stream request answered 409 Conflict, or a task.lease_lost / lease.lost
+// SSE event arrived — so the lease backing the observed task is gone and
+// the stream will never reach a normal terminal state. All three SDKs
+// surface the same shape for this signal.
+export class LeaseLostError extends Error {
+  readonly taskID: string;
+
+  constructor(taskID: string) {
+    super(taskID ? `lease lost for task ${taskID}` : "lease lost");
+    this.name = "LeaseLostError";
+    this.taskID = taskID;
+  }
+}

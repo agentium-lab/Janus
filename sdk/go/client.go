@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -322,8 +323,34 @@ type StreamEvent struct {
 	Payload   map[string]interface{} `json:"payload"`
 }
 
+// ErrLeaseLost is the sentinel underlying LeaseLostError: match a
+// lease-loss failure with errors.Is(err, janus.ErrLeaseLost) or extract
+// the task id with errors.As(err, &janus.LeaseLostError{}).
+var ErrLeaseLost = errors.New("lease lost")
+
+// LeaseLostError is returned by StreamTask when the stream surfaces a
+// lease-lost terminal signal instead of waiting for a task terminal
+// state: the stream request itself answered 409 Conflict, or an SSE
+// event of type task.lease_lost / lease.lost arrived. Streaming stop
+// semantics stay as before — cancelling ctx (or returning an error from
+// fn) closes the response body and cancels the underlying read.
+type LeaseLostError struct {
+	TaskID string
+}
+
+func (e *LeaseLostError) Error() string {
+	if e == nil || e.TaskID == "" {
+		return "lease lost"
+	}
+	return "lease lost for task " + e.TaskID
+}
+
+func (e *LeaseLostError) Unwrap() error { return ErrLeaseLost }
+
 // StreamTask subscribes to a task's SSE stream and calls fn for each event.
 // Returns when the task reaches a terminal state or ctx is cancelled.
+// A lease-lost terminal signal (HTTP 409 on stream open, or a
+// task.lease_lost / lease.lost event) returns *LeaseLostError.
 func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEvent) error) error {
 	url := c.baseURL + "/v1/tenants/" + c.tenantID + "/tasks/" + taskID + "/stream"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -340,6 +367,9 @@ func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEv
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		return &LeaseLostError{TaskID: taskID}
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("stream failed: status %d", resp.StatusCode)
 	}
@@ -359,6 +389,8 @@ func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEv
 				}
 			}
 			switch eventType {
+			case "task.lease_lost", "lease.lost":
+				return &LeaseLostError{TaskID: taskID}
 			case "task.completed", "task.failed", "task.cancelled", "task.dead_lettered", "task.expired":
 				return nil
 			}

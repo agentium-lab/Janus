@@ -10,7 +10,7 @@ import { after, before, beforeEach, test } from "node:test";
 import { strict as assert } from "node:assert";
 
 import { Client } from "./client";
-import { JanusAPIError } from "./error";
+import { JanusAPIError, LeaseLostError } from "./error";
 import type { Task, TaskEnvelope } from "./types";
 
 interface CapturedRequest {
@@ -380,6 +380,97 @@ test("streamTask: HTTP error status throws 'stream failed'", async () => {
     /stream failed: 500/,
   );
   assert.equal(events.length, 0);
+});
+
+test("streamTask: 409 on stream open surfaces as LeaseLostError", async () => {
+  responder = (_req, res) => {
+    res.writeHead(409);
+    res.end(JSON.stringify({ error: "lease lost" }));
+  };
+  const client = makeClient();
+
+  let caught: unknown;
+  try {
+    for await (const _ev of client.streamTask("t-9")) {
+      assert.fail("409 must reject before any event is yielded");
+    }
+  } catch (e) {
+    caught = e;
+  }
+  assert.ok(caught instanceof LeaseLostError, `want LeaseLostError, got ${String(caught)}`);
+  assert.equal((caught as LeaseLostError).taskID, "t-9");
+  assert.match((caught as Error).message, /lease lost for task t-9/);
+});
+
+test("streamTask: lease-lost SSE event yields the event, then throws LeaseLostError", async () => {
+  responder = (_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write('event: task.progress\ndata: {"n":1}\n\n');
+    res.write('event: task.lease_lost\ndata: {"task_id":"t-10"}\n\n');
+    // Never reached: the lease-lost signal must end the stream first.
+    res.write('event: task.completed\ndata: {"task_id":"t-10"}\n\n');
+    res.end();
+  };
+  const client = makeClient();
+
+  const events: Array<{ event_type: string; [key: string]: unknown }> = [];
+  let caught: unknown;
+  try {
+    for await (const ev of client.streamTask("t-10")) events.push(ev);
+  } catch (e) {
+    caught = e;
+  }
+  assert.ok(caught instanceof LeaseLostError, `want LeaseLostError, got ${String(caught)}`);
+  assert.equal((caught as LeaseLostError).taskID, "t-10");
+  assert.deepEqual(events.map((e) => e.event_type), ["task.progress", "task.lease_lost"]);
+});
+
+test("streamTask: consumer break aborts the underlying fetch (server sees the socket close)", async () => {
+  // The server holds the stream open forever; only a client-side abort
+  // can end it. 'close' fires when the abandoned fetch tears the socket.
+  const socketClosed = new Promise<void>((resolve) => {
+    responder = (_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write('event: task.progress\ndata: {"n":1}\n\n');
+      res.on("close", () => resolve());
+    };
+  });
+  const client = makeClient();
+
+  let seen = 0;
+  for await (const ev of client.streamTask("t-11")) {
+    seen++;
+    assert.equal(ev.event_type, "task.progress");
+    break; // consumer stops early — must not leak the fetch
+  }
+  assert.equal(seen, 1);
+
+  await Promise.race([
+    socketClosed,
+    new Promise<never>((_, reject) => setTimeout(() => reject(new Error("socket stayed open after break")), 5000)),
+  ]);
+});
+
+test("streamTask: an external AbortSignal aborts the stream", async () => {
+  responder = (_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write('event: task.progress\ndata: {"n":1}\n\n');
+    // Stream stays open; only the aborted signal can end the read.
+  };
+  const client = makeClient();
+  const ctl = new AbortController();
+
+  const events: unknown[] = [];
+  await assert.rejects(
+    async () => {
+      for await (const ev of client.streamTask("t-12", ctl.signal)) {
+        events.push(ev);
+        ctl.abort();
+      }
+    },
+    (err: unknown) => (err as Error)?.name === "AbortError",
+  );
+  assert.equal(events.length, 1);
 });
 
 test("listAgents: unwraps {agents: [...]} and defaults to [] when absent", async () => {

@@ -1,9 +1,14 @@
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
 import httpx
 import respx
 
 from janus_broker import (
     JanusClient,
+    LeaseLostError,
     RegisterAgentRequest,
     PublishTaskRequest,
     PullResult,
@@ -216,3 +221,116 @@ class TestWorkerSignatureCompat:
 
         w._process_one(modern_handler)
         assert called.get("progress_type") is True
+
+
+class TestStreamTask:
+    def _sse(self, *events):
+        return "".join(e + "\n" for e in events)
+
+    def test_terminal_event_stops_iteration(self, client):
+        body = self._sse(
+            'event: task.progress\ndata: {"percent": 50}',
+            'event: task.completed\ndata: {"task_id": "t1"}',
+            'event: task.progress\ndata: {"never": "yielded"}',
+        )
+        with respx.mock:
+            respx.get(f"{BASE}{PREFIX}/tasks/t1/stream").mock(
+                return_value=httpx.Response(200, text=body)
+            )
+            events = list(client.stream_task("t1"))
+        assert [e["event_type"] for e in events] == ["task.progress", "task.completed"]
+
+    def test_lease_lost_event_raises(self, client):
+        body = self._sse(
+            'event: task.progress\ndata: {"n": 1}',
+            'event: task.lease_lost\ndata: {"task_id": "t1"}',
+            'event: task.completed\ndata: {"task_id": "t1"}',
+        )
+        with respx.mock:
+            respx.get(f"{BASE}{PREFIX}/tasks/t1/stream").mock(
+                return_value=httpx.Response(200, text=body)
+            )
+            seen = []
+            with pytest.raises(LeaseLostError) as exc_info:
+                for event in client.stream_task("t1"):
+                    seen.append(event["event_type"])
+        assert exc_info.value.task_id == "t1"
+        assert seen == ["task.progress", "task.lease_lost"]
+
+    def test_lease_lost_event_alias_raises(self, client):
+        body = self._sse('event: lease.lost\ndata: {"task_id": "t1"}')
+        with respx.mock:
+            respx.get(f"{BASE}{PREFIX}/tasks/t1/stream").mock(
+                return_value=httpx.Response(200, text=body)
+            )
+            with pytest.raises(LeaseLostError):
+                list(client.stream_task("t1"))
+
+    def test_http_409_raises_lease_lost(self, client):
+        with respx.mock:
+            respx.get(f"{BASE}{PREFIX}/tasks/t1/stream").mock(
+                return_value=httpx.Response(409, json={"error": "lease lost"})
+            )
+            with pytest.raises(LeaseLostError) as exc_info:
+                list(client.stream_task("t1"))
+        assert exc_info.value.task_id == "t1"
+
+
+class _HoldStreamHandler(BaseHTTPRequestHandler):
+    """Streams one event, then holds the connection with keep-alives.
+
+    Only a client-side close can end the stream; the next keep-alive
+    write then fails and records that the SDK closed the connection.
+    """
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(b'event: task.progress\ndata: {"n": 1}\n\n')
+        self.wfile.flush()
+        try:
+            while not self.server.stop.wait(0.02):
+                self.wfile.write(b": keep-alive\n\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            self.server.client_closed.set()
+
+    def log_message(self, *args):
+        pass
+
+
+class _HoldStreamServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self):
+        self.client_closed = threading.Event()
+        self.stop = threading.Event()
+        super().__init__(("127.0.0.1", 0), _HoldStreamHandler)
+
+
+class TestStreamTaskStopSemantics:
+    def test_closing_generator_closes_connection(self):
+        server = _HoldStreamServer()
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            client = JanusClient(f"http://127.0.0.1:{port}", TENANT)
+            gen = client.stream_task("t9")
+            first = next(gen)
+            assert first["event_type"] == "task.progress"
+
+            deadline = time.monotonic() + 5.0
+            gen.close()  # consumer stops early: must tear the connection down
+            while not server.client_closed.is_set() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert server.client_closed.is_set(), (
+                "closing the generator must close the underlying response, "
+                "not leave the stream connection open"
+            )
+            client.close()
+        finally:
+            server.stop.set()
+            server.shutdown()
+            server.server_close()

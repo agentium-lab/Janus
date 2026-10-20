@@ -43,6 +43,26 @@ class JanusAPIError(httpx.HTTPStatusError):
         return f"{self.code} ({self.status}): {self.message}"
 
 
+class LeaseLostError(Exception):
+    """Raised when a task stream surfaces a lease-lost terminal signal.
+
+    The stream request answered 409 Conflict, or a task.lease_lost /
+    lease.lost SSE event arrived: the lease backing the observed task is
+    gone, and the stream would otherwise wait forever for a terminal
+    state that will never come. All three Janus SDKs surface the same
+    typed error for this signal.
+
+    Attributes:
+        task_id: The task whose lease was lost.
+    """
+
+    def __init__(self, task_id: str = ""):
+        self.task_id = task_id
+        super().__init__(
+            f"lease lost for task {task_id}" if task_id else "lease lost"
+        )
+
+
 class JanusClient:
     def __init__(
         self,
@@ -267,6 +287,15 @@ class JanusClient:
     def stream_task(self, task_id: str, timeout: Optional[float] = 300.0):
         """Yield SSE events for a task until it reaches a terminal state.
 
+        Stop semantics: closing the generator (breaking out of the loop
+        or calling .close()) closes the underlying httpx response and
+        stops the iterator — the connection is not left open.
+
+        Lease loss: if the stream request answers 409, or a
+        task.lease_lost / lease.lost SSE event arrives, LeaseLostError is
+        raised instead of waiting for a terminal state that will never
+        come.
+
         Usage:
             for event in client.stream_task("task-123"):
                 if event["event_type"] == "task.progress":
@@ -275,8 +304,11 @@ class JanusClient:
         url = f"{self._base_url}/v1/tenants/{self._tenant_id}/tasks/{task_id}/stream"
         terminal = {"task.completed", "task.failed", "task.cancelled",
                      "task.dead_lettered", "task.expired"}
+        lease_lost = {"task.lease_lost", "lease.lost"}
         try:
             with self._client.stream("GET", url, timeout=timeout) as resp:
+                if resp.status_code == 409:
+                    raise LeaseLostError(task_id)
                 resp.raise_for_status()
                 event_type = ""
                 buffer = ""
@@ -294,6 +326,8 @@ class JanusClient:
                             except (ValueError, TypeError):
                                 data = {"raw": line[6:]}
                             yield {"event_type": event_type, **data}
+                            if event_type in lease_lost:
+                                raise LeaseLostError(task_id)
                             if event_type in terminal:
                                 return
         except (httpx.TimeoutException, httpx.ConnectError):

@@ -1,4 +1,4 @@
-from .client import JanusAPIError, JanusClient
+from .client import JanusAPIError, JanusClient, LeaseLostError
 from .worker import JanusWorker, WorkerError, WorkerResult
 from .models import (
     APIKey,
@@ -38,6 +38,7 @@ from .models import (
 __all__ = [
     "JanusClient",
     "JanusAPIError",
+    "LeaseLostError",
     "JanusWorker",
     "WorkerError",
     "WorkerResult",

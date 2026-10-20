@@ -16,9 +16,18 @@
 #   T11 C4 gate negatives             — unreachable API is FATAL, not SKIP
 #   T12 A3 policy routing real data   — trusted-record attributes + template API
 #   T13 A4 NATS naming collision      — a.b ≠ a_b after sanitize
+#   A1  legacy settle admin gate       — /complete + /fail need admin scope
+#                                          (403 with a task:write-only key)
+#   A2  replay approval gate           — lookup fail-closed + expired denied
+#
+# Required scenarios (5th go_check arg / record arg): a required scenario
+# that ends up SKIPped (e.g. PG env unset) FAILS the run unless
+# JANUS_ALLOW_REQUIRED_SKIP=1 is explicitly exported — mixed
+# PASS-with-critical-SKIP is not a green run.
 #
 # Usage: scripts/acceptance_matrix.sh   (from repo root; PG/NATS optional —
-# PG-backed checks skip when unreachable, matching repo test convention)
+# PG-backed checks skip when unreachable, matching repo test convention,
+# but a skip of a REQUIRED scenario fails the run; see above)
 
 set -uo pipefail
 
@@ -30,12 +39,15 @@ export GOFLAGS="${GOFLAGS:-}"
 GOPROXY="${GOPROXY:-https://goproxy.cn,direct}"
 export GOPROXY
 
-PASS=0; FAIL=0; SKIP=0
+PASS=0; FAIL=0; SKIP=0; REQ_SKIP=0
 declare -a RESULTS
+declare -a REQ_SKIPPED_IDS
 
-record() { # id name status [note] — status MUST be exactly PASS|FAIL|SKIP;
-  # annotations ride in note so the counters can never miss a failure.
-  local id="$1" name="$2" status="$3" note="${4:-}"
+record() { # id name status [note] [required:1] — status MUST be exactly
+  # PASS|FAIL|SKIP; annotations ride in note so the counters can never
+  # miss a failure. A required scenario that SKIPs is counted in REQ_SKIP
+  # and fails the run at the exit gate (JANUS_ALLOW_REQUIRED_SKIP=1 opts in).
+  local id="$1" name="$2" status="$3" note="${4:-}" req="${5:-0}"
   case "$status" in
     PASS|FAIL|SKIP) ;;
     *) echo "internal error: bad status '$status' for $id"; exit 2 ;;
@@ -44,12 +56,17 @@ record() { # id name status [note] — status MUST be exactly PASS|FAIL|SKIP;
   case "$status" in
     PASS) PASS=$((PASS+1)) ;;
     FAIL) FAIL=$((FAIL+1)) ;;
-    SKIP) SKIP=$((SKIP+1)) ;;
+    SKIP) SKIP=$((SKIP+1))
+      if [ "$req" = "1" ]; then
+        REQ_SKIP=$((REQ_SKIP+1))
+        REQ_SKIPPED_IDS+=("$id")
+      fi
+      ;;
   esac
 }
 
-go_check() { # id name pkg run_pattern
-  local id="$1" name="$2" pkg="$3" run="$4"
+go_check() { # id name pkg run_pattern [required:1]
+  local id="$1" name="$2" pkg="$3" run="$4" req="${5:-0}"
   local out
   if ! out=$(go test "$pkg" -run "$run" -count=1 -timeout 300s -v 2>&1); then
     echo "---- $id output ----"; echo "$out" | tail -15
@@ -68,14 +85,20 @@ go_check() { # id name pkg run_pattern
   skipped=$(printf '%s\n' "$out" | grep -cE '^--- SKIP')
   if [ "$passed" -eq 0 ] && [ "$skipped" -gt 0 ]; then
     echo "---- $id output ----"; echo "$out" | tail -15
-    record "$id" "$name" FAIL "all ${skipped} SKIP"
+    if [ "$req" = "1" ]; then
+      # Required scenario, environment-deprived (e.g. PG unset): record the
+      # SKIP so the exit gate fails the run unless explicitly overridden.
+      record "$id" "$name" SKIP "required; all ${skipped} SKIP" 1
+    else
+      record "$id" "$name" FAIL "all ${skipped} SKIP"
+    fi
     return
   fi
   record "$id" "$name" PASS
 }
 
 echo "=============================================="
-echo " Janus T01–T13 Acceptance Matrix (audit 2026-10-12, baseline 82f4cea)"
+echo " Janus T01–T13 + A1–A2 Acceptance Matrix (audit 2026-10-12, baseline 82f4cea)"
 echo "=============================================="
 
 # --- T01 B1: terminal-state revival ---------------------------------------
@@ -110,7 +133,11 @@ go_check T07b "B7 recovery audit: ReportProgress outbox persisted" \
 
 # --- T08 C1: helm first-install -------------------------------------------
 if command -v helm &>/dev/null; then
-  C1_OUT=$(helm template deployments/helm/janus-core 2>/dev/null)
+  # ingress.enabled=true + a hosts value: the ingress template must render
+  # alongside the default artifacts (no PVC, hooks present).
+  C1_OUT=$(helm template deployments/helm/janus-core \
+    --set ingress.enabled=true \
+    --set ingress.hosts[0].host=janus.acceptance.local 2>/dev/null)
   ok=1
   echo "$C1_OUT" | grep -q '"helm.sh/hook"' || ok=0          # hooks present
   echo "$C1_OUT" | grep -q 'PersistentVolumeClaim' && ok=0              # artifacts PVC gated off by default
@@ -166,6 +193,19 @@ go_check T12c "A3 template API creates executable rules" \
 go_check T13 "A4 sanitize: a.b ≠ a_b" \
   ./server/internal/driver/nats 'TestSanitize_NoDotCollision'
 
+# --- A1: legacy settle endpoints need admin scope (REQUIRED) ---------------
+# /complete and /fail settle a task's outcome; a task:write-only key must
+# get 403 (scopeRules: segment "tasks", suffixes /complete,/fail → admin).
+go_check A1 "A1 legacy /complete + /fail require admin (403 task:write)" \
+  ./server/tests/invariants 'TestLegacyCompleteFail_RequiresAdminScope' 1
+
+# --- A2: replay must not bypass/fail-open the approval gate (REQUIRED) -----
+# Lookup error → fail-closed; latest decision "expired" → replay denied.
+go_check A2 "A2 replay gate: lookup fail-closed + expired verdict denied" \
+  ./server/tests/invariants 'TestReplay_ApprovalGate_FailClosedAndExpired' 1
+go_check A2b "A2 replay verdict blocks requeue (PG)" \
+  ./server/internal/service 'TestReplay_ApprovalVerdictBlocksRequeue_PG' 1
+
 # --- Report -----------------------------------------------------------------
 echo ""
 echo "=============================================="
@@ -177,7 +217,16 @@ for r in "${RESULTS[@]}"; do
   printf "%-6s %-52s %s\n" "$id" "$name" "$status"
 done
 echo "=============================================="
-echo " PASS: $PASS   FAIL: $FAIL   SKIP: $SKIP   TOTAL: $((PASS+FAIL+SKIP))"
+echo " PASS: $PASS   FAIL: $FAIL   SKIP: $SKIP   REQ_SKIP: $REQ_SKIP   TOTAL: $((PASS+FAIL+SKIP))"
 echo "=============================================="
 
-[ "$FAIL" -eq 0 ]
+if [ "$FAIL" -ne 0 ]; then
+  exit 1
+fi
+if [ "$REQ_SKIP" -gt 0 ] && [ "${JANUS_ALLOW_REQUIRED_SKIP:-0}" != "1" ]; then
+  echo "FATAL: required scenario(s) skipped: ${REQ_SKIPPED_IDS[*]}"
+  echo "       a required SKIP is not a green run — enable the environment"
+  echo "       (e.g. JANUS_PG_*) or export JANUS_ALLOW_REQUIRED_SKIP=1 to allow"
+  exit 1
+fi
+exit 0

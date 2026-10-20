@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -205,6 +206,85 @@ func TestClient_StreamTask_TransportError(t *testing.T) {
 	c := NewClient(Config{BaseURL: url, TenantID: "test-tenant"})
 	err := c.StreamTask(context.Background(), "t-1", func(StreamEvent) error { return nil })
 	require.Error(t, err)
+}
+
+func TestClient_StreamTask_LeaseLostEvent(t *testing.T) {
+	for _, ev := range []string{"task.lease_lost", "lease.lost"} {
+		ev := ev
+		t.Run(ev, func(t *testing.T) {
+			srv := sseServer(t, []string{
+				"event: task.progress\ndata: {\"task_id\":\"t-1\"}\n",
+				"event: " + ev + "\ndata: {TASKID}\n",
+			})
+			defer srv.Close()
+			c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+			err := c.StreamTask(context.Background(), "t-1", func(evt StreamEvent) error {
+				return nil // keep consuming: the SDK itself must convert the signal
+			})
+			require.Error(t, err, "lease-lost event must surface as an error, not be consumed silently")
+			assert.ErrorIs(t, err, ErrLeaseLost, "errors.Is(err, ErrLeaseLost) must match")
+			var lle *LeaseLostError
+			require.ErrorAs(t, err, &lle)
+			assert.Equal(t, "t-1", lle.TaskID)
+		})
+	}
+}
+
+func TestClient_StreamTask_HTTP409IsLeaseLost(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	err := c.StreamTask(context.Background(), "t-1", func(StreamEvent) error { return nil })
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrLeaseLost, "409 on stream open must surface as ErrLeaseLost")
+	var lle *LeaseLostError
+	require.ErrorAs(t, err, &lle)
+	assert.Equal(t, "t-1", lle.TaskID)
+}
+
+// Stream-stop semantics: cancelling the caller's ctx must cancel the
+// underlying HTTP read — the server observes the closed connection and
+// StreamTask returns promptly with the context error instead of hanging.
+func TestClient_StreamTask_ContextCancelCancelsUnderlyingRead(t *testing.T) {
+	serverSawClose := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		_, _ = io.WriteString(w, "event: task.progress\ndata: {\"task_id\":\"t-1\"}\n\n")
+		flusher.Flush()
+		<-r.Context().Done() // blocks until the client tears the connection down
+		close(serverSawClose)
+	}))
+	defer srv.Close()
+	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.StreamTask(ctx, "t-1", func(StreamEvent) error {
+			cancel() // stop the stream from the consumer side
+			return nil
+		})
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "cancelled stream must return an error, not hang to EOF")
+		assert.ErrorIs(t, err, context.Canceled)
+	case <-time.After(5 * time.Second):
+		t.Fatal("StreamTask did not return after ctx cancellation")
+	}
+	select {
+	case <-serverSawClose:
+		// underlying read was cancelled: the server saw the connection close
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never observed the cancelled connection — underlying reader not cancelled")
+	}
 }
 
 func TestClient_PullTask_DecodeError(t *testing.T) {
