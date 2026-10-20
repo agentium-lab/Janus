@@ -1,8 +1,11 @@
 package routing
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
@@ -41,6 +44,12 @@ type mockPolicy struct{ denyAgents map[string]bool }
 
 func (m *mockPolicy) CheckRoute(_ context.Context, _, agentID, _ string) (bool, error) {
 	return !m.denyAgents[agentID], nil
+}
+
+type errorPolicy struct{ err error }
+
+func (p *errorPolicy) CheckRoute(_ context.Context, _, _, _ string) (bool, error) {
+	return false, p.err
 }
 
 type mockBudget struct{ denyAgents map[string]bool }
@@ -120,6 +129,29 @@ func TestRoute_CapabilityPolicyDeny(t *testing.T) {
 		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
 		core.TaskEnvelope{})
 	assert.Error(t, err)
+}
+
+func TestRoute_CapabilityPolicyCheckError_FailOpenWithLog(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	lookup := &mockLookup{
+		candidates: []AgentCandidate{{
+			AgentID: "agent-1", MailboxID: "mb-1", Status: "online",
+			Capabilities: []core.AgentCapability{{Capability: "code_review"}},
+		}},
+	}
+	r := NewRouter(lookup, &errorPolicy{err: fmt.Errorf("policy store down")}, nil)
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
+		core.TaskEnvelope{Policy: &core.PolicyContext{DataClassification: "internal"}})
+	require.NoError(t, err, "policy check errors must stay fail-open by doctrine")
+	assert.Equal(t, "agent-1", result.AgentID)
+	assert.Empty(t, result.FilteredOut)
+	assert.Contains(t, logs.String(), "fail-open")
+	assert.Contains(t, logs.String(), "agent-1")
 }
 
 func TestRoute_CapacityExceeded(t *testing.T) {

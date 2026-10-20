@@ -3,6 +3,7 @@ package routing
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/agentium-lab/Janus/core"
@@ -158,7 +159,11 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 		}
 		if r.policy != nil {
 			allowed, err := r.policy.CheckRoute(ctx, tenantID, c.AgentID, dataClass)
-			if err == nil && !allowed {
+			if err != nil {
+				// Fail-open by doctrine: the candidate is kept, but the
+				// swallowed policy error must not be invisible.
+				log.Printf("routing: policy check for candidate agent %s failed, keeping candidate (fail-open): %v", c.AgentID, err)
+			} else if !allowed {
 				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "policy_denied"})
 				continue
 			}

@@ -27,6 +27,40 @@ const (
 	defaultPolicyTemplateStatus                = "active"
 )
 
+// PolicyTemplateEnforced reports whether a policy rule minted from the
+// named template has an enforcement point in the broker. Tool templates
+// compile to action "tool.invoke", which no PolicyService.Evaluate call
+// site carries — tool governance is enforced at task.publish via data
+// classification/allowed_tools — so a stored tool.invoke rule can never
+// match. Unknown template names return true here and are rejected by
+// BuildPolicyRule with the dedicated unsupported-template error.
+func PolicyTemplateEnforced(templateName string) bool {
+	switch normalizePolicyTemplate(templateName) {
+	case PolicyTemplateRequireApprovalTool,
+		PolicyTemplateAllowAgentTool,
+		PolicyTemplateDenyAgentTool,
+		PolicyTemplateAllowTeamTool,
+		PolicyTemplateDenyTeamTool:
+		return false
+	default:
+		return true
+	}
+}
+
+// PolicyTemplateRefusalMessage returns the reason CreateFromTemplate (and
+// the surfaces that share it: CLI project apply/diff) refuse to store
+// rules minted from the named template, or "" when the template is
+// enforceable. It is the single source of truth for the refusal wording.
+func PolicyTemplateRefusalMessage(templateName string) string {
+	if PolicyTemplateEnforced(templateName) {
+		return ""
+	}
+	return fmt.Sprintf(
+		"template %q compiles to action \"tool.invoke\", but no execution point evaluates tool.invoke rules; tool policy is enforced at task.publish via data classification/allowed_tools, so the rule can never match",
+		normalizePolicyTemplate(templateName),
+	)
+}
+
 // PolicyRuleTemplateRequest is the simplified governance entry point used by
 // API, SDKs, and CLI. It always compiles into a standard PolicyRule.
 type PolicyRuleTemplateRequest struct {

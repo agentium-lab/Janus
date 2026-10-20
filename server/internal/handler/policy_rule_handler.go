@@ -73,14 +73,22 @@ func (h *PolicyRuleHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 // CreateFromTemplate compiles a simplified template request into the
-// canonical policy_rules model and creates it — the engine's own
-// BuildPolicyRule produces the condition/action shapes, so the rule is
-// executable by PolicyService.Evaluate from the moment it is stored.
+// canonical policy_rules model and creates it. Enforcement: task.publish
+// templates are evaluated by PolicyService.Evaluate at task publish and
+// replay, and task.route templates are evaluated when routing filters
+// capability candidates. Tool templates are refused with 422 — no
+// execution point evaluates action "tool.invoke" (tool policy is
+// enforced at task.publish via data classification/allowed_tools), so
+// storing them would only pretend to govern.
 func (h *PolicyRuleHandler) CreateFromTemplate(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	var req core.PolicyRuleTemplateRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if reason := core.PolicyTemplateRefusalMessage(req.Template); reason != "" {
+		writeError(w, http.StatusUnprocessableEntity, reason)
 		return
 	}
 	rule, err := req.BuildPolicyRule(tenantID)

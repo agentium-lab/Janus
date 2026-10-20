@@ -316,6 +316,10 @@ func diffProjectTenant(cmd *cobra.Command, cfg *ProjectConfig, tenantID string) 
 		return err
 	}
 	for _, template := range templates {
+		if reason := core.PolicyTemplateRefusalMessage(template.Template); reason != "" {
+			fmt.Fprintf(cmd.OutOrStdout(), "  ! policy template %s is not enforceable and will not be created: %s\n", template.Template, reason)
+			continue
+		}
 		rule, err := template.BuildPolicyRule(tenantID)
 		if err != nil {
 			return err
@@ -405,6 +409,12 @@ func applyProjectTenant(cmd *cobra.Command, cfg *ProjectConfig, tenantID string)
 		return err
 	}
 	for _, template := range templates {
+		// The broker refuses tool.invoke templates (they have no execution
+		// point); fail apply with the same message instead of sending a
+		// request that can only come back 422.
+		if reason := core.PolicyTemplateRefusalMessage(template.Template); reason != "" {
+			return fmt.Errorf("policy template %s: %s", template.Template, reason)
+		}
 		rule, err := template.BuildPolicyRule(tenantID)
 		if err != nil {
 			return err

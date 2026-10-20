@@ -72,18 +72,33 @@ type policyCheckerAdapter struct {
 	svc *service.PolicyService
 }
 
+// CheckRoute gates a routing candidate against tenant policy rules. Two
+// rule families share this hook, so BOTH actions are evaluated: hand-
+// written rules match action "execute", while data-classification
+// template rules match action "task.route". Policy matching is exact
+// equality on every condition key, so evaluating only one action would
+// leave the other family inert. The candidate is allowed only when BOTH
+// evaluations allow; deny or approval_required from either filters it.
+// An Evaluate error is returned to the caller — the router keeps the
+// candidate (fail-open) by doctrine.
 func (a policyCheckerAdapter) CheckRoute(ctx context.Context, tenantID, agentID, dataClass string) (bool, error) {
-	decision, err := a.svc.Evaluate(ctx, core.PolicyInput{
+	input := core.PolicyInput{
 		TenantID: tenantID,
 		Actor:    core.PolicyActor{Type: "agent", ID: agentID},
-		Action:   "execute",
 		Resource: core.PolicyResource{Type: "agent", Value: agentID},
 		Context:  core.PolicyContextData{DataClassification: dataClass, TargetAgentID: agentID},
-	})
-	if err != nil {
-		return false, err
 	}
-	return decision.Decision == core.PolicyDecisionAllow, nil
+	for _, action := range []string{"execute", "task.route"} {
+		input.Action = action
+		decision, err := a.svc.Evaluate(ctx, input)
+		if err != nil {
+			return false, err
+		}
+		if decision.Decision != core.PolicyDecisionAllow {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 type budgetCheckerAdapter struct {
