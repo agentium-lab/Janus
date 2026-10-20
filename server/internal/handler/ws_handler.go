@@ -92,6 +92,18 @@ func NewWebSocketHandler(broadcaster EventBroadcaster) *WebSocketHandler {
 }
 
 func (h *WebSocketHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Subscribing to the tenant event stream is a data-plane read: an
+	// authenticated principal must carry task:read, the same scope
+	// RequiredScope maps "/ws" to (ScopeGuard enforces it in the production
+	// chain; this re-check keeps the guard's verdict at the handler).
+	// Legacy empty-scope keys pass via Principal.HasScope; requests without
+	// a principal (dev mode) are unaffected.
+	if p, ok := auth.PrincipalFromContext(r.Context()); ok && !p.HasScope(auth.ScopeTaskRead) {
+		w.Header().Set("Content-Type", "application/json")
+		http.Error(w, `{"error":"missing required scope \"task:read\""}`, http.StatusForbidden)
+		return
+	}
+
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade: %v", err)

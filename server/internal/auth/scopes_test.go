@@ -49,7 +49,7 @@ func TestRequiredScope(t *testing.T) {
 		{"a2a read", http.MethodGet, "/a2a/task/x/status", "task:read", true},
 		{"mcp write", http.MethodPost, "/mcp", "task:write", true},
 		{"acp write", http.MethodPost, "/acp/runs", "task:write", true},
-		{"ws exempt", http.MethodGet, "/ws", "", false},
+		{"ws subscribe needs task:read", http.MethodGet, "/ws", ScopeTaskRead, true},
 	}
 	for _, tc := range cases {
 		got, required := RequiredScope(tc.method, tc.path)

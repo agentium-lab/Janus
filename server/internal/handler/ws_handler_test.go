@@ -23,8 +23,18 @@ func withWSAuth(h http.Handler) http.Handler {
 		if t == "" {
 			t = "default"
 		}
-		r = r.WithContext(context.WithValue(r.Context(), auth.TenantCtxKey, t))
-		h.ServeHTTP(w, r)
+		ctx := context.WithValue(r.Context(), auth.TenantCtxKey, t)
+		// ?scopes=admin,task:read injects a principal carrying those scopes,
+		// ?scopes=legacy a pre-scopes empty principal (full data-plane access);
+		// an omitted param leaves no principal, mimicking dev mode.
+		if s := r.URL.Query().Get("scopes"); s != "" {
+			p := auth.Principal{TenantID: t}
+			if s != "legacy" {
+				p.Scopes = strings.Split(s, ",")
+			}
+			ctx = context.WithValue(ctx, auth.PrincipalCtxKey, p)
+		}
+		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -209,6 +219,62 @@ func TestWebSocketHandler_ClientDisconnect(t *testing.T) {
 	subs := b.fans["test"]
 	b.mu.Unlock()
 	assert.Empty(t, subs, "subscriber should be removed after disconnect")
+}
+
+func TestWebSocketHandler_RequiresTaskReadScope(t *testing.T) {
+	inbound := make(chan core.JanusEvent, 16)
+	b := NewFanoutBroadcaster(inbound)
+	h := NewWebSocketHandler(b)
+
+	srv := httptest.NewServer(withWSAuth(h))
+	defer srv.Close()
+
+	// Same rule as auth.RequiredScope("GET", "/ws") == task:read: a
+	// task:write-only key must not subscribe to the event stream.
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "?tenant=test&scopes=task:write"
+	hdr := http.Header{}
+	hdr.Set("Origin", srv.URL)
+	ws, resp, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+	require.Error(t, err, "task:write-only principal must be refused")
+	require.NotNil(t, resp)
+	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
+	resp.Body.Close()
+	require.Nil(t, ws)
+}
+
+func TestWebSocketHandler_ScopeCarveouts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		scopes string
+	}{
+		{"task:read subscribes", "task:read"},
+		{"admin subscribes", "admin"},
+		{"legacy empty-scope key subscribes", "legacy"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inbound := make(chan core.JanusEvent, 16)
+			b := NewFanoutBroadcaster(inbound)
+			h := NewWebSocketHandler(b)
+
+			srv := httptest.NewServer(withWSAuth(h))
+			defer srv.Close()
+
+			ws := wsWaitSubscribed(t, srv, inbound, "test", "?tenant=test&scopes="+tc.scopes)
+			ws.Close()
+		})
+	}
+}
+
+func TestWebSocketHandler_NoPrincipal_DevModePasses(t *testing.T) {
+	inbound := make(chan core.JanusEvent, 16)
+	b := NewFanoutBroadcaster(inbound)
+	h := NewWebSocketHandler(b)
+
+	srv := httptest.NewServer(withWSAuth(h))
+	defer srv.Close()
+
+	ws := wsWaitSubscribed(t, srv, inbound, "test", "?tenant=test")
+	ws.Close()
 }
 
 func TestWebSocketHandler_UpgradeFailure(t *testing.T) {

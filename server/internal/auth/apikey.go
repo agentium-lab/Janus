@@ -137,11 +137,18 @@ var scopeRules = []scopeRule{
 }
 
 // RequiredScope resolves which scope a request demands. ok=false marks paths
-// outside the versioned data-plane API (probes, gateways, ws) as needing no
+// outside the versioned data-plane API (probes, gateways) as needing no
 // key scope.
 func RequiredScope(method, path string) (scope string, ok bool) {
 	if path == "/v1/tenants" {
 		return ScopePlatformAdmin, true // tenant management is the platform control plane
+	}
+	// The WS event stream is a data-plane READ of the tenant event plane:
+	// subscribing requires task:read. Legacy empty-scope keys keep access
+	// via Principal.HasScope; the WS handler re-checks the same scope
+	// before upgrading.
+	if path == "/ws" {
+		return ScopeTaskRead, true
 	}
 	if !strings.HasPrefix(path, "/v1/tenants/") &&
 		!strings.HasPrefix(path, "/a2a/") &&

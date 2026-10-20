@@ -96,20 +96,11 @@ type ScopedValidator interface {
 	HasScope(ctx context.Context, scope string) bool
 }
 
-// scopeForMethod maps a gRPC full method to its required scope. Mutating
-// methods (Publish/Create/Ack/Nack/Approve/Reject) need task:write; queries
-// default to task:read.
+// scopeForMethod resolves the required scope for a gRPC full method from
+// auth.RequiredScopeGRPC — the per-method table mirroring auth.RequiredScope's
+// HTTP rules — so both protocols enforce identical scopes per operation.
 func scopeForMethod(fullMethod string) string {
-	for _, mutate := range []string{
-		"Publish", "Create", "Ack", "Nack", "Approve", "Reject",
-		"Cancel", "Replay", "Discard", "Pause", "Resume",
-		"Register", "Update", "Heartbeat", "Pull", "Start",
-	} {
-		if strings.Contains(fullMethod, mutate) {
-			return "task:write"
-		}
-	}
-	return "task:read"
+	return auth.RequiredScopeGRPC(fullMethod)
 }
 
 // PrincipalInjector is implemented by validators that can inject a full
