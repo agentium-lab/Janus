@@ -224,12 +224,14 @@ func TestCov_TaskService_Create_ContextRefBind(t *testing.T) {
 	})
 
 	t.Run("bind success", func(t *testing.T) {
-		repo := &cbCtxRefRepo{getResult: &core.ContextRef{ID: "r1", TenantID: "acme"}}
+		repo := newMockContextRefRepo()
+		repo.refs["r1"] = &core.ContextRef{ID: "r1", TenantID: "acme", Type: "doc", URI: "file:///d"}
 		svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil).
 			WithContextRefService(NewContextRefService(repo))
 		_, err := svc.Create(ctx, task)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"r1"}, repo.binds)
+		assert.Equal(t, []string{"t-ctx:r1"}, repo.binds)
+		assert.Len(t, repo.refs, 1, "reused ref must be bound without a duplicate insert")
 	})
 }
 

@@ -87,107 +87,118 @@ func (s *ContextRefService) Detach(ctx context.Context, tenantID, id string) err
 }
 
 func (s *ContextRefService) NormalizeAndBind(ctx context.Context, tenantID, taskID string, refs []core.ContextRef) error {
+	plan, err := s.Prepare(ctx, tenantID, refs)
+	if err != nil {
+		return err
+	}
+	return s.ApplyPlanTx(ctx, nil, tenantID, taskID, plan)
+}
+
+// RefWrite is one entry of the explicit write plan returned by Prepare.
+// IsNew is the insert-vs-bind decision itself — newness is planned, never
+// re-inferred from CreatedAt (prepareRef stamps CreatedAt on generation,
+// so the old "CreatedAt == \"\" means new" test inverted for exactly the
+// refs it was meant to catch).
+type RefWrite struct {
+	Ref     core.ContextRef
+	IsNew   bool
+	Trusted *core.ContextRef // reused ref: the record repo.Get returned
+}
+
+// ApplyPlanTx consumes a Prepare write plan: IsNew entries insert, every
+// entry binds — on the caller's tx when non-nil (task-create transaction),
+// else on the pool (adapter path under MemoryLifecycle).
+func (s *ContextRefService) ApplyPlanTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, plan []RefWrite) error {
+	for i := range plan {
+		if err := s.applyWrite(ctx, tx, tenantID, taskID, &plan[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Prepare validates refs, pre-generates their IDs, and resolves refs that
+// reference an existing ID — WITHOUT writing. Run it BEFORE the task's
+// create transaction so (a) a bad ref rejects the create before anything
+// is published, and (b) the generated IDs land in the persisted envelope.
+// It returns the explicit per-ref write plan consumed by ApplyPlanTx inside
+// the task's transaction.
+func (s *ContextRefService) Prepare(ctx context.Context, tenantID string, refs []core.ContextRef) ([]RefWrite, error) {
+	plan := make([]RefWrite, 0, len(refs))
 	for i := range refs {
-		isNew, err := s.prepareRef(ctx, tenantID, &refs[i])
+		w, err := s.prepareRef(ctx, tenantID, &refs[i])
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if refs[i].ID == "" {
-			continue // empty stub (no type/uri) — nothing to bind
+		if w.Ref.ID == "" {
+			continue // empty stub (no type/uri) — nothing to write
 		}
-		if err := s.writeRef(ctx, nil, tenantID, taskID, &refs[i], isNew); err != nil {
-			return err
-		}
+		plan = append(plan, w)
 	}
-	return nil
+	return plan, nil
 }
 
-// NormalizeAndBindTx is the transactional binding: refs insert+bind commit
-// inside the caller's (task-create) transaction. Prepare must have run
-// first so IDs are generated and refs validated pre-commit.
-func (s *ContextRefService) NormalizeAndBindTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, refs []core.ContextRef) error {
-	for i := range refs {
-		if refs[i].ID == "" {
-			continue
-		}
-		if err := s.writeRef(ctx, tx, tenantID, taskID, &refs[i], refs[i].CreatedAt == ""); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// Prepare validates refs and pre-generates their IDs WITHOUT writing:
-// run it BEFORE the task's create transaction so (a) a bad ref rejects the
-// create before anything is published, and (b) the generated IDs land in
-// the persisted envelope. The insert+bind then happens inside the task's
-// transaction via NormalizeAndBindTx.
-func (s *ContextRefService) Prepare(ctx context.Context, tenantID string, refs []core.ContextRef) error {
-	for i := range refs {
-		if _, err := s.prepareRef(ctx, tenantID, &refs[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// prepareRef is the shared first half of NormalizeAndBind: tenant checks,
-// ID generation for new refs, existence+tenant check for referenced IDs.
-// It returns whether the ref is newly created (needs an insert).
-func (s *ContextRefService) prepareRef(ctx context.Context, tenantID string, ref *core.ContextRef) (bool, error) {
+// prepareRef is the shared first half: tenant checks, ID generation for
+// new refs, existence+tenant resolution for referenced IDs. It returns the
+// planned write: generated refs are IsNew (insert then bind); refs resolved
+// by an existing ID bind to the trusted record repo.Get returned, with
+// caller-supplied fields backfilled from it.
+func (s *ContextRefService) prepareRef(ctx context.Context, tenantID string, ref *core.ContextRef) (RefWrite, error) {
 	if ref.TenantID == "" {
 		ref.TenantID = tenantID
 	}
 	if ref.TenantID != tenantID {
-		return false, fmt.Errorf("context ref tenant mismatch: ref tenant=%s, task tenant=%s", ref.TenantID, tenantID)
+		return RefWrite{}, fmt.Errorf("context ref tenant mismatch: ref tenant=%s, task tenant=%s", ref.TenantID, tenantID)
 	}
 	if ref.ID == "" {
 		if ref.Type == "" || ref.URI == "" {
-			return false, nil
+			return RefWrite{Ref: *ref}, nil
 		}
 		id, err := generateContextRefID()
 		if err != nil {
-			return false, err
+			return RefWrite{}, err
 		}
 		ref.ID = id
-		// Stamp created_at on generation: it both feeds the insert and lets
-		// the tx path distinguish newly generated refs (need InsertTx) from
-		// refs resolved by an existing ID (bind only).
 		ref.CreatedAt = time.Now().UTC().Format(time.RFC3339)
-		return true, nil
+		return RefWrite{Ref: *ref, IsNew: true}, nil
 	}
 	existing, err := s.repo.Get(ctx, tenantID, ref.ID)
 	if err != nil {
-		return false, fmt.Errorf("context ref %s not found in tenant %s: %w", ref.ID, tenantID, err)
+		return RefWrite{}, fmt.Errorf("context ref %s not found in tenant %s: %w", ref.ID, tenantID, err)
 	}
 	if existing.TenantID != tenantID {
-		return false, fmt.Errorf("cross-tenant context ref access denied")
+		return RefWrite{}, fmt.Errorf("cross-tenant context ref access denied")
 	}
-	return false, nil
+	// Backfill from the trusted record: the plan binds (and the persisted
+	// envelope carries) stored fields, never caller-declared metadata.
+	trusted := *existing
+	*ref = trusted
+	return RefWrite{Ref: trusted, Trusted: &trusted}, nil
 }
 
-// writeRef is the shared second half: insert (new refs only) + bind, on
-// the caller's tx when non-nil (ContextRefTxRepo), else on the pool.
-func (s *ContextRefService) writeRef(ctx context.Context, tx pgx.Tx, tenantID, taskID string, ref *core.ContextRef, isNew bool) error {
-	if isNew {
+// applyWrite is the shared second half of the plan: insert (new refs only)
+// + bind, on the caller's tx when non-nil (ContextRefTxRepo), else on the
+// pool.
+func (s *ContextRefService) applyWrite(ctx context.Context, tx pgx.Tx, tenantID, taskID string, w *RefWrite) error {
+	if w.IsNew {
 		if tx != nil && s.txRepo != nil {
-			if err := s.txRepo.InsertTx(ctx, tx, *ref); err != nil {
+			if err := s.txRepo.InsertTx(ctx, tx, w.Ref); err != nil {
 				return fmt.Errorf("insert context ref: %w", err)
 			}
 		} else {
-			if err := s.repo.Insert(ctx, *ref); err != nil {
+			if err := s.repo.Insert(ctx, w.Ref); err != nil {
 				return fmt.Errorf("insert context ref: %w", err)
 			}
 		}
 	}
 	if tx != nil && s.txRepo != nil {
-		if err := s.txRepo.BindToTaskTx(ctx, tx, tenantID, taskID, ref.ID); err != nil {
-			return fmt.Errorf("bind context ref %s to task %s: %w", ref.ID, taskID, err)
+		if err := s.txRepo.BindToTaskTx(ctx, tx, tenantID, taskID, w.Ref.ID); err != nil {
+			return fmt.Errorf("bind context ref %s to task %s: %w", w.Ref.ID, taskID, err)
 		}
 		return nil
 	}
-	if err := s.repo.BindToTask(ctx, tenantID, taskID, ref.ID); err != nil {
-		return fmt.Errorf("bind context ref %s to task %s: %w", ref.ID, taskID, err)
+	if err := s.repo.BindToTask(ctx, tenantID, taskID, w.Ref.ID); err != nil {
+		return fmt.Errorf("bind context ref %s to task %s: %w", w.Ref.ID, taskID, err)
 	}
 	return nil
 }

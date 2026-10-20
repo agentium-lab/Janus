@@ -293,15 +293,19 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	// Context refs: validate and pre-generate IDs BEFORE the create
 	// transaction — a bad ref must reject the create before anything is
 	// published, and the generated IDs must ride in the persisted envelope.
-	// The insert+bind itself commits inside createAtomic.
+	// The explicit write plan (insert vs bind per ref) commits inside
+	// createAtomic.
+	var refPlan []RefWrite
 	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
-		if err := s.contextRefSvc.Prepare(ctx, task.TenantID, task.Envelope.ContextRefs); err != nil {
-			return nil, fmt.Errorf("context ref prepare: %w", err)
+		var perr error
+		refPlan, perr = s.contextRefSvc.Prepare(ctx, task.TenantID, task.Envelope.ContextRefs)
+		if perr != nil {
+			return nil, fmt.Errorf("context ref prepare: %w", perr)
 		}
 	}
 
 	var result *core.Task
-	if err := s.createAtomic(ctx, task); err != nil {
+	if err := s.createAtomic(ctx, task, refPlan); err != nil {
 		return nil, err
 	}
 	metrics.TasksCreated.WithLabelValues(task.TenantID).Inc()
@@ -328,7 +332,7 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 // mailbox) the queue message in one transaction. In memory mode the
 // PublishingOutbox delivers synchronously, preserving the legacy direct
 // observable behavior.
-func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
+func (s *TaskService) createAtomic(ctx context.Context, task core.Task, refPlan []RefWrite) error {
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
 		if err := s.taskTx.CreateTx(ctx, tx, task); err != nil {
 			return fmt.Errorf("create task: %w", err)
@@ -356,11 +360,12 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 			}
 		}
 
-		// Context refs commit with the task: insert new refs and bind them
-		// in the SAME transaction, so a post-commit bind failure can never
-		// leave a published task with unbound refs.
-		if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
-			if err := s.contextRefSvc.NormalizeAndBindTx(ctx, tx, task.TenantID, task.ID, task.Envelope.ContextRefs); err != nil {
+		// Context refs commit with the task: the prepared write plan's
+		// inserts (new refs) and binds (all refs) land in the SAME
+		// transaction, so a failure can never leave a published task whose
+		// bind rows point at missing context_refs entities.
+		if len(refPlan) > 0 {
+			if err := s.contextRefSvc.ApplyPlanTx(ctx, tx, task.TenantID, task.ID, refPlan); err != nil {
 				return fmt.Errorf("context ref bind in tx: %w", err)
 			}
 		}
