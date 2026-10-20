@@ -96,6 +96,20 @@ type ApprovalRepoTxAdapter struct {
 	ApprovalRepo
 }
 
+// ContextRefRepoTxAdapter bridges non-PG context-ref repos into the
+// transactional binding path (tx is ignored under MemoryLifecycle).
+type ContextRefRepoTxAdapter struct {
+	ContextRefRepo
+}
+
+func (a ContextRefRepoTxAdapter) InsertTx(ctx context.Context, _ pgx.Tx, ref core.ContextRef) error {
+	return a.Insert(ctx, ref)
+}
+
+func (a ContextRefRepoTxAdapter) BindToTaskTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, contextRefID string) error {
+	return a.BindToTask(ctx, tenantID, taskID, contextRefID)
+}
+
 func (a ApprovalRepoTxAdapter) GetLatestByTask(ctx context.Context, tenantID, taskID string) (*core.Approval, error) {
 	return a.ApprovalRepo.GetLatestByTask(ctx, tenantID, taskID)
 }

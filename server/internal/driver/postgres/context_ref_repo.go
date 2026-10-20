@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +32,26 @@ func (r *ContextRefRepo) Insert(ctx context.Context, ref core.ContextRef) error 
 		createdAt = time.Now()
 	}
 	_, err := r.pool.Exec(ctx,
+		`INSERT INTO context_refs (tenant_id, id, type, uri, hash, classification, access_scope, expires_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
+		ref.TenantID, ref.ID, ref.Type, ref.URI, ref.Hash, ref.Classification, scopeJSON, expiresAt, createdAt,
+	)
+	return err
+}
+
+func (r *ContextRefRepo) InsertTx(ctx context.Context, tx pgx.Tx, ref core.ContextRef) error {
+	scopeJSON, _ := json.Marshal(ref.AccessScope)
+	var expiresAt *string
+	if ref.ExpiresAt != "" {
+		expiresAt = &ref.ExpiresAt
+	}
+	var createdAt interface{}
+	if ref.CreatedAt != "" {
+		createdAt = ref.CreatedAt
+	} else {
+		createdAt = time.Now()
+	}
+	_, err := tx.Exec(ctx,
 		`INSERT INTO context_refs (tenant_id, id, type, uri, hash, classification, access_scope, expires_at, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz, $9)`,
 		ref.TenantID, ref.ID, ref.Type, ref.URI, ref.Hash, ref.Classification, scopeJSON, expiresAt, createdAt,
@@ -96,6 +117,20 @@ func (r *ContextRefRepo) ListByTask(ctx context.Context, tenantID, taskID string
 
 func (r *ContextRefRepo) BindToTask(ctx context.Context, tenantID, taskID, contextRefID string) error {
 	_, err := r.pool.Exec(ctx,
+		`INSERT INTO task_context_refs (tenant_id, task_id, context_ref_id)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT DO NOTHING`,
+		tenantID, taskID, contextRefID,
+	)
+	return err
+}
+
+// BindToTaskTx is the transactional variant of BindToTask: the task→ref
+// binding must commit in the SAME transaction as the task itself, or a
+// failure after the task commit left a published task whose context refs
+// were never bound.
+func (r *ContextRefRepo) BindToTaskTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, contextRefID string) error {
+	_, err := tx.Exec(ctx,
 		`INSERT INTO task_context_refs (tenant_id, task_id, context_ref_id)
 		 VALUES ($1, $2, $3)
 		 ON CONFLICT DO NOTHING`,

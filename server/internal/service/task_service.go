@@ -290,6 +290,16 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		}
 	}
 
+	// Context refs: validate and pre-generate IDs BEFORE the create
+	// transaction — a bad ref must reject the create before anything is
+	// published, and the generated IDs must ride in the persisted envelope.
+	// The insert+bind itself commits inside createAtomic.
+	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
+		if err := s.contextRefSvc.Prepare(ctx, task.TenantID, task.Envelope.ContextRefs); err != nil {
+			return nil, fmt.Errorf("context ref prepare: %w", err)
+		}
+	}
+
 	var result *core.Task
 	if err := s.createAtomic(ctx, task); err != nil {
 		return nil, err
@@ -308,12 +318,6 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		// an external writer removed it, not a create failure.
 		if existing, aerr := s.approvalSvc.repo.GetPendingByTask(ctx, task.TenantID, task.ID); aerr == nil && existing == nil {
 			return result, fmt.Errorf("approval gate: task %s persisted but its approval record is missing", task.ID)
-		}
-	}
-
-	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
-		if err := s.contextRefSvc.NormalizeAndBind(ctx, task.TenantID, task.ID, task.Envelope.ContextRefs); err != nil {
-			return result, fmt.Errorf("context ref bind: %w", err)
 		}
 	}
 
@@ -349,6 +353,15 @@ func (s *TaskService) createAtomic(ctx context.Context, task core.Task) error {
 			approval.ID = ulid()
 			if err := s.approvalTx.CreateTx(ctx, tx, approval); err != nil {
 				return fmt.Errorf("approval gate in tx: %w", err)
+			}
+		}
+
+		// Context refs commit with the task: insert new refs and bind them
+		// in the SAME transaction, so a post-commit bind failure can never
+		// leave a published task with unbound refs.
+		if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
+			if err := s.contextRefSvc.NormalizeAndBindTx(ctx, tx, task.TenantID, task.ID, task.Envelope.ContextRefs); err != nil {
+				return fmt.Errorf("context ref bind in tx: %w", err)
 			}
 		}
 
@@ -538,9 +551,17 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	//     action matched nothing and defaulted to Allow).
 	if s.approvalSvc != nil {
 		latest, aerr := s.approvalSvc.repo.GetLatestByTask(ctx, task.TenantID, task.ID)
-		if aerr == nil && latest != nil {
+		if aerr != nil {
+			// Fail-closed: an approval-lookup error must not silently skip the
+			// gate (only "no approval exists" clears it, and that is (nil, nil)).
+			return nil, fmt.Errorf("replay approval check: %w", aerr)
+		}
+		if latest != nil {
 			if latest.Decision == "rejected" {
 				return nil, fmt.Errorf("replay denied: the task's approval was rejected")
+			}
+			if latest.Decision == "expired" {
+				return nil, fmt.Errorf("replay denied: the task's approval expired")
 			}
 			if latest.Decision == "" && latest.Status == "pending" {
 				return nil, fmt.Errorf("replay denied: an approval is still pending for this task")

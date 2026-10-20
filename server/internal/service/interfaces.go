@@ -55,7 +55,7 @@ type MailboxRepo interface {
 type TaskAttemptRepo interface {
 	Create(ctx context.Context, attempt core.TaskAttempt) error
 	GetLatest(ctx context.Context, tenantID, taskID string) (*core.TaskAttempt, error)
-	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) (bool, error)
+	UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int, leaseID string) (bool, error)
 	UpdateFinished(ctx context.Context, tenantID, taskID string, attempt int, status string, errJSON []byte, usageJSON []byte) error
 	UpdateFinishedWithCheck(ctx context.Context, tenantID, taskID string, attempt int, leaseID, status string, errJSON []byte, usageJSON []byte) (bool, error)
 	FinishOpenAttempts(ctx context.Context, tenantID, taskID, status string) (int64, error)

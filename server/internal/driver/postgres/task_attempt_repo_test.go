@@ -92,7 +92,7 @@ func TestTaskAttemptRepo_UpdateHeartbeat(t *testing.T) {
 		AgentID: "agent-a", LeaseID: "lease_hb", Status: "running", StartedAt: time.Now(),
 	}))
 
-	active, err := repo.UpdateHeartbeat(ctx, "acme", "task_003", 1)
+	active, err := repo.UpdateHeartbeat(ctx, "acme", "task_003", 1, "lease_hb")
 	require.NoError(t, err)
 	assert.True(t, active, "heartbeat must stamp the running attempt")
 
@@ -156,7 +156,7 @@ func TestTaskAttemptRepo_UpdateHeartbeatNotFound(t *testing.T) {
 	repo := NewTaskAttemptRepository(pool)
 	ctx := context.Background()
 
-	active, err := repo.UpdateHeartbeat(ctx, "acme", "nonexistent", 1)
+	active, err := repo.UpdateHeartbeat(ctx, "acme", "nonexistent", 1, "lease_none")
 	assert.NoError(t, err)
 	assert.False(t, active, "no active row -> not stamped")
 }

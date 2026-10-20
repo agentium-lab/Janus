@@ -128,6 +128,10 @@ var scopeRules = []scopeRule{
 	{segment: "budgets", scope: ScopeAdmin},
 	{segment: "dlq", suffixes: []string{"/replay", "/discard"}, scope: ScopeAdmin},
 	{segment: "audit", suffixes: []string{"/replay"}, scope: ScopeAdmin},
+	// Legacy force-status endpoints bypass the dispatch lease protocol:
+	// unlike /dispatch/ack|nack they carry no lease CAS, so they are gated
+	// to admin instead of any task:write key.
+	{segment: "tasks", suffixes: []string{"/complete", "/fail"}, scope: ScopeAdmin},
 	{segment: "traces", scope: ScopeAuditRead},
 	{segment: "outbox", suffixes: []string{"/retry-dead"}, scope: ScopeAdmin},
 }

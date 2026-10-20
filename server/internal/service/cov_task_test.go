@@ -214,13 +214,13 @@ func TestCov_TaskService_Create_ContextRefBind(t *testing.T) {
 	}
 	task.Envelope.ContextRefs = []core.ContextRef{{TenantID: "acme", ID: "r1"}}
 
-	t.Run("bind error returned with result", func(t *testing.T) {
+	t.Run("bind error aborts the create transaction", func(t *testing.T) {
 		svc := NewTaskService(&mockTaskRepo{}, &mockQueueDriver{}, nil, nil).
-			WithContextRefService(NewContextRefService(&cbCtxRefRepo{bindErr: errors.New("bind fail")}))
+			WithContextRefService(NewContextRefService(&cbCtxRefRepo{getResult: &core.ContextRef{ID: "r1", TenantID: "acme"}, bindErr: errors.New("bind fail")}))
 		result, err := svc.Create(ctx, task)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "context ref bind")
-		assert.NotNil(t, result, "created task is returned alongside the bind error")
+		assert.Nil(t, result, "a bind failure must abort the create — the task must NOT publish with unbound refs")
 	})
 
 	t.Run("bind success", func(t *testing.T) {

@@ -198,3 +198,33 @@ func TestAuditReplay_RequiresAdminScope(t *testing.T) {
 	require.True(t, ok, "replay path must be in the scope table")
 	assert.Equal(t, auth.ScopeAdmin, scope, "audit replay must require admin scope")
 }
+
+// A1: the legacy /complete and /fail endpoints settle a task's outcome —
+// an operator-level privilege, same class as approvals /approve|/reject.
+// They must sit behind the admin scope: a task:write-only key gets 403.
+func TestLegacyCompleteFail_RequiresAdminScope(t *testing.T) {
+	legacy := []string{
+		"/v1/tenants/acme/tasks/t1/complete",
+		"/v1/tenants/acme/tasks/t1/fail",
+	}
+	for _, path := range legacy {
+		scope, ok := auth.RequiredScope(http.MethodPost, path)
+		require.True(t, ok, "%s must be in the scope table", path)
+		assert.Equal(t, auth.ScopeAdmin, scope, "%s must require admin scope", path)
+	}
+
+	// Through the real guard: a task:write-only principal must be refused
+	// (403) and must never reach the settle handler.
+	reached := false
+	handler := auth.ScopeGuard(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		reached = true
+	}))
+	for _, path := range legacy {
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		ctx := context.WithValue(req.Context(), auth.PrincipalCtxKey, auth.Principal{TenantID: "acme", Scopes: []string{auth.ScopeTaskWrite}})
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req.WithContext(ctx))
+		assert.Equal(t, http.StatusForbidden, rec.Code, "task:write-only key on %s: want 403, got %d", path, rec.Code)
+	}
+	assert.False(t, reached, "a task:write-only key must never reach the legacy settle handlers")
+}

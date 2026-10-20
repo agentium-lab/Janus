@@ -92,9 +92,9 @@ func (m *mockDispatchAttemptRepo) GetLatest(_ context.Context, tenantID, taskID 
 	return nil, fmt.Errorf("not found")
 }
 
-func (m *mockDispatchAttemptRepo) UpdateHeartbeat(_ context.Context, tenantID, taskID string, attempt int) (bool, error) {
+func (m *mockDispatchAttemptRepo) UpdateHeartbeat(_ context.Context, tenantID, taskID string, attempt int, leaseID string) (bool, error) {
 	for _, a := range m.attempts {
-		if a.TaskID == taskID && a.Attempt == attempt && (a.Status == "claimed" || a.Status == "running") {
+		if a.TaskID == taskID && a.Attempt == attempt && a.LeaseID == leaseID && (a.Status == "claimed" || a.Status == "running") {
 			now := time.Now()
 			a.HeartbeatAt = &now
 			return true, nil

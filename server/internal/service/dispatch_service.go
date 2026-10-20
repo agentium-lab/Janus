@@ -472,7 +472,7 @@ func (s *DispatchService) TaskHeartbeatAs(ctx context.Context, tenantID, taskID,
 		return fmt.Errorf("agent %s does not own the current attempt", agentID)
 	}
 
-	active, herr := s.attemptRepo.UpdateHeartbeat(ctx, tenantID, taskID, attempt.Attempt)
+	active, herr := s.attemptRepo.UpdateHeartbeat(ctx, tenantID, taskID, attempt.Attempt, leaseID)
 	if herr != nil {
 		return herr
 	}

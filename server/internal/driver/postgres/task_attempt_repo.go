@@ -90,12 +90,16 @@ func (r *TaskAttemptRepository) GetLatest(ctx context.Context, tenantID, taskID 
 	return &a, nil
 }
 
-func (r *TaskAttemptRepository) UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int) (bool, error) {
+func (r *TaskAttemptRepository) UpdateHeartbeat(ctx context.Context, tenantID, taskID string, attempt int, leaseID string) (bool, error) {
+	// lease_id is part of the CAS: attempt numbers restart at 1 after a
+	// replay, so a heartbeat that read the OLD attempt before the replay
+	// must not refresh the NEW round's same-numbered attempt.
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE task_attempts SET heartbeat_at = now()
 		 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3
+		   AND lease_id = NULLIF($4, '')
 		   AND status IN ('claimed', 'running')`,
-		tenantID, taskID, attempt,
+		tenantID, taskID, attempt, leaseID,
 	)
 	if err != nil {
 		return false, err
