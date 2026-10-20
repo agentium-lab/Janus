@@ -667,6 +667,13 @@ func TestRollingUpgrade_LegacyResourceAdoption(t *testing.T) {
 		Retention: jetstream.WorkQueuePolicy,
 	})
 	require.NoError(t, err)
+	legacyEvents := legacyStreamName(tn, "EVENTS")
+	_, err = d.js.CreateStream(ctx, jetstream.StreamConfig{
+		Name:      legacyEvents,
+		Subjects:  []string{fmt.Sprintf("janus.%s.events.>", tn)},
+		Retention: jetstream.LimitsPolicy,
+	})
+	require.NoError(t, err)
 	_, err = d.js.CreateStream(ctx, jetstream.StreamConfig{
 		Name:      legacyStreamName(tn, "DLQ_"+legacySanitize(mb)),
 		Subjects:  []string{dlqSubject(tn, mb)},
@@ -706,6 +713,44 @@ func TestRollingUpgrade_LegacyResourceAdoption(t *testing.T) {
 	if _, err := d.js.Stream(ctx, legacyTasks); err != nil {
 		t.Fatalf("legacy task stream must survive adoption: %v", err)
 	}
+	if _, err := d.js.Stream(ctx, legacyEvents); err != nil {
+		t.Fatalf("legacy event stream must survive adoption: %v", err)
+	}
+	if _, err := d.js.Stream(ctx, streamName(tn, "EVENTS")); err == nil {
+		t.Fatal("new-named EVENTS stream must not exist; the legacy stream was adopted")
+	}
+
+	// Event replay through the ADOPTED legacy-named EVENTS stream: the
+	// old ReplayEvents built its consumer on streamName(tn, "EVENTS") — a
+	// nonexistent stream — so replay failed for adopted tenants.
+	replayTypes := []core.EventType{core.EventTaskCreated, core.EventTaskStarted, core.EventTaskCompleted}
+	replayIDs := []string{"upg-evt-1", "upg-evt-2", "upg-evt-3"}
+	for i, id := range replayIDs {
+		require.NoError(t, d.PublishEvent(ctx, core.JanusEvent{
+			EventID:   id,
+			EventType: replayTypes[i],
+			TenantID:  tn,
+			TaskID:   "upg-task-1",
+			Payload:  []byte(`{"s":"replay"}`),
+			Timestamp: time.Now().UTC().Truncate(time.Millisecond),
+		}))
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	iter, err := d.ReplayEvents(ctx, core.EventReplayFilter{TenantID: tn})
+	require.NoError(t, err, "replay must resolve the adopted legacy EVENTS stream")
+	defer iter.Close()
+	var got []string
+	for {
+		ev, nerr := iter.Next(ctx)
+		require.NoError(t, nerr)
+		if ev == nil {
+			break
+		}
+		got = append(got, ev.EventID)
+	}
+	require.Len(t, got, len(replayIDs), "replay must yield every published event")
+	assert.Equal(t, replayIDs, got, "events replay in stream sequence order")
 
 	// End-to-end through the adopted resources: publish → fetch → ack.
 	tctx := ContextWithTenant(ctx, tn)

@@ -251,7 +251,7 @@ func (d *Driver) ReplayEvents(ctx context.Context, filter core.EventReplayFilter
 		return nil, fmt.Errorf("tenant %s not initialized", filter.TenantID)
 	}
 
-	sName := streamName(filter.TenantID, "EVENTS")
+	sName := d.eventStreamNameFor(ctx, filter.TenantID)
 	cName := fmt.Sprintf("replay_%d", time.Now().UnixNano())
 
 	cfg := jetstream.ConsumerConfig{
@@ -795,6 +795,25 @@ func (d *Driver) ensureStream(ctx context.Context, tenantID, newSuffix, legacySu
 	}
 	log.Printf("nats: created stream %s for tenant %s", name, tenantID)
 	return st, nil
+}
+
+// eventStreamNameFor resolves the tenant's ACTUAL EVENTS stream name for
+// the name-based broker operations in ReplayEvents (CreateConsumer /
+// DeleteConsumer). During a rolling upgrade from v1.9.0 the tenant's
+// events live in the ADOPTED legacy-named stream (JetStream cannot
+// rename), so the new encoding would target a nonexistent stream. Mirrors
+// taskConsumerTarget: new-named stream exists -> new name; else
+// legacy-named stream exists -> legacy name; else new name so the
+// CreateConsumer error surfaces exactly as before.
+func (d *Driver) eventStreamNameFor(ctx context.Context, tenantID string) string {
+	newS, legacyS := streamName(tenantID, "EVENTS"), legacyStreamName(tenantID, "EVENTS")
+	if _, err := d.js.Stream(ctx, newS); err == nil {
+		return newS
+	}
+	if _, err := d.js.Stream(ctx, legacyS); err == nil {
+		return legacyS
+	}
+	return newS
 }
 
 // taskConsumerTarget resolves where a mailbox's durable consumer lives:
