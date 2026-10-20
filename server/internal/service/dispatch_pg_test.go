@@ -1595,3 +1595,68 @@ func fetchDLQ(t *testing.T, js natsgo.JetStream, tenant, mailbox string) (string
 type driverCloser struct {
 	QueueDriver
 }
+
+// B3 regression (advisory-lock self-starvation): the mailbox advisory lock
+// holds a dedicated pooled connection, and the version-check read under the
+// lock used to borrow a SECOND pool connection. On a size-1 pool the locked
+// read waits for the very connection the lock pins — deadlock. The locked
+// read now runs on the lock's own connection, so UpdateConfig completes on
+// a single-connection pool.
+func TestMailboxService_UpdateConfigSingleConnPoolNoSelfStarvation(t *testing.T) {
+	pool := openServiceTestDB(t)
+	ctx := context.Background()
+
+	// A second pool over the same test DB with exactly ONE connection.
+	var dbName string
+	require.NoError(t, pool.QueryRow(ctx, `SELECT current_database()`).Scan(&dbName))
+	host := os.Getenv("JANUS_PG_HOST")
+	if host == "" {
+		host = "localhost"
+	}
+	port := os.Getenv("JANUS_PG_PORT")
+	if port == "" {
+		port = "5432"
+	}
+	user := os.Getenv("JANUS_PG_USER")
+	if user == "" {
+		user = "janus"
+	}
+	password := os.Getenv("JANUS_PG_PASSWORD")
+	cfg, err := pgxpool.ParseConfig(fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+		host, port, user, password, dbName))
+	require.NoError(t, err)
+	cfg.MaxConns = 1
+	small, err := pgxpool.NewWithConfig(ctx, cfg)
+	require.NoError(t, err)
+	t.Cleanup(small.Close)
+
+	// Seed via the normal pool so the size-1 pool starts idle.
+	_, err = pool.Exec(ctx, `INSERT INTO tenants (id, name) VALUES ('sc', 'SC') ON CONFLICT DO NOTHING`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `INSERT INTO mailboxes (id, tenant_id, agent_id, status) VALUES ('mb-sc', 'sc', 'a1', 'active')`)
+	require.NoError(t, err)
+
+	repo := postgres.NewMailboxRepository(small)
+	drv := &reconcileRecorder{apply: func(core.ConsumerSpec) error { return nil }}
+	svc := NewMailboxService(repo, drv)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- svc.UpdateConfig(ctx, "sc", "mb-sc", 2, 30, 5, 3600)
+	}()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("UpdateConfig starved: the version-gate read under the mailbox lock waited for a second pooled connection (self-starvation regression)")
+	}
+
+	drv.mu.Lock()
+	require.Len(t, drv.specs, 1, "broker reconcile ran under the lock")
+	drv.mu.Unlock()
+
+	mb, err := repo.Get(ctx, "sc", "mb-sc")
+	require.NoError(t, err)
+	assert.Equal(t, 1, mb.ConfigVersion, "config version bumped")
+}

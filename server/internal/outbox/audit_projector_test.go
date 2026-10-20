@@ -8,10 +8,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/agentium-lab/Janus/core"
-	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
 type fakeOutboxReader struct {
@@ -54,7 +57,7 @@ func TestAuditProjector_ProjectBatch(t *testing.T) {
 	}}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Len(t, writer.written, 1, "only event_publish entries projected")
 	assert.Equal(t, []string{"ob1"}, reader.marked, "projected entry marked")
 }
@@ -67,7 +70,7 @@ func TestAuditProjector_WriteFailureLeavesPending(t *testing.T) {
 	}}
 	writer := &fakeWriter{err: errors.New("db down")}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Empty(t, reader.marked, "failed entry NOT marked projected — stays in outbox for next tick")
 	assert.Empty(t, writer.written)
 }
@@ -78,7 +81,7 @@ func TestAuditProjector_MalformedPayload(t *testing.T) {
 	}}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Len(t, reader.marked, 1, "malformed entry marked projected so it doesn't block the queue")
 	assert.Empty(t, writer.written)
 }
@@ -131,7 +134,7 @@ func TestAuditProjector_EmptyBatch(t *testing.T) {
 	reader := &fakeOutboxReader{}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Empty(t, writer.written)
 	assert.Empty(t, reader.marked)
 }
@@ -144,7 +147,7 @@ func TestAuditProjector_WriteFailureDoesNotMarkProjected(t *testing.T) {
 	}}
 	writer := &fakeWriter{err: fmt.Errorf("db unreachable")}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Empty(t, reader.marked, "failed write must NOT be marked projected")
 	assert.Len(t, reader.entries, 1, "entry stays for next tick")
 }
@@ -158,7 +161,7 @@ func TestAuditProjector_DefensiveKindFilter(t *testing.T) {
 	}}
 	writer := &fakeWriter{}
 	p := NewAuditProjector(reader, writer)
-	p.projectBatch(context.Background())
+	p.projectBatch(context.Background(), nil)
 	assert.Len(t, writer.written, 1, "only event_publish despite fake returning both")
 	assert.Equal(t, []string{"ob-k2"}, reader.marked)
 }
@@ -168,7 +171,7 @@ func TestAuditProjector_NilWriterSafe(t *testing.T) {
 		{ID: "ob-nw", Kind: "event_publish", Payload: json.RawMessage(`{`)},
 	}}
 	p := NewAuditProjector(reader, nil)
-	assert.NotPanics(t, func() { p.projectBatch(context.Background()) })
+	assert.NotPanics(t, func() { p.projectBatch(context.Background(), nil) })
 }
 
 func TestAuditProjector_ReplayMalformed(t *testing.T) {
@@ -197,4 +200,70 @@ func TestAuditProjector_ReplayWriteError(t *testing.T) {
 	assert.Equal(t, 0, res.Projected)
 	assert.Equal(t, "all_failed", res.Status)
 	assert.Greater(t, res.Failed, 0)
+}
+
+// stubExecutor is a no-op postgres.Executor used as an identity token for
+// executor-threading assertions.
+type stubExecutor struct{}
+
+func (stubExecutor) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	return pgconn.CommandTag{}, nil
+}
+func (stubExecutor) Query(context.Context, string, ...any) (pgx.Rows, error) { return nil, nil }
+func (stubExecutor) QueryRow(context.Context, string, ...any) pgx.Row      { return nil }
+
+// execOutboxReader implements the executor-scoped reader path and records
+// which executor each On-method received.
+type execOutboxReader struct {
+	fakeOutboxReader
+	fetchUsed   bool
+	fetchedExec postgres.Executor
+	markedExec  postgres.Executor
+}
+
+func (f *execOutboxReader) FetchUnprojectedOn(_ context.Context, exec postgres.Executor, _ int) ([]postgres.OutboxEntry, error) {
+	f.fetchUsed = true
+	f.fetchedExec = exec
+	return f.entries, nil
+}
+
+func (f *execOutboxReader) MarkProjectedOn(_ context.Context, exec postgres.Executor, id string) error {
+	f.markedExec = exec
+	f.marked = append(f.marked, id)
+	return nil
+}
+
+type execWriter struct {
+	fakeWriter
+	wroteExec postgres.Executor
+}
+
+func (f *execWriter) RecordIdempotentOn(_ context.Context, exec postgres.Executor, evt core.JanusEvent) error {
+	f.wroteExec = exec
+	f.written = append(f.written, evt)
+	return nil
+}
+
+// B3 regression: when the tick lock hands projectBatch its held
+// connection, every DB operation in the batch (fetch, audit write, mark)
+// must run through THAT executor — pool-scoped calls inside the tick lock
+// borrow a second connection and self-starve a small pool.
+func TestAuditProjector_BatchRunsOnTickLockExecutor(t *testing.T) {
+	evt := core.JanusEvent{EventID: "e-exec", TenantID: "acme"}
+	payload, _ := json.Marshal(evt)
+	reader := &execOutboxReader{fakeOutboxReader: fakeOutboxReader{entries: []postgres.OutboxEntry{
+		{ID: "ob-exec", Kind: "event_publish", Payload: payload},
+	}}}
+	writer := &execWriter{}
+	p := NewAuditProjector(reader, writer)
+
+	exec := &stubExecutor{}
+	p.projectBatch(context.Background(), exec)
+
+	assert.True(t, reader.fetchUsed, "fetch must use the executor-scoped method")
+	assert.Same(t, exec, reader.fetchedExec, "fetch runs on the tick-lock connection")
+	assert.Same(t, exec, writer.wroteExec, "audit write runs on the tick-lock connection")
+	assert.Same(t, exec, reader.markedExec, "mark-projected runs on the tick-lock connection")
+	assert.Len(t, writer.written, 1)
+	assert.Equal(t, []string{"ob-exec"}, reader.marked)
 }

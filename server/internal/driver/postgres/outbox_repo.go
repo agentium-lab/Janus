@@ -226,7 +226,17 @@ func (r *OutboxRepo) MarkFailedWithReason(ctx context.Context, id string, lastEr
 
 // MarkProjected marks an outbox entry as projected (audit table write done).
 func (r *OutboxRepo) MarkProjected(ctx context.Context, id string) error {
-	_, err := r.pool.Exec(ctx,
+	return r.markProjected(ctx, r.pool, id)
+}
+
+// MarkProjectedOn is the executor-scoped variant used while the audit
+// tick lock is held (see Executor).
+func (r *OutboxRepo) MarkProjectedOn(ctx context.Context, exec Executor, id string) error {
+	return r.markProjected(ctx, exec, id)
+}
+
+func (r *OutboxRepo) markProjected(ctx context.Context, ex Executor, id string) error {
+	_, err := ex.Exec(ctx,
 		`UPDATE outbox_events SET projected_at = now() WHERE id = $1`, id)
 	return err
 }
@@ -290,7 +300,19 @@ func (r *OutboxRepo) MarkQuarantined(ctx context.Context, id, reason string) err
 // projected to the audit table. Independent of the status field (which
 // tracks NATS publish progress) — the audit projector owns this cursor.
 func (r *OutboxRepo) FetchUnprojected(ctx context.Context, limit int) ([]OutboxEntry, error) {
-	rows, err := r.pool.Query(ctx,
+	return r.fetchUnprojected(ctx, r.pool, limit)
+}
+
+// FetchUnprojectedOn reads unprojected entries through the supplied
+// executor — the pooled connection holding the audit tick lock — so the
+// projector's fetch does not borrow a second connection while the lock
+// pins one (self-starvation on small pools).
+func (r *OutboxRepo) FetchUnprojectedOn(ctx context.Context, exec Executor, limit int) ([]OutboxEntry, error) {
+	return r.fetchUnprojected(ctx, exec, limit)
+}
+
+func (r *OutboxRepo) fetchUnprojected(ctx context.Context, ex Executor, limit int) ([]OutboxEntry, error) {
+	rows, err := ex.Query(ctx,
 		`SELECT id, tenant_id, kind, payload, status, attempts, created_at
 		 FROM outbox_events
 		 WHERE kind = 'event_publish' AND projected_at IS NULL
@@ -307,10 +329,15 @@ func (r *OutboxRepo) FetchUnprojected(ctx context.Context, limit int) ([]OutboxE
 // replicas do not each re-fetch and re-process the same rows; the loser
 // simply skips the tick. The returned release function also releases the
 // connection.
-func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release func(), ok bool, err error) {
+//
+// The returned Executor IS that dedicated connection: DB work done while
+// the tick lock is held MUST run through it — a pool-scoped query here
+// would borrow a second connection and self-starve a small pool. It is
+// non-nil exactly when ok is true.
+func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (exec Executor, release func(), ok bool, err error) {
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	// Dual-lock transition (see MailboxRepository.AcquireMailboxLock): the
 	// legacy hashtext key is taken alongside the FNV key so pre-FNV
@@ -321,7 +348,7 @@ func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release f
 		`SELECT pg_try_advisory_lock($1), pg_try_advisory_lock(hashtext($2))`, lockKey, key,
 	).Scan(&locked, &legacyLocked); err != nil {
 		conn.Release()
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if !locked || !legacyLocked {
 		if locked {
@@ -331,9 +358,9 @@ func (r *OutboxRepo) AcquireTickLock(ctx context.Context, key string) (release f
 			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, key)
 		}
 		conn.Release()
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
-	return func() {
+	return conn, func() {
 		_, _ = conn.Exec(context.Background(),
 			`SELECT pg_advisory_unlock(hashtext($1)), pg_advisory_unlock($2)`, key, lockKey)
 		conn.Release()

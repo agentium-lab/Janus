@@ -18,6 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/bootstrap"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
@@ -1007,8 +1009,8 @@ type busyLockRepo struct {
 	getOverride map[string]*core.Mailbox
 }
 
-func (r *busyLockRepo) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
-	return nil, false, nil // busy: another replica holds it
+func (r *busyLockRepo) AcquireMailboxLock(context.Context, string, string) (postgres.Executor, func(), bool, error) {
+	return nil, nil, false, nil // busy: another replica holds it
 }
 func (r *busyLockRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
 	r.mu.Lock()
@@ -1048,8 +1050,8 @@ type errLockRepo struct {
 	getOverride map[string]*core.Mailbox
 }
 
-func (r *errLockRepo) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
-	return nil, false, errors.New("pg unavailable")
+func (r *errLockRepo) AcquireMailboxLock(context.Context, string, string) (postgres.Executor, func(), bool, error) {
+	return nil, nil, false, errors.New("pg unavailable")
 }
 func (r *errLockRepo) Get(_ context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
 	if mb, ok := r.getOverride[tenantID+"/"+mailboxID]; ok {
@@ -1227,16 +1229,16 @@ type tryLockRepo struct {
 	release chan struct{}
 }
 
-func (r *tryLockRepo) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (func(), bool, error) {
+func (r *tryLockRepo) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (postgres.Executor, func(), bool, error) {
 	r.mu.Lock()
 	if r.held {
 		r.mu.Unlock()
-		return nil, false, nil // busy
+		return nil, nil, false, nil // busy
 	}
 	r.held = true
 	rel := r.release
 	r.mu.Unlock()
-	return func() {
+	return nil, func() {
 		<-rel // hold until the test releases
 		r.mu.Lock()
 		r.held = false
@@ -1369,8 +1371,8 @@ func (r *busyLockForReplay) ListAll(ctx context.Context) ([]*core.Mailbox, error
 	return r.getHookRepo.ListAll(ctx)
 }
 
-func (r *busyLockForReplay) AcquireMailboxLock(context.Context, string, string) (func(), bool, error) {
-	return nil, false, nil // busy
+func (r *busyLockForReplay) AcquireMailboxLock(context.Context, string, string) (postgres.Executor, func(), bool, error) {
+	return nil, nil, false, nil // busy
 }
 
 // Gap 2 (real path): retryPending selects parked v1; its PG Get BLOCKS on a

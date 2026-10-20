@@ -347,7 +347,7 @@ func (r *TaskRepository) ResetForReplay(ctx context.Context, tenantID, taskID st
 	_, err := r.pool.Exec(ctx,
 		`UPDATE tasks SET status = 'created', attempt_count = 0, result_ref = NULL,
 		        error = NULL, completed_at = NULL, retry_at = NULL, replay_count = replay_count + 1,
-		        updated_at = now()
+		        deadline = NULL, created_at = now(), updated_at = now()
 		 WHERE tenant_id = $1 AND id = $2`,
 		tenantID, taskID,
 	)
@@ -368,10 +368,18 @@ var ErrTaskNotReplayable = errors.New("task is not in a replayable terminal stat
 // double-publishing.
 func (r *TaskRepository) ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error) {
 	var generation int
+	// Expiry clock reset (B7): the replayed task's expiry clock restarts as
+	// if it were newly created. The original deadline is spent and must not
+	// fire again, and the TTL clock re-anchors to the reset time — keeping
+	// either original value made the next expiry scan flip the replayed
+	// task straight back to 'expired' (the expire -> replay -> re-expire
+	// loop), with no fresh expiry event for the new round. The original
+	// creation audit lives in the outbox/audit trail; replay_count preserves
+	// how many rounds the task has run.
 	err := tx.QueryRow(ctx,
 		`UPDATE tasks SET status = 'created', attempt_count = 0, result_ref = NULL,
 		        error = NULL, completed_at = NULL, retry_at = NULL, replay_count = replay_count + 1,
-		        updated_at = now()
+		        deadline = NULL, created_at = now(), updated_at = now()
 		 WHERE tenant_id = $1 AND id = $2
 		   AND status IN ('completed', 'dead_lettered', 'cancelled', 'expired')
 		 RETURNING replay_count`,
@@ -442,10 +450,18 @@ func (r *TaskRepository) ListDeadLettered(ctx context.Context, tenantID, mailbox
 	return scanTasks(rows)
 }
 
-// ExpireTasks transitions overdue tasks to expired AND writes an
+// ExpireTasks transitions overdue tasks to expired AND writes a
 // task.expired outbox event per task in the SAME transaction, so the
 // audit trail captures the expiry (a bare status flip previously left no
 // trace).
+//
+// Once-per-generation event (B7): the conditional UPDATE ... RETURNING IS
+// the claim — the status predicate already excludes 'expired' rows, so
+// the same round can never re-claim a task and never emits a second
+// event for it. The event id carries the task's replay generation
+// (replay_count), so a NEW lifecycle round after a replay CAN emit its
+// own task.expired event; the previous NOT EXISTS over past events also
+// suppressed every new round's event forever.
 func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -453,18 +469,36 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 	}
 	defer tx.Rollback(ctx)
 
-	tag, err := tx.Exec(ctx,
+	claims, err := tx.Query(ctx,
 		`UPDATE tasks SET status = 'expired', updated_at = now()
 		 WHERE status NOT IN ('completed','dead_lettered','expired','cancelled')
 		   AND (
 		     (deadline IS NOT NULL AND deadline < now())
 		     OR (ttl_seconds IS NOT NULL AND ttl_seconds > 0
 		         AND created_at + (ttl_seconds || ' seconds')::interval < now())
-		   )`)
+		   )
+		 RETURNING tenant_id, id, replay_count`)
 	if err != nil {
 		return 0, err
 	}
-	n := tag.RowsAffected()
+	var tenants, ids []string
+	var generations []int32
+	for claims.Next() {
+		var tn, id string
+		var gen int32
+		if serr := claims.Scan(&tn, &id, &gen); serr != nil {
+			claims.Close()
+			return 0, serr
+		}
+		tenants = append(tenants, tn)
+		ids = append(ids, id)
+		generations = append(generations, gen)
+	}
+	claims.Close()
+	if rerr := claims.Err(); rerr != nil {
+		return 0, rerr
+	}
+	n := int64(len(ids))
 	if n > 0 {
 		// Finish any open attempts of the expired batch: an expired task
 		// with a claimed/running attempt keeps a live lease and pins the
@@ -477,21 +511,21 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 			   AND ta.status IN ('claimed', 'running')`); aerr != nil {
 			return 0, fmt.Errorf("expiry attempt finish: %w", aerr)
 		}
-		// One task.expired event per newly expired task.
+		// One task.expired event per claimed task, keyed by generation:
+		// 'exp-<len(tenant)>-<tenant>-<task>-g<replay_count>' keeps the
+		// tenant-qualified injective core (see the cross-tenant B7 tests)
+		// while letting each replay round emit its own event. ON CONFLICT DO
+		// NOTHING is the last-resort guard — the claim itself already
+		// guarantees once-per-round.
 		if _, ierr := tx.Exec(ctx,
 			`INSERT INTO outbox_events (id, tenant_id, kind, payload)
-			 SELECT 'exp-' || length(t.tenant_id) || '-' || t.tenant_id || '-' || t.id, t.tenant_id, 'event_publish',
-			        jsonb_build_object('event_type','task.expired','tenant_id',t.tenant_id,'task_id',t.id,
-			                           'event_id','obx-exp-'||length(t.tenant_id)||'-'||t.tenant_id||'-'||t.id,
+			 SELECT 'exp-' || length(t) || '-' || t || '-' || i || '-g' || g, t, 'event_publish',
+			        jsonb_build_object('event_type','task.expired','tenant_id',t,'task_id',i,
+			                           'event_id','obx-exp-'||length(t)||'-'||t||'-'||i||'-g'||g,
 			                           'timestamp',to_char(now() at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"'))
-			 FROM tasks t
-			 WHERE t.status = 'expired'
-			   AND NOT EXISTS (
-			     SELECT 1 FROM outbox_events oe
-			     WHERE oe.tenant_id = t.tenant_id AND oe.kind = 'event_publish'
-			       AND oe.payload->>'task_id' = t.id
-			       AND oe.payload->>'event_type' = 'task.expired'
-			   )`); ierr != nil {
+			 FROM unnest($1::text[], $2::text[], $3::int[]) AS u(t, i, g)
+			 ON CONFLICT (id) DO NOTHING`,
+			tenants, ids, generations); ierr != nil {
 			return 0, fmt.Errorf("expiry outbox: %w", ierr)
 		}
 	}

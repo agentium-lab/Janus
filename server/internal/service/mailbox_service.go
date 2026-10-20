@@ -5,6 +5,7 @@ import (
 
 	"strings"
 
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 	"github.com/agentium-lab/Janus/server/internal/metrics"
 	"log"
 	"sync"
@@ -131,8 +132,18 @@ func (s *MailboxService) Resume(ctx context.Context, tenantID, mailboxID string)
 
 // mailboxWriteLocker serializes per-mailbox config writes across replicas
 // (pg advisory lock). Repos without it degrade to the in-process mutex.
+// The Executor is the SAME pooled connection holding the lock — DB work
+// inside the lock must run through it (see postgres.Executor); a
+// pool-scoped query there borrows a second connection and self-starves a
+// small pool.
 type mailboxWriteLocker interface {
-	AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (release func(), ok bool, err error)
+	AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (exec postgres.Executor, release func(), ok bool, err error)
+}
+
+// execMailboxReader is implemented by repos that can read a mailbox
+// through a caller-held executor (the advisory-lock connection).
+type execMailboxReader interface {
+	GetOnExec(ctx context.Context, exec postgres.Executor, tenantID, mailboxID string) (*core.Mailbox, error)
 }
 
 // ErrMailboxLockBusy reports a broker write skipped because another
@@ -140,14 +151,27 @@ type mailboxWriteLocker interface {
 // instead of writing without mutual exclusion.
 var ErrMailboxLockBusy = errors.New("mailbox write lock held by another replica")
 
+// lockedGet is the version-gate read under a held mailbox lock: through
+// the lock's own connection when the repo supports it, otherwise the
+// repo's normal path (the in-memory locker passes exec == nil).
+func (s *MailboxService) lockedGet(ctx context.Context, exec postgres.Executor, tenantID, mailboxID string) (*core.Mailbox, error) {
+	if exec != nil {
+		if r, ok := s.mailboxRepo.(execMailboxReader); ok {
+			return r.GetOnExec(ctx, exec, tenantID, mailboxID)
+		}
+	}
+	return s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+}
+
 // withMailboxLock runs fn under the strongest available per-mailbox lock:
 // cross-replica advisory when the repo supports it, otherwise applyMu. A
 // busy or failed lock returns without running fn — the write must not
 // degrade to an unlocked write (that reintroduces the stale-write
-// interleave the lock exists to prevent).
-func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxID string, fn func()) error {
+// interleave the lock exists to prevent). fn receives the executor bound
+// to the connection holding the lock (nil for the in-process fallback).
+func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxID string, fn func(exec postgres.Executor)) error {
 	if locker, ok := s.mailboxRepo.(mailboxWriteLocker); ok {
-		release, locked, err := locker.AcquireMailboxLock(ctx, tenantID, mailboxID)
+		exec, release, locked, err := locker.AcquireMailboxLock(ctx, tenantID, mailboxID)
 		if err != nil {
 			// Lock infrastructure failure: do not write blind.
 			return fmt.Errorf("mailbox lock: %w", err)
@@ -156,12 +180,12 @@ func (s *MailboxService) withMailboxLock(ctx context.Context, tenantID, mailboxI
 			return ErrMailboxLockBusy
 		}
 		defer release()
-		fn()
+		fn(exec)
 		return nil
 	}
 	s.applyMu.Lock()
 	defer s.applyMu.Unlock()
-	fn()
+	fn(nil)
 	return nil
 }
 
@@ -268,13 +292,13 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 		MaxACKPending:  ackPending,
 	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
-		syncErr := s.withMailboxLock(ctx, tenantID, mailboxID, func() {
+		syncErr := s.withMailboxLock(ctx, tenantID, mailboxID, func(exec postgres.Executor) {
 			// Cross-instance interleave guard, now serialized per mailbox
 			// across replicas: re-read the durable version right before the
 			// broker write. A NEWER revision committed elsewhere between our
 			// commit and this write makes ours superseded — skip; the newer
 			// revision owns convergence.
-			current, gerr := s.mailboxRepo.Get(ctx, tenantID, mailboxID)
+			current, gerr := s.lockedGet(ctx, exec, tenantID, mailboxID)
 			if gerr != nil {
 				// Version unreadable: park for the retry loop (which also
 				// skips while unreadable) instead of returning success with
@@ -322,12 +346,12 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 	}
 	for _, mb := range mailboxes {
 		spec := consumerSpecFor(*mb)
-		lerr := s.withMailboxLock(ctx, mb.TenantID, mb.ID, func() {
+		lerr := s.withMailboxLock(ctx, mb.TenantID, mb.ID, func(exec postgres.Executor) {
 			// Write-time version gate (cross-replica serialized): the
 			// ListAll snapshot can be stale by write time; a newer durable
 			// revision skips the write and re-parks the CURRENT version so
 			// convergence continues.
-			current, gerr := s.mailboxRepo.Get(ctx, mb.TenantID, mb.ID)
+			current, gerr := s.lockedGet(ctx, exec, mb.TenantID, mb.ID)
 			if gerr != nil || current == nil || current.ConfigVersion != mb.ConfigVersion {
 				if gerr == nil && current != nil && current.ConfigVersion > mb.ConfigVersion {
 					s.parkSpec(reconcileKey(mb.TenantID, mb.ID), parkedSpec{version: current.ConfigVersion, spec: consumerSpecFor(*current)})
@@ -431,7 +455,7 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 		// commit a newer revision that this stale apply would overwrite.
 		var applyErr error
 		var skip bool
-		lockErr := s.withMailboxLock(ctx, parts[0], parts[1], func() {
+		lockErr := s.withMailboxLock(ctx, parts[0], parts[1], func(exec postgres.Executor) {
 			s.pendMu.Lock()
 			cur, still := s.pending[key]
 			s.pendMu.Unlock()
@@ -443,7 +467,7 @@ func (s *MailboxService) retryPending(ctx context.Context) {
 			// the durable version is superseded — drop it. If PG cannot
 			// answer, SKIP: writing with an unknown version can put a stale
 			// config on the broker (leave parked for the next tick).
-			current, gerr := s.mailboxRepo.Get(ctx, parts[0], parts[1])
+			current, gerr := s.lockedGet(ctx, exec, parts[0], parts[1])
 			if gerr != nil {
 				applyErr = gerr
 				return

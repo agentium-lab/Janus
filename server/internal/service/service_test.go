@@ -531,6 +531,9 @@ func (m *mockTaskRepo) ResetForReplay(_ context.Context, tenantID, taskID string
 	if t, ok := m.tasks[key]; ok {
 		t.Status = core.TaskStatusCreated
 		t.AttemptCount = 0
+		// Mirrors the PG reset (B7): the spent deadline must not survive a
+		// replay — the expiry clock restarts with the new round.
+		t.Deadline = nil
 	}
 	return nil
 }

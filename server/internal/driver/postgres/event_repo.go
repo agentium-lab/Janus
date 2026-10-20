@@ -17,7 +17,17 @@ func NewEventRepo(pool *pgxpool.Pool) *EventRepo {
 }
 
 func (r *EventRepo) Insert(ctx context.Context, evt core.JanusEvent) error {
-	_, err := r.pool.Exec(ctx,
+	return r.insert(ctx, r.pool, evt)
+}
+
+// InsertOn is the executor-scoped insert used while a caller holds a
+// dedicated pooled connection (e.g. the audit projector's tick lock).
+func (r *EventRepo) InsertOn(ctx context.Context, exec Executor, evt core.JanusEvent) error {
+	return r.insert(ctx, exec, evt)
+}
+
+func (r *EventRepo) insert(ctx context.Context, ex Executor, evt core.JanusEvent) error {
+	_, err := ex.Exec(ctx,
 		`INSERT INTO audit_event_projection (tenant_id, event_id, event_type, task_id, agent_id, trace_id, occurred_at, payload)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 			 ON CONFLICT (tenant_id, event_id) DO NOTHING`,

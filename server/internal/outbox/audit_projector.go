@@ -36,8 +36,23 @@ type AuditReader interface {
 // tickLocker lets a reader serialize projector ticks across replicas
 // (pg_try_advisory_lock). Readers without it fall back to idempotent
 // concurrent projection (audit rows dedupe on (tenant_id, event_id)).
+// The Executor is the connection holding the tick lock — projection DB
+// work under it must run through that connection (a pool-scoped query
+// borrows a second connection and self-starves a small pool).
 type tickLocker interface {
-	AcquireTickLock(ctx context.Context, key string) (release func(), ok bool, err error)
+	AcquireTickLock(ctx context.Context, key string) (exec postgres.Executor, release func(), ok bool, err error)
+}
+
+// execAuditReader is implemented by readers that can run their cursor
+// operations through a caller-held executor (the tick-lock connection).
+type execAuditReader interface {
+	FetchUnprojectedOn(ctx context.Context, exec postgres.Executor, limit int) ([]postgres.OutboxEntry, error)
+	MarkProjectedOn(ctx context.Context, exec postgres.Executor, id string) error
+}
+
+// execAuditWriter is the executor-scoped AuditWriter path.
+type execAuditWriter interface {
+	RecordIdempotentOn(ctx context.Context, exec postgres.Executor, evt core.JanusEvent) error
 }
 
 type AuditProjector struct {
@@ -83,7 +98,7 @@ func (p *AuditProjector) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if locker, ok := p.reader.(tickLocker); ok {
-				release, locked, err := locker.AcquireTickLock(ctx, "audit_projector")
+				exec, release, locked, err := locker.AcquireTickLock(ctx, "audit_projector")
 				if err != nil {
 					log.Printf("audit projector: tick lock: %v", err)
 					continue
@@ -91,19 +106,19 @@ func (p *AuditProjector) Start(ctx context.Context) {
 				if !locked {
 					continue // another replica owns this tick
 				}
-				p.projectBatch(ctx)
+				p.projectBatch(ctx, exec)
 				release()
 				continue
 			}
-			p.projectBatch(ctx)
+			p.projectBatch(ctx, nil)
 		}
 	}
 }
 
 func (p *AuditProjector) Stop() { close(p.done) }
 
-func (p *AuditProjector) projectBatch(ctx context.Context) {
-	entries, err := p.reader.FetchUnprojected(ctx, p.batchSize)
+func (p *AuditProjector) projectBatch(ctx context.Context, exec postgres.Executor) {
+	entries, err := p.fetchUnprojected(ctx, exec)
 	if err != nil {
 		log.Printf("audit projector: fetch unprojected: %v", err)
 		return
@@ -116,21 +131,51 @@ func (p *AuditProjector) projectBatch(ctx context.Context) {
 		if err != nil {
 			log.Printf("audit projector: malformed payload for %s: %v", entry.ID, err)
 			metrics.AuditProjectionErrors.Inc()
-			_ = p.reader.MarkProjected(ctx, entry.ID)
+			_ = p.markProjected(ctx, exec, entry.ID)
 			continue
 		}
-		if err := p.writer.RecordIdempotent(ctx, evt); err != nil {
+		if err := p.record(ctx, exec, evt); err != nil {
 			log.Printf("audit projector: write %s: %v", evt.EventID, err)
 			metrics.AuditProjectionErrors.Inc()
 			continue
 		}
-		if err := p.reader.MarkProjected(ctx, entry.ID); err != nil {
+		if err := p.markProjected(ctx, exec, entry.ID); err != nil {
 			log.Printf("audit projector: mark projected %s: %v", entry.ID, err)
 			metrics.AuditProjectionErrors.Inc()
 			continue
 		}
 		metrics.AuditProjectionWritten.Inc()
 	}
+}
+
+// fetchUnprojected, markProjected and record run on the supplied executor
+// when exec is non-nil and the reader/writer supports it (the tick-lock
+// connection); otherwise they use the pool-scoped methods.
+func (p *AuditProjector) fetchUnprojected(ctx context.Context, exec postgres.Executor) ([]postgres.OutboxEntry, error) {
+	if exec != nil {
+		if r, ok := p.reader.(execAuditReader); ok {
+			return r.FetchUnprojectedOn(ctx, exec, p.batchSize)
+		}
+	}
+	return p.reader.FetchUnprojected(ctx, p.batchSize)
+}
+
+func (p *AuditProjector) markProjected(ctx context.Context, exec postgres.Executor, id string) error {
+	if exec != nil {
+		if r, ok := p.reader.(execAuditReader); ok {
+			return r.MarkProjectedOn(ctx, exec, id)
+		}
+	}
+	return p.reader.MarkProjected(ctx, id)
+}
+
+func (p *AuditProjector) record(ctx context.Context, exec postgres.Executor, evt core.JanusEvent) error {
+	if exec != nil {
+		if w, ok := p.writer.(execAuditWriter); ok {
+			return w.RecordIdempotentOn(ctx, exec, evt)
+		}
+	}
+	return p.writer.RecordIdempotent(ctx, evt)
 }
 
 // Replay re-projects a time range for a tenant (REST replay endpoint).

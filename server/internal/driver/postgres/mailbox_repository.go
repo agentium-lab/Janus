@@ -32,11 +32,23 @@ func (r *MailboxRepository) Create(ctx context.Context, mb core.Mailbox) error {
 }
 
 func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string) (*core.Mailbox, error) {
+	return r.getMailbox(ctx, r.pool, tenantID, mailboxID)
+}
+
+// GetOnExec reads a mailbox through the supplied executor — the pooled
+// connection holding the mailbox advisory lock. A pool-scoped Get here
+// would borrow a SECOND connection while the lock pins one
+// (self-starvation on small pools).
+func (r *MailboxRepository) GetOnExec(ctx context.Context, exec Executor, tenantID, mailboxID string) (*core.Mailbox, error) {
+	return r.getMailbox(ctx, exec, tenantID, mailboxID)
+}
+
+func (r *MailboxRepository) getMailbox(ctx context.Context, ex Executor, tenantID, mailboxID string) (*core.Mailbox, error) {
 	var mb core.Mailbox
 	var status, priority string
 	var retryJSON []byte
 
-	err := r.pool.QueryRow(ctx,
+	err := ex.QueryRow(ctx,
 		`SELECT tenant_id, id, agent_id, status, priority, max_concurrency,
 		        ack_wait_seconds, max_deliver, retention_seconds, retry_policy,
 		        created_at, updated_at, config_version
@@ -62,10 +74,15 @@ func (r *MailboxRepository) Get(ctx context.Context, tenantID, mailboxID string)
 // instance applying a config for this mailbox does so exclusively, so an
 // older revision cannot interleave past a newer one between the version
 // check and the broker write.
-func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (release func(), ok bool, err error) {
+//
+// The returned Executor IS the dedicated pooled connection holding the
+// lock: DB work done while the lock is held MUST run through it — a
+// pool-scoped query here would borrow a second connection and
+// self-starve a small pool. It is non-nil exactly when ok is true.
+func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, mailboxID string) (exec Executor, release func(), ok bool, err error) {
 	conn, err := r.pool.Acquire(ctx)
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	// FNV-1a over the logical key, cast to the 64-bit advisory-lock space.
 	// hashtext() was 32-bit (rare cross-mailbox false contention) and NOT
@@ -86,7 +103,7 @@ func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, ma
 		`SELECT pg_try_advisory_lock($1), pg_try_advisory_lock(hashtext($2))`, lockKey, lockName,
 	).Scan(&locked, &legacyLocked); err != nil {
 		conn.Release()
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if !locked || !legacyLocked {
 		// Release whichever half was acquired to avoid leaking a held lock.
@@ -97,9 +114,9 @@ func (r *MailboxRepository) AcquireMailboxLock(ctx context.Context, tenantID, ma
 			_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext($1))`, lockName)
 		}
 		conn.Release()
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
-	return func() {
+	return conn, func() {
 		_, _ = conn.Exec(context.Background(),
 			`SELECT pg_advisory_unlock(hashtext($1)), pg_advisory_unlock($2)`, lockName, lockKey)
 		conn.Release()

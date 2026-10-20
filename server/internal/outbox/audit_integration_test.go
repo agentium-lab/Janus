@@ -62,7 +62,7 @@ func TestIntegration_PublisherAndProjector_Independent(t *testing.T) {
 
 	// Run AuditProjector batch (consumes via FetchUnprojected / MarkProjected)
 	proj := NewAuditProjector(repo, &directAuditWriter{pool: pool})
-	proj.projectBatch(ctx)
+	proj.projectBatch(ctx, nil)
 
 	// ASSERT: all event_publish entries have projected_at set
 	var unprojected int
@@ -108,7 +108,7 @@ func TestIntegration_ProjectorAfterPublisher(t *testing.T) {
 	// THEN the projector runs — it must still see them (projected_at is
 	// independent of status)
 	proj := NewAuditProjector(repo, &directAuditWriter{pool: pool})
-	proj.projectBatch(ctx)
+	proj.projectBatch(ctx, nil)
 
 	var projected, published int
 	require.NoError(t, pool.QueryRow(ctx,

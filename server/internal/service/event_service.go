@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
 )
 
 type EventRepo interface {
@@ -81,4 +82,31 @@ func (s *EventService) PublishEvent(ctx context.Context, tenantID string, eventT
 // DO NOTHING, making re-projection safe.
 func (s *EventService) RecordIdempotent(ctx context.Context, evt core.JanusEvent) error {
 	return s.Record(ctx, evt)
+}
+
+// execEventRepo is implemented by PG-backed event repos: the insert can
+// run through a caller-held executor (the audit projector's tick-lock
+// connection) instead of borrowing a second pooled connection.
+type execEventRepo interface {
+	InsertOn(ctx context.Context, exec postgres.Executor, evt core.JanusEvent) error
+}
+
+// RecordIdempotentOn is the executor-scoped AuditWriter path: same
+// semantics as RecordIdempotent, but the insert runs on the supplied
+// connection (the one holding the caller's advisory lock). A nil
+// executor, or a repo without executor support, falls back to the
+// pool-scoped path.
+func (s *EventService) RecordIdempotentOn(ctx context.Context, exec postgres.Executor, evt core.JanusEvent) error {
+	if exec != nil {
+		if er, ok := s.repo.(execEventRepo); ok {
+			if err := enrichEvent(&evt); err != nil {
+				return err
+			}
+			if evt.Payload == nil {
+				evt.Payload = []byte(`{}`)
+			}
+			return er.InsertOn(ctx, exec, evt)
+		}
+	}
+	return s.RecordIdempotent(ctx, evt)
 }
