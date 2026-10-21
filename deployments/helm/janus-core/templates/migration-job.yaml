@@ -23,14 +23,26 @@ spec:
         - name: migration
           image: "migrate/migrate:v4.19.1"
           imagePullPolicy: IfNotPresent
+          # The DB password arrives at RUNTIME from the JANUS_PG_PASSWORD env
+          # var, so Helm's urlquery cannot escape it. Percent-encode the URI
+          # delimiters (% must go first) in POSIX sh before building the DSN;
+          # a raw # ? / @ % or space breaks the URI parse inside migrate.
+          # This mirrors server/internal/config DSN()'s url.QueryEscape.
           command:
-            - /migrate
-          args:
-            - -path
-            - {{ .Values.config.migration.path }}
-            - -database
-            - postgres://{{ .Values.postgres.user }}:$(JANUS_PG_PASSWORD)@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode={{ .Values.postgres.sslMode | default "disable" }}
-            - up
+            - /bin/sh
+            - -ec
+            - |
+              ESCAPED_PASSWORD=$(printf '%s' "$JANUS_PG_PASSWORD" | sed \
+                -e 's/%/%25/g' \
+                -e 's/#/%23/g' \
+                -e 's/?/%3F/g' \
+                -e 's|/|%2F|g' \
+                -e 's/@/%40/g' \
+                -e 's/ /%20/g')
+              exec /migrate \
+                -path {{ .Values.config.migration.path }} \
+                -database "postgres://{{ .Values.postgres.user }}:${ESCAPED_PASSWORD}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode={{ .Values.postgres.sslMode | default "disable" }}" \
+                up
           env:
             - name: JANUS_PG_PASSWORD
               valueFrom:

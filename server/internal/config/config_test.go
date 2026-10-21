@@ -1,6 +1,7 @@
 package config
 
 import (
+	"net/url"
 	"os"
 	"testing"
 
@@ -49,6 +50,33 @@ func TestLoad_EnvOverride(t *testing.T) {
 func TestPostgresConfig_DSN(t *testing.T) {
 	p := PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p", Database: "d"}
 	assert.Equal(t, "postgres://u:p@h:5432/d?sslmode=require", p.DSN())
+}
+
+func TestPostgresConfig_DSN_SpecialCharPassword(t *testing.T) {
+	p := PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "p@ss#w?rd/x", Database: "d"}
+	assert.Equal(t, "postgres://u:p%40ss%23w%3Frd%2Fx@h:5432/d?sslmode=require", p.DSN())
+
+	// pgx consumes the DSN through net/url: round-trip the escaped form back
+	// to the raw password, exactly as pgconn.ParseConfig does.
+	parsed, err := url.Parse(p.DSN())
+	require.NoError(t, err)
+	pw, ok := parsed.User.Password()
+	require.True(t, ok)
+	assert.Equal(t, "p@ss#w?rd/x", pw)
+}
+
+func TestPostgresConfig_DSN_SpacePassword(t *testing.T) {
+	// Space must encode as %20 (userinfo rules), never '+': pgx consumes
+	// the DSN through net/url's userinfo unescape, which does NOT reverse
+	// '+' — pre-fix, a spaced password round-tripped with the '+' in it.
+	p := PostgresConfig{Host: "h", Port: 5432, User: "u", Password: "pass word+", Database: "d"}
+	assert.Equal(t, "postgres://u:pass%20word+@h:5432/d?sslmode=require", p.DSN())
+
+	parsed, err := url.Parse(p.DSN())
+	require.NoError(t, err)
+	pw, ok := parsed.User.Password()
+	require.True(t, ok)
+	assert.Equal(t, "pass word+", pw)
 }
 
 func TestPostgresConfig_DSN_SSLModeOverride(t *testing.T) {

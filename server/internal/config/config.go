@@ -62,9 +62,19 @@ func (p PostgresConfig) sslMode() string {
 }
 
 func (p PostgresConfig) DSN() string {
-	// Passwords containing #, ?, /, @ etc. break the URI parse — escape.
-	return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
-		p.User, url.QueryEscape(p.Password), p.Host, p.Port, p.Database, p.sslMode())
+	// Build through net/url so the password gets USERINFO encoding rules.
+	// url.QueryEscape encoded space as '+', and net/url's userinfo unescape
+	// (the path pgconn.ParseConfig takes via User.Password()) does NOT
+	// reverse '+' — a password containing a space round-tripped as '+'.
+	// url.UserPassword encodes space as %20 and round-trips exactly.
+	u := url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(p.User, p.Password),
+		Host:     fmt.Sprintf("%s:%d", p.Host, p.Port),
+		Path:     "/" + p.Database,
+		RawQuery: "sslmode=" + url.QueryEscape(p.sslMode()),
+	}
+	return u.String()
 }
 
 func (p PostgresConfig) ConnStr() string {

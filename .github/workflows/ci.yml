@@ -83,6 +83,9 @@ jobs:
             --set queue.driver=pg > /tmp/rendered.yaml
           echo "Template rendered: $(grep -c 'kind:' /tmp/rendered.yaml) resources"
 
+      - name: Migration Job password escaping render assertions
+        run: python3 scripts/check_helm_render.py
+
       - name: Migration files complete
         run: |
           # Verify all canonical migrations exist in the chart
