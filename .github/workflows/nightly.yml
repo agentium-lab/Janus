@@ -192,3 +192,297 @@ jobs:
         run: |
           kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true
           kill "$(cat /tmp/janus-api-b.pid)" 2>/dev/null || true
+
+  chart-install-upgrade:
+    # Real-chart proof on a kind cluster: helm install -> helm upgrade with
+    # a changed value, asserting the pre-upgrade migration hook Job runs
+    # successfully AND is idempotent (schema_migrations keeps the same
+    # version, never dirty). The postgres password is deliberately full of
+    # URI delimiters to exercise the chart's DSN escaping (C1 fix) end to
+    # end. The janus-api image is built from THIS commit and side-loaded
+    # into kind, so a stale published image can never satisfy the gate.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NS: janus-e2e
+      RELEASE: janus-core
+      PG_PASSWORD: "p@ss#w?rd/x"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.26.0
+          # Node image digest from the kind v0.26.0 release notes.
+          node_image: kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30
+          kubectl_version: v1.31.4
+          cluster_name: janus
+          wait: 120s
+
+      - name: Install tooling (helm)
+        run: |
+          set -euo pipefail
+          # Pinned download with checksum verification (no curl | bash).
+          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: Build janus-api image (this commit) + load into kind
+        run: |
+          set -euo pipefail
+          docker build -t janus-core:e2e .
+          # Dependency images are pulled here (docker.io with an ECR mirror
+          # fallback, same as production-gates) and side-loaded into the
+          # node so kubelet never hits Docker Hub rate limits mid-run.
+          pull() {
+            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
+              for attempt in 1 2 3; do
+                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                sleep $((attempt * 10))
+              done
+            done
+            echo "::error::unable to pull $1"; return 1
+          }
+          pull postgres:16-alpine
+          pull nats:2-alpine
+          pull redis:7-alpine
+          # The migration hook Job image is pinned by the chart itself.
+          pull migrate/migrate:v4.19.1
+          for img in janus-core:e2e postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
+            kind load docker-image "$img" --name janus
+          done
+
+      - name: Start in-cluster dependencies (postgres / nats / redis)
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NS"
+          # Chart defaults point at host names postgres / nats / redis, so
+          # plain Services with those names satisfy the release without any
+          # external dependencies. Flat heredoc: kubectl reads column-0 YAML.
+          kubectl -n "$NS" apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+            labels:
+              app: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgres
+            template:
+              metadata:
+                labels:
+                  app: postgres
+              spec:
+                containers:
+                  - name: postgres
+                    image: postgres:16-alpine
+                    imagePullPolicy: IfNotPresent
+                    env:
+                      - name: POSTGRES_USER
+                        value: janus
+                      - name: POSTGRES_PASSWORD
+                        value: "$PG_PASSWORD"
+                      - name: POSTGRES_DB
+                        value: janus
+                    ports:
+                      - containerPort: 5432
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres
+          spec:
+            selector:
+              app: postgres
+            ports:
+              - port: 5432
+                targetPort: 5432
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nats
+            labels:
+              app: nats
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: nats
+            template:
+              metadata:
+                labels:
+                  app: nats
+              spec:
+                containers:
+                  - name: nats
+                    image: nats:2-alpine
+                    imagePullPolicy: IfNotPresent
+                    args:
+                      - -js
+                    ports:
+                      - containerPort: 4222
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nats
+          spec:
+            selector:
+              app: nats
+            ports:
+              - port: 4222
+                targetPort: 4222
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: redis
+            labels:
+              app: redis
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: redis
+            template:
+              metadata:
+                labels:
+                  app: redis
+              spec:
+                containers:
+                  - name: redis
+                    image: redis:7-alpine
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 6379
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: redis
+          spec:
+            selector:
+              app: redis
+            ports:
+              - port: 6379
+                targetPort: 6379
+          EOF
+          kubectl -n "$NS" wait --for=condition=available deployment/postgres deployment/nats deployment/redis --timeout=300s
+          # Deployment Available only proves the container runs; wait until
+          # postgres actually accepts connections (the pre-install migration
+          # hook needs it) by polling pg_isready with a bounded budget.
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          for i in $(seq 1 60); do
+            kubectl -n "$NS" exec "$PG_POD" -- pg_isready -U janus -d janus >/dev/null 2>&1 && break
+            sleep 2
+          done
+          kubectl -n "$NS" exec "$PG_POD" -- pg_isready -U janus -d janus
+
+      - name: Helm install (special-char postgres password)
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" deployments/helm/janus-core \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=e2e \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --wait --timeout 5m
+          # --wait already gates on pods Ready; assert them explicitly too.
+          kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+
+      - name: Capture schema_migrations state after install
+        run: |
+          set -euo pipefail
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "$NS" exec "$PG_POD" -- \
+            psql -U janus -d janus -tAc "SELECT version, dirty FROM schema_migrations" | tee /tmp/mig-install.txt
+          # golang-migrate must land on a clean version row: one integer, dirty=f.
+          grep -qE '^[0-9]+\|f$' /tmp/mig-install.txt
+
+      - name: Helm upgrade with changed value (pre-upgrade migration hook)
+        run: |
+          set -euo pipefail
+          helm upgrade "$RELEASE" deployments/helm/janus-core \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=e2e \
+            --set autoscaling.enabled=false \
+            --set replicaCount=2 \
+            --set postgres.password="$PG_PASSWORD" \
+            --timeout 5m >/tmp/helm-upgrade.log 2>&1 &
+          UPGRADE_PID=$!
+          # The chart deletes the hook Job once it succeeds
+          # (helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded),
+          # so the Job can only be observed while the upgrade is in flight.
+          for i in $(seq 1 60); do
+            kubectl -n "$NS" get job janus-core-migration >/dev/null 2>&1 && break
+            sleep 1
+          done
+          kubectl -n "$NS" get job janus-core-migration >/dev/null
+          kubectl -n "$NS" wait --for=condition=complete job/janus-core-migration --timeout=300s
+          wait "$UPGRADE_PID"
+          cat /tmp/helm-upgrade.log
+
+      - name: Assert idempotent migrations + Deployment Ready after upgrade
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          REPLICAS=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.replicas}')
+          echo "spec.replicas=$REPLICAS"
+          [ "$REPLICAS" = "2" ]
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "$NS" exec "$PG_POD" -- \
+            psql -U janus -d janus -tAc "SELECT version, dirty FROM schema_migrations" | tee /tmp/mig-upgrade.txt
+          grep -qE '^[0-9]+\|f$' /tmp/mig-upgrade.txt
+          diff /tmp/mig-install.txt /tmp/mig-upgrade.txt
+          echo "schema_migrations unchanged across install -> upgrade (migrations idempotent)"
+
+      - name: Port-forward + probe health endpoints
+        run: |
+          set -euo pipefail
+          # /healthz and /readyz live on the public (unauthenticated) mux in
+          # server/cmd/janus-api/main.go, so chart-default auth stays on.
+          kubectl -n "$NS" port-forward svc/janus-core 18080:8080 >/tmp/port-forward.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:18080/readyz && break
+            sleep 1
+          done
+          for path in /healthz /readyz; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:18080$path")
+            echo "$path -> $CODE"
+            [ "$CODE" = "200" ]
+          done
+          curl -sf http://127.0.0.1:18080/readyz
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" get all 2>/dev/null || true
+          for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
+            echo "::group::$p"
+            kubectl -n "$NS" describe "$p" 2>/dev/null | tail -n 40 || true
+            kubectl -n "$NS" logs "$p" --all-containers --tail=80 2>/dev/null || true
+            echo "::endgroup::"
+          done
+          helm -n "$NS" status "$RELEASE" 2>/dev/null || true
+          cat /tmp/helm-upgrade.log /tmp/port-forward.log 2>/dev/null || true
+
+      - name: Delete kind cluster
+        if: always()
+        run: |
+          set -euo pipefail
+          kind delete cluster --name janus
