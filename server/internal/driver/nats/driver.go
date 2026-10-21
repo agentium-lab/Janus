@@ -184,6 +184,36 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 	return deliveries, nil
 }
 
+// AckTask settles a broker delivery.
+//
+// PINNED CONTRACT (B6 — AckWait redelivery semantics; pinned by
+// TestB6_AckWaitRedelivery_ShortAckWaitDeathAndSettle):
+//
+//   - WHEN a delivery settles: at AckTask time, immediately — either via
+//     the fetching replica's pending-map hit (msg.Ack()) or, for a ref
+//     another replica holds, by publishing to the globally routable
+//     $JS.ACK.<stream>.<consumer> subject (below). A settled delivery is
+//     removed from the durable consumer's ack-pending set and is NEVER
+//     redelivered: settlement is the duplicate-processing fence, and PG
+//     task state (lease-scanner authority) stays the processing gate.
+//
+//   - Un-acked deliveries after a disconnect: closing the connection (or
+//     killing the whole replica) settles NOTHING. The delivery stays
+//     ack-pending on the durable pull consumer — broker-side state, not
+//     connection-side — and becomes fetchable by ANY replica (or a
+//     restarted one) once the mailbox's AckWait elapses. Each redelivery
+//     increments NumDelivered (surfaced as TaskDelivery.RedeliveryCount)
+//     while the stream sequence — the task identity — stays the same.
+//
+//   - max_deliver interplay: consumer MaxDeliver is only a runaway
+//     backstop (floored at 100 by runawayBackstopDeliver); the PG
+//     RetryPolicy is the delivery-lifetime retry authority. JetStream
+//     stops redelivering a message only after its delivery count passes
+//     the backstop — normal AckWait redeliveries stay far below it.
+//
+//   - Legacy refs (subject:seq) cannot be settled directly; they converge
+//     via AckWait expiry plus the pull-path terminal-state reconciliation
+//     (log-only below).
 func (d *Driver) AckTask(_ context.Context, _ string, ref core.DeliveryRef) error {
 	if msg, ok := d.popPending(ref); ok {
 		return msg.Ack()

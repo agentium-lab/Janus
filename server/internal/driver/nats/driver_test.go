@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -47,8 +49,17 @@ func startNATSServer(t *testing.T) {
 	if _, err := exec.LookPath(bin); err != nil {
 		t.Skipf("no nats-server at %s and JANUS_NATS_URL unset; skipping integration test", bin)
 	}
+	// nats-server 2.14.x treats -p 0 as "the default port" (4222), not
+	// "pick a free port": a second harness in the same process (or a
+	// parallel package) would fail to bind 4222. Reserve an OS-assigned
+	// loopback port explicitly instead; the stderr listen-line parse below
+	// still confirms what actually bound.
+	ln, lerr := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, lerr)
+	port := ln.Addr().(*net.TCPAddr).Port
+	require.NoError(t, ln.Close())
 	cmd := exec.Command(bin,
-		"-p", "0", "-js", "--store_dir", t.TempDir())
+		"-a", "127.0.0.1", "-p", strconv.Itoa(port), "-js", "--store_dir", t.TempDir())
 	stderr, err := cmd.StderrPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
