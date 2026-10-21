@@ -48,9 +48,11 @@ func TestSaturation_MaxConns1_MixedConcurrentOps_NoSelfStarvation(t *testing.T) 
 		user = "janus"
 	}
 	password := os.Getenv("JANUS_PG_PASSWORD")
-	cfg, err := pgxpool.ParseConfig(fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		host, port, user, password, dbName))
+	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, dbName)
+	if password != "" {
+		dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbName)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
 	require.NoError(t, err)
 	cfg.MaxConns = 1
 	single, err := pgxpool.NewWithConfig(seedCtx, cfg)

@@ -65,7 +65,10 @@ func openServiceTestDB(t *testing.T) *pgxpool.Pool {
 	testDB := fmt.Sprintf("janus_svctest_%d", time.Now().UnixNano())
 
 	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
+	adminDSN := fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
+	if password != "" {
+		adminDSN = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
+	}
 	adminConn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Skipf("postgres not reachable (set JANUS_PG_HOST/PORT/USER to enable): %v", err)
@@ -74,7 +77,10 @@ func openServiceTestDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
+	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
+	if password != "" {
+		dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
+	}
 	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
 	require.NoError(t, pool.Ping(ctx))
@@ -1698,9 +1704,11 @@ func TestMailboxService_UpdateConfigSingleConnPoolNoSelfStarvation(t *testing.T)
 		user = "janus"
 	}
 	password := os.Getenv("JANUS_PG_PASSWORD")
-	cfg, err := pgxpool.ParseConfig(fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
-		host, port, user, password, dbName))
+	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, dbName)
+	if password != "" {
+		dsn = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbName)
+	}
+	cfg, err := pgxpool.ParseConfig(dsn)
 	require.NoError(t, err)
 	cfg.MaxConns = 1
 	small, err := pgxpool.NewWithConfig(ctx, cfg)
