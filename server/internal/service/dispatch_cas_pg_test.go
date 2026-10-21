@@ -21,8 +21,8 @@ func TestACK_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
-		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
-		 VALUES ('acme', 'ack-task', 1, 'agent-1', 'lease-1', 'claimed')`)
+		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		 VALUES ('acme', 'ack-task', 1, 'agent-1', 'lease-1', 'claimed', 'delivery-ref-1')`)
 	require.NoError(t, err)
 
 	// Simulate concurrent modification: task status changes before ACK transaction
@@ -70,8 +70,8 @@ func TestNACK_Retry_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
-		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
-		 VALUES ('acme', 'nack-retry-task', 1, 'agent-1', 'lease-1', 'running')`)
+		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		 VALUES ('acme', 'nack-retry-task', 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`)
 	require.NoError(t, err)
 
 	// Simulate concurrent modification
@@ -111,8 +111,8 @@ func TestNACK_DeadLetter_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
-		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status)
-		 VALUES ('acme', 'nack-dlq-task', 1, 'agent-1', 'lease-1', 'running')`)
+		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
+		 VALUES ('acme', 'nack-dlq-task', 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`)
 	require.NoError(t, err)
 
 	// Simulate concurrent modification

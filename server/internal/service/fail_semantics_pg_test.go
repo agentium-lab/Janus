@@ -205,12 +205,12 @@ func TestFail_PG_SecondFailAndReplayRejected(t *testing.T) {
 
 	err := env.taskSvc.Fail(ctx, "acme", taskID, &core.TaskError{Code: "LATE", Message: "second call"})
 	require.Error(t, err, "a second Fail must be rejected")
-	assert.True(t, errors.Is(err, core.ErrInvalidTransition),
-		"second Fail must be rejected as an invalid transition, got: %v", err)
+	assert.True(t, errors.Is(err, core.ErrTaskInTerminalState),
+		"second Fail must be rejected as a terminal state error, got: %v", err)
 
 	_, rerr := env.taskSvc.Replay(ctx, "acme", taskID)
 	require.Error(t, rerr, "Replay must not resurrect an explicitly failed task")
-	assert.Contains(t, rerr.Error(), "only terminal tasks can be replayed")
+	assert.Contains(t, rerr.Error(), "terminal state")
 
 	var status string
 	require.NoError(t, env.pool.QueryRow(ctx,
