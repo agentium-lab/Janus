@@ -26,6 +26,7 @@ const (
 // TerminalStates are states from which no further transition is allowed.
 var TerminalStates = map[TaskStatus]bool{
 	TaskStatusCompleted:    true,
+	TaskStatusFailed:       true,
 	TaskStatusDeadLettered: true,
 	TaskStatusExpired:      true,
 	TaskStatusCancelled:    true,

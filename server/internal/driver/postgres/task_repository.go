@@ -471,7 +471,7 @@ func (r *TaskRepository) ExpireTasks(ctx context.Context) (int64, error) {
 
 	claims, err := tx.Query(ctx,
 		`UPDATE tasks SET status = 'expired', updated_at = now()
-		 WHERE status NOT IN ('completed','dead_lettered','expired','cancelled')
+		 WHERE status NOT IN ('completed','failed','dead_lettered','expired','cancelled')
 		   AND (
 		     (deadline IS NOT NULL AND deadline < now())
 		     OR (ttl_seconds IS NOT NULL AND ttl_seconds > 0

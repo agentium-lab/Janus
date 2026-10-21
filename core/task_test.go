@@ -14,6 +14,7 @@ func TestTaskStatus_IsTerminal(t *testing.T) {
 		expected bool
 	}{
 		{"completed is terminal", TaskStatusCompleted, true},
+		{"failed is terminal", TaskStatusFailed, true},
 		{"dead_lettered is terminal", TaskStatusDeadLettered, true},
 		{"expired is terminal", TaskStatusExpired, true},
 		{"cancelled is terminal", TaskStatusCancelled, true},
@@ -21,7 +22,6 @@ func TestTaskStatus_IsTerminal(t *testing.T) {
 		{"queued is not terminal", TaskStatusQueued, false},
 		{"claimed is not terminal", TaskStatusClaimed, false},
 		{"running is not terminal", TaskStatusRunning, false},
-		{"failed is not terminal", TaskStatusFailed, false},
 		{"retry_scheduled is not terminal", TaskStatusRetryScheduled, false},
 		{"blocked is not terminal", TaskStatusBlocked, false},
 		{"approval_pending is not terminal", TaskStatusApprovalPending, false},
