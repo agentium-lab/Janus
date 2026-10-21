@@ -24,6 +24,7 @@ type DispatchService interface {
 type ServicePullResult struct {
 	Task      *core.Task
 	LeaseID   string
+	Attempt   int
 	ExpiresAt interface{}
 }
 
@@ -68,6 +69,7 @@ func (h *DispatchHandler) Pull(w http.ResponseWriter, r *http.Request) {
 		"task": result.Task,
 		"lease": map[string]interface{}{
 			"lease_id":   result.LeaseID,
+			"attempt":    result.Attempt,
 			"expires_at": result.ExpiresAt,
 		},
 	})

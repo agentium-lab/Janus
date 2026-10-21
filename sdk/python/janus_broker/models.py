@@ -76,6 +76,7 @@ class PublishTaskRequest(BaseModel):
 
 class LeaseInfo(BaseModel):
     lease_id: str = ""
+    attempt: int = 0
     expires_at: Any = None
 
 

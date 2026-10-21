@@ -542,7 +542,7 @@ func (a *dispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, age
 	if err != nil || res == nil {
 		return nil, err
 	}
-	return &handler.ServicePullResult{Task: res.Task, LeaseID: res.LeaseID, ExpiresAt: res.ExpiresAt}, nil
+	return &handler.ServicePullResult{Task: res.Task, LeaseID: res.LeaseID, Attempt: res.Attempt, ExpiresAt: res.ExpiresAt}, nil
 }
 
 func (a *dispatchAdapter) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {

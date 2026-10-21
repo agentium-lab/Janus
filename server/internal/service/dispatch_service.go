@@ -25,6 +25,7 @@ import (
 type PullResult struct {
 	Task      *core.Task
 	LeaseID   string
+	Attempt   int
 	ExpiresAt time.Time
 }
 
@@ -398,7 +399,7 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		}
 		return nil, err
 	}
-	return &PullResult{Task: task, LeaseID: leaseID, ExpiresAt: expiresAt}, nil
+	return &PullResult{Task: task, LeaseID: leaseID, Attempt: attempt.Attempt, ExpiresAt: expiresAt}, nil
 }
 
 func (s *DispatchService) StartTask(ctx context.Context, tenantID, taskID, leaseID string) error {

@@ -63,6 +63,7 @@ func TestDispatchHandler_Pull_Success(t *testing.T) {
 		pullResult: &ServicePullResult{
 			Task:    &core.Task{ID: "task-1", Status: core.TaskStatusClaimed},
 			LeaseID: "lease-abc",
+			Attempt: 3,
 		},
 	}
 	h := NewDispatchHandler(svc)
@@ -80,6 +81,7 @@ func TestDispatchHandler_Pull_Success(t *testing.T) {
 	lease, ok := resp["lease"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "lease-abc", lease["lease_id"])
+	assert.Equal(t, float64(3), lease["attempt"], "lease JSON must carry the attempt number (SDK contract)")
 }
 
 func TestDispatchHandler_Pull_NoMessages(t *testing.T) {

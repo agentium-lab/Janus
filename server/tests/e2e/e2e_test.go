@@ -656,6 +656,7 @@ func (a *e2eDispatchAdapter) PullTask(ctx context.Context, tenantID, mailboxID, 
 	return &handler.ServicePullResult{
 		Task:      res.Task,
 		LeaseID:   res.LeaseID,
+		Attempt:   res.Attempt,
 		ExpiresAt: res.ExpiresAt,
 	}, nil
 }
