@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -108,23 +109,35 @@ func (r *ApprovalRepo) GetPendingByTask(ctx context.Context, tenantID, taskID st
 }
 
 func (r *ApprovalRepo) UpdateDecision(ctx context.Context, tenantID, approvalID, decision, approver, reason string) error {
-	_, err := r.pool.Exec(ctx,
+	tag, err := r.pool.Exec(ctx,
 		`UPDATE approvals SET status = $1, decision = $1, approver = $2, reason = $3, decided_at = now()
-		 WHERE tenant_id = $4 AND id = $5`,
+		 WHERE tenant_id = $4 AND id = $5 AND status = 'pending'`,
 		decision, approver, reason, tenantID, approvalID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("approval already decided or not found")
+	}
+	return nil
 }
 
 // UpdateDecisionTx is the transactional variant of UpdateDecision for use
 // inside a caller-supplied tx (e.g. lifecycle.ApplyTx).
 func (r *ApprovalRepo) UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error {
-	_, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE approvals SET status = $1, decision = $1, approver = $2, reason = $3, decided_at = now()
-		 WHERE tenant_id = $4 AND id = $5`,
+		 WHERE tenant_id = $4 AND id = $5 AND status = 'pending'`,
 		decision, approver, reason, tenantID, approvalID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("approval already decided or not found")
+	}
+	return nil
 }
 
 func (r *ApprovalRepo) ListPending(ctx context.Context, tenantID string, limit int) ([]*core.Approval, error) {
