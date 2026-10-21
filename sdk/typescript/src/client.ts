@@ -234,10 +234,16 @@ export class Client {
         const decoder = new TextDecoder();
         let buf = "";
         let eventType = "";
+        let reachedTerminal = false;
         try {
           while (true) {
             const { done, value } = await reader.read();
-            if (done) return;
+            if (done) {
+              if (!reachedTerminal) {
+                throw new Error("stream ended prematurely without terminal event");
+              }
+              return;
+            }
             buf += decoder.decode(value, { stream: true });
             const lines = buf.split("\n");
             buf = lines.pop() ?? "";
@@ -250,7 +256,10 @@ export class Client {
                 const evt = { event_type: eventType, ...data };
                 yield evt;
                 if (leaseLost.has(eventType)) throw new LeaseLostError(taskID);
-                if (terminal.has(eventType)) return;
+                if (terminal.has(eventType)) {
+                  reachedTerminal = true;
+                  return;
+                }
               }
             }
           }

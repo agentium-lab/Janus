@@ -376,6 +376,7 @@ func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEv
 
 	scanner := bufio.NewScanner(resp.Body)
 	eventType := ""
+	reachedTerminal := false
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "event: ") {
@@ -392,12 +393,19 @@ func (c *Client) StreamTask(ctx context.Context, taskID string, fn func(StreamEv
 			case "task.lease_lost", "lease.lost":
 				return &LeaseLostError{TaskID: taskID}
 			case "task.completed", "task.failed", "task.cancelled", "task.dead_lettered", "task.expired":
+				reachedTerminal = true
 				return nil
 			}
 			eventType = ""
 		}
 	}
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("stream read error: %w", err)
+	}
+	if !reachedTerminal {
+		return fmt.Errorf("stream ended prematurely without terminal event")
+	}
+	return nil
 }
 
 func (c *Client) ReplayTask(ctx context.Context, taskID string) (*core.Task, error) {

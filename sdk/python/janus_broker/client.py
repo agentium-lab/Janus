@@ -312,6 +312,7 @@ class JanusClient:
                 resp.raise_for_status()
                 event_type = ""
                 buffer = ""
+                reached_terminal = False
                 for chunk in resp.iter_text():
                     buffer += chunk
                     while "\n" in buffer:
@@ -329,9 +330,12 @@ class JanusClient:
                             if event_type in lease_lost:
                                 raise LeaseLostError(task_id)
                             if event_type in terminal:
+                                reached_terminal = True
                                 return
-        except (httpx.TimeoutException, httpx.ConnectError):
-            return
+                if not reached_terminal:
+                    raise RuntimeError("stream ended prematurely without terminal event")
+        except (httpx.TimeoutException, httpx.ConnectError) as e:
+            raise RuntimeError(f"stream connection error: {e}") from e
 
     def replay_task(self, task_id: str) -> dict:
         resp = self._client.post(self._url(f"/tasks/{task_id}/replay"))

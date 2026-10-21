@@ -163,7 +163,8 @@ func TestClient_StreamTask_EOFWitoutTerminal(t *testing.T) {
 	c := NewClient(Config{BaseURL: srv.URL, TenantID: "test-tenant"})
 
 	err := c.StreamTask(context.Background(), "t-1", func(StreamEvent) error { return nil })
-	require.NoError(t, err, "server EOF without terminal event is not an error")
+	require.Error(t, err, "server EOF without terminal event is an error")
+	assert.Contains(t, err.Error(), "stream ended prematurely")
 }
 
 func TestClient_StreamTask_Non200Status(t *testing.T) {
@@ -183,6 +184,8 @@ func TestClient_StreamTask_Headers(t *testing.T) {
 		assert.Equal(t, "sekret", r.Header.Get("X-API-Key"))
 		assert.Equal(t, "text/event-stream", r.Header.Get("Accept"))
 		w.WriteHeader(http.StatusOK)
+		// Send a terminal event so the stream ends normally
+		w.Write([]byte("event: task.completed\ndata: {}\n\n"))
 		w.(http.Flusher).Flush()
 	}))
 	defer srv.Close()
