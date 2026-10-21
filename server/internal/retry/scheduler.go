@@ -56,7 +56,7 @@ func (s *Scheduler) Stop() {
 
 func (s *Scheduler) processReadyRetries(ctx context.Context) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT tenant_id, id, mailbox_id, priority, envelope, attempt_count
+		`SELECT tenant_id, id, mailbox_id, priority, envelope, attempt_count, replay_count
 		 FROM tasks
 		 WHERE status = 'retry_scheduled' AND retry_at IS NOT NULL AND retry_at <= now()`)
 	if err != nil {
@@ -72,12 +72,13 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 		Priority     core.Priority
 		Envelope     []byte
 		AttemptCount int
+		ReplayCount  int
 	}
 
 	var tasks []retryTask
 	for rows.Next() {
 		var t retryTask
-		if err := rows.Scan(&t.TenantID, &t.ID, &t.MailboxID, &t.Priority, &t.Envelope, &t.AttemptCount); err != nil {
+		if err := rows.Scan(&t.TenantID, &t.ID, &t.MailboxID, &t.Priority, &t.Envelope, &t.AttemptCount, &t.ReplayCount); err != nil {
 			log.Printf("retry scheduler scan: %v", err)
 			return
 		}
@@ -121,7 +122,7 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 				if ok {
 					if s.useOutbox {
 						queuePayload, _ := json.Marshal(msg)
-						dedupeKey := buildRetryDedupeKey(t.TenantID, t.ID, t.AttemptCount)
+						dedupeKey := buildRetryDedupeKey(t.TenantID, t.ID, t.ReplayCount, t.AttemptCount)
 						if _, err := tx.Exec(ctx,
 							`INSERT INTO outbox_events (id, tenant_id, kind, payload, dedupe_key)
 							 VALUES ($1, $2, 'task_publish', $3, $4)
@@ -153,8 +154,9 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 
 // buildRetryDedupeKey constructs a stable dedupe key for a retry-driven
 // re-publish so the same delivery cannot be enqueued twice.
-func buildRetryDedupeKey(tenantID, taskID string, attemptCount int) string {
-	return fmt.Sprintf("task_publish:%s:%s:%d", tenantID, taskID, attemptCount)
+// Includes replay_count to distinguish retries across replay generations.
+func buildRetryDedupeKey(tenantID, taskID string, replayCount, attemptCount int) string {
+	return fmt.Sprintf("task_publish:%s:%s:replay:%d:attempt:%d", tenantID, taskID, replayCount, attemptCount)
 }
 
 // buildRetryMessage unmarshals a task envelope and constructs the

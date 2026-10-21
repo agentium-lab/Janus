@@ -66,17 +66,20 @@ func TestScheduler_StartStop_StopMethod(t *testing.T) {
 }
 
 func TestBuildRetryDedupeKey(t *testing.T) {
-	assert.Equal(t, "task_publish:acme:task-1:3", buildRetryDedupeKey("acme", "task-1", 3))
-	assert.Equal(t, "task_publish:t2:task-2:0", buildRetryDedupeKey("t2", "task-2", 0))
+	assert.Equal(t, "task_publish:acme:task-1:replay:0:attempt:3", buildRetryDedupeKey("acme", "task-1", 0, 3))
+	assert.Equal(t, "task_publish:t2:task-2:replay:1:attempt:0", buildRetryDedupeKey("t2", "task-2", 1, 0))
 }
 
 func TestBuildRetryDedupeKey_StableAndUnique(t *testing.T) {
-	k1 := buildRetryDedupeKey("acme", "task-1", 1)
-	k2 := buildRetryDedupeKey("acme", "task-1", 1)
+	k1 := buildRetryDedupeKey("acme", "task-1", 0, 1)
+	k2 := buildRetryDedupeKey("acme", "task-1", 0, 1)
 	assert.Equal(t, k1, k2, "same inputs → same key")
 
-	k3 := buildRetryDedupeKey("acme", "task-1", 2)
+	k3 := buildRetryDedupeKey("acme", "task-1", 0, 2)
 	assert.NotEqual(t, k1, k3, "different attempt → different key")
+
+	k4 := buildRetryDedupeKey("acme", "task-1", 1, 1)
+	assert.NotEqual(t, k1, k4, "different replay → different key")
 }
 
 func TestBuildRetryMessage_ValidEnvelope(t *testing.T) {
