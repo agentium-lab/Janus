@@ -1,1 +1,1 @@
-alter table task_attempts add column delivery_ref text;
+alter table task_attempts add column if not exists delivery_ref text;

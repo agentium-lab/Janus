@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/stretchr/testify/require"
@@ -15,46 +17,43 @@ func TestACK_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup: task in claimed state with active attempt
-	createTestTask(t, env, "ack-task")
+	taskID := fmt.Sprintf("ack-task-%d", time.Now().UnixNano())
+	createTestTask(t, env, taskID)
 	_, err := env.pool.Exec(ctx,
-		`UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id='ack-task'`)
+		`UPDATE tasks SET status='claimed' WHERE tenant_id='acme' AND id=$1`, taskID)
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
 		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
-		 VALUES ('acme', 'ack-task', 1, 'agent-1', 'lease-1', 'claimed', 'delivery-ref-1')`)
+		 VALUES ('acme', $1, 1, 'agent-1', 'lease-1', 'claimed', 'delivery-ref-1')`, taskID)
 	require.NoError(t, err)
 
-	// Simulate concurrent modification: task status changes before ACK transaction
-	drv := &cancelWinningDriver{}
-	drv.onFetch = func() {
-		// Change task status to running (simulating concurrent StartTask)
-		_, cerr := env.pool.Exec(ctx,
-			`UPDATE tasks SET status='running', updated_at=now() WHERE tenant_id='acme' AND id='ack-task'`)
-		require.NoError(t, cerr)
-	}
-	env.dispatch = env.dispatch.WithQueueDriver(drv)
+	// Simulate concurrent modification: task status changes to cancelled before ACK
+	// Cancelled is terminal, so the CanTransition check will fail
+	_, err = env.pool.Exec(ctx,
+		`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id=$1`, taskID)
+	require.NoError(t, err)
 
-	// Execute ACK
-	err = env.dispatch.AckTask(ctx, "acme", "ack-task", "lease-1", "result-1", nil)
+	// Execute ACK - should fail because task is now cancelled (terminal)
+	err = env.dispatch.AckTask(ctx, "acme", taskID, "lease-1", "result-1", nil)
 
-	// Verify: CAS failure should return error
+	// Verify: transition failure should return error
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "task CAS failed")
+	require.Contains(t, err.Error(), "invalid state transition")
 
 	// Verify: attempt should NOT be closed (transaction rolled back)
 	var attemptStatus string
 	err = env.pool.QueryRow(ctx,
-		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='ack-task' AND attempt=1`).Scan(&attemptStatus)
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id=$1 AND attempt=1`, taskID).Scan(&attemptStatus)
 	require.NoError(t, err)
 	require.Equal(t, "claimed", attemptStatus, "attempt should still be claimed (rolled back)")
 
-	// Verify: task status should be running (concurrent modification)
+	// Verify: task status should be cancelled (concurrent modification)
 	var taskStatus string
 	err = env.pool.QueryRow(ctx,
-		`SELECT status FROM tasks WHERE tenant_id='acme' AND id='ack-task'`).Scan(&taskStatus)
+		`SELECT status FROM tasks WHERE tenant_id='acme' AND id=$1`, taskID).Scan(&taskStatus)
 	require.NoError(t, err)
-	require.Equal(t, core.TaskStatusRunning, taskStatus, "task should be running (concurrent modification)")
+	require.Equal(t, string(core.TaskStatusCancelled), taskStatus, "task should be cancelled (concurrent modification)")
 }
 
 // TestNACK_Retry_TaskCASFailed_RollsBackAttempt_PG verifies that when NACK's task CAS fails
@@ -64,36 +63,34 @@ func TestNACK_Retry_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup: task in running state with active attempt
-	createTestTask(t, env, "nack-retry-task")
+	taskID := fmt.Sprintf("nack-retry-task-%d", time.Now().UnixNano())
+	createTestTask(t, env, taskID)
 	_, err := env.pool.Exec(ctx,
-		`UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id='nack-retry-task'`)
+		`UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id=$1`, taskID)
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
 		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
-		 VALUES ('acme', 'nack-retry-task', 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`)
+		 VALUES ('acme', $1, 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`, taskID)
 	require.NoError(t, err)
 
-	// Simulate concurrent modification
-	drv := &cancelWinningDriver{}
-	drv.onFetch = func() {
-		_, cerr := env.pool.Exec(ctx,
-			`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id='nack-retry-task'`)
-		require.NoError(t, cerr)
-	}
-	env.dispatch = env.dispatch.WithQueueDriver(drv)
+	// Simulate concurrent modification: task status changes to cancelled before NACK
+	// Cancelled is terminal, so the CanTransition check will fail
+	_, err = env.pool.Exec(ctx,
+		`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id=$1`, taskID)
+	require.NoError(t, err)
 
-	// Execute NACK with retriable=true
-	err = env.dispatch.NackTask(ctx, "acme", "nack-retry-task", "lease-1", true, &core.TaskError{Code: "ERR", Message: "test error"})
+	// Execute NACK with retriable=true - should fail because task is now cancelled
+	err = env.dispatch.NackTask(ctx, "acme", taskID, "lease-1", true, &core.TaskError{Code: "ERR", Message: "test error"})
 
-	// Verify: CAS failure should return error
+	// Verify: transition failure should return error
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "task CAS failed")
+	require.Contains(t, err.Error(), "invalid state transition")
 
-	// Verify: attempt should NOT be closed
+	// Verify: attempt should NOT be closed (transaction rolled back)
 	var attemptStatus string
 	err = env.pool.QueryRow(ctx,
-		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='nack-retry-task' AND attempt=1`).Scan(&attemptStatus)
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id=$1 AND attempt=1`, taskID).Scan(&attemptStatus)
 	require.NoError(t, err)
 	require.Equal(t, "running", attemptStatus, "attempt should still be running (rolled back)")
 }
@@ -105,36 +102,34 @@ func TestNACK_DeadLetter_TaskCASFailed_RollsBackAttempt_PG(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup: task in running state with active attempt
-	createTestTask(t, env, "nack-dlq-task")
+	taskID := fmt.Sprintf("nack-dlq-task-%d", time.Now().UnixNano())
+	createTestTask(t, env, taskID)
 	_, err := env.pool.Exec(ctx,
-		`UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id='nack-dlq-task'`)
+		`UPDATE tasks SET status='running' WHERE tenant_id='acme' AND id=$1`, taskID)
 	require.NoError(t, err)
 
 	_, err = env.pool.Exec(ctx,
 		`INSERT INTO task_attempts (tenant_id, task_id, attempt, agent_id, lease_id, status, delivery_ref)
-		 VALUES ('acme', 'nack-dlq-task', 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`)
+		 VALUES ('acme', $1, 1, 'agent-1', 'lease-1', 'running', 'delivery-ref-1')`, taskID)
 	require.NoError(t, err)
 
-	// Simulate concurrent modification
-	drv := &cancelWinningDriver{}
-	drv.onFetch = func() {
-		_, cerr := env.pool.Exec(ctx,
-			`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id='nack-dlq-task'`)
-		require.NoError(t, cerr)
-	}
-	env.dispatch = env.dispatch.WithQueueDriver(drv)
+	// Simulate concurrent modification: task status changes to cancelled before NACK
+	// Cancelled is terminal, so the CanTransition check will fail
+	_, err = env.pool.Exec(ctx,
+		`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id=$1`, taskID)
+	require.NoError(t, err)
 
-	// Execute NACK with retriable=false (dead letter path)
-	err = env.dispatch.NackTask(ctx, "acme", "nack-dlq-task", "lease-1", false, &core.TaskError{Code: "ERR", Message: "test error"})
+	// Execute NACK with retriable=false (dead letter path) - should fail because task is now cancelled
+	err = env.dispatch.NackTask(ctx, "acme", taskID, "lease-1", false, &core.TaskError{Code: "ERR", Message: "test error"})
 
-	// Verify: CAS failure should return error
+	// Verify: transition failure should return error
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "task CAS failed")
+	require.Contains(t, err.Error(), "invalid state transition")
 
-	// Verify: attempt should NOT be closed
+	// Verify: attempt should NOT be closed (transaction rolled back)
 	var attemptStatus string
 	err = env.pool.QueryRow(ctx,
-		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id='nack-dlq-task' AND attempt=1`).Scan(&attemptStatus)
+		`SELECT status FROM task_attempts WHERE tenant_id='acme' AND task_id=$1 AND attempt=1`, taskID).Scan(&attemptStatus)
 	require.NoError(t, err)
 	require.Equal(t, "running", attemptStatus, "attempt should still be running (rolled back)")
 }

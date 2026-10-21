@@ -1,4 +1,4 @@
-create table api_keys (
+create table if not exists api_keys (
     tenant_id  text not null,
     key_hash   text not null,
     name       text not null,
@@ -7,4 +7,4 @@ create table api_keys (
     primary key (tenant_id, key_hash)
 );
 
-create index api_keys_prefix_idx on api_keys (prefix);
+create index if not exists api_keys_prefix_idx on api_keys (prefix);

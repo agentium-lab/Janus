@@ -1,4 +1,4 @@
-create table context_refs (
+create table if not exists context_refs (
     tenant_id text not null,
     id text not null,
     type text not null,
@@ -11,9 +11,9 @@ create table context_refs (
     primary key (tenant_id, id)
 );
 
-create index context_refs_task_idx on context_refs (tenant_id, type);
+create index if not exists context_refs_task_idx on context_refs (tenant_id, type);
 
-create table task_context_refs (
+create table if not exists task_context_refs (
     tenant_id text not null,
     task_id text not null,
     context_ref_id text not null,

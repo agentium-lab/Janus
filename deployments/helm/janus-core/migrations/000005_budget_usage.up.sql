@@ -1,4 +1,4 @@
-create table budget_usage (
+create table if not exists budget_usage (
     tenant_id   text not null,
     scope_type  text not null,
     scope_id    text not null,

@@ -1,4 +1,4 @@
-create table tenants (
+create table if not exists tenants (
     id text primary key,
     name text not null,
     status text not null default 'active',
@@ -6,7 +6,7 @@ create table tenants (
     updated_at timestamptz not null default now()
 );
 
-create table agents (
+create table if not exists agents (
     id text not null,
     tenant_id text not null references tenants(id),
     display_name text not null,
@@ -24,7 +24,7 @@ create table agents (
     primary key (tenant_id, id)
 );
 
-create table agent_capabilities (
+create table if not exists agent_capabilities (
     tenant_id text not null,
     agent_id text not null,
     capability text not null,
@@ -35,7 +35,7 @@ create table agent_capabilities (
     primary key (tenant_id, agent_id, capability)
 );
 
-create table mailboxes (
+create table if not exists mailboxes (
     tenant_id text not null,
     id text not null,
     agent_id text not null,
@@ -51,7 +51,7 @@ create table mailboxes (
     primary key (tenant_id, id)
 );
 
-create table tasks (
+create table if not exists tasks (
     tenant_id text not null,
     id text not null,
     idempotency_key text,
@@ -73,14 +73,14 @@ create table tasks (
     primary key (tenant_id, id)
 );
 
-create unique index tasks_idempotency_idx
+create unique index if not exists tasks_idempotency_idx
     on tasks (tenant_id, idempotency_key)
     where idempotency_key is not null;
 
-create index tasks_status_idx
+create index if not exists tasks_status_idx
     on tasks (tenant_id, status, priority, created_at);
 
-create table task_attempts (
+create table if not exists task_attempts (
     tenant_id text not null,
     task_id text not null,
     attempt integer not null,
@@ -95,7 +95,7 @@ create table task_attempts (
     primary key (tenant_id, task_id, attempt)
 );
 
-create table budgets (
+create table if not exists budgets (
     tenant_id text not null,
     scope_type text not null,
     scope_id text not null,
@@ -109,7 +109,7 @@ create table budgets (
     primary key (tenant_id, scope_type, scope_id)
 );
 
-create table policy_rules (
+create table if not exists policy_rules (
     tenant_id text not null,
     id text not null,
     name text not null,
@@ -122,7 +122,7 @@ create table policy_rules (
     primary key (tenant_id, id)
 );
 
-create table approvals (
+create table if not exists approvals (
     tenant_id text not null,
     id text not null,
     task_id text not null,
@@ -137,7 +137,7 @@ create table approvals (
     primary key (tenant_id, id)
 );
 
-create table audit_event_projection (
+create table if not exists audit_event_projection (
     tenant_id text not null,
     event_id text not null,
     event_type text not null,
@@ -149,13 +149,13 @@ create table audit_event_projection (
     primary key (tenant_id, event_id)
 );
 
-create index audit_event_task_idx
+create index if not exists audit_event_task_idx
     on audit_event_projection (tenant_id, task_id, occurred_at);
 
-create index audit_event_trace_idx
+create index if not exists audit_event_trace_idx
     on audit_event_projection (tenant_id, trace_id, occurred_at);
 
-create table outbox_events (
+create table if not exists outbox_events (
     id text primary key,
     tenant_id text not null,
     kind text not null,
