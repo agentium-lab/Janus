@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/agentium-lab/Janus/core"
 	pb "github.com/agentium-lab/Janus/proto/gen/janus/v1"
@@ -175,6 +176,34 @@ func createTaskReqToCore(req *pb.CreateTaskRequest) (core.Task, error) {
 		env.Payload = core.Payload{
 			Type:    e.Payload.Type,
 			Content: e.Payload.Content,
+		}
+	}
+	if e.Policy != nil {
+		env.Policy = &core.PolicyContext{
+			DataClassification:    e.Policy.DataClassification,
+			RequiresHumanApproval: e.Policy.RequiresHumanApproval,
+			AllowedTools:          e.Policy.AllowedTools,
+		}
+	}
+	if e.ContextRefs != nil {
+		env.ContextRefs = make([]core.ContextRef, len(e.ContextRefs))
+		for i, ref := range e.ContextRefs {
+			env.ContextRefs[i] = core.ContextRef{
+				Type:           ref.Type,
+				URI:            ref.Uri,
+				Hash:           ref.Hash,
+				Classification: ref.Classification,
+			}
+			if ref.ExpiresAt != nil {
+				env.ContextRefs[i].ExpiresAt = ref.ExpiresAt.AsTime().Format(time.RFC3339)
+			}
+		}
+	}
+	if e.Trace != nil {
+		env.Trace = core.TraceContext{
+			TraceID:      e.Trace.TraceId,
+			ParentTaskID: e.Trace.ParentTaskId,
+			SpanID:       e.Trace.SpanId,
 		}
 	}
 	task := core.Task{

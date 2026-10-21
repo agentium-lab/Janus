@@ -21,6 +21,10 @@ func (m *mockTaskService) Create(_ context.Context, task core.Task) (*core.Task,
 	if m.err != nil {
 		return nil, m.err
 	}
+	// 调用 Validate 模拟真实服务的验证行为
+	if err := task.Envelope.Validate(); err != nil {
+		return nil, err
+	}
 	if m.tasks == nil {
 		m.tasks = make(map[string]*core.Task)
 	}
@@ -102,13 +106,14 @@ func TestTaskServiceServer_CreateTask(t *testing.T) {
 	resp, err := s.CreateTask(context.Background(), &pb.CreateTaskRequest{
 		TenantId: "acme",
 		Envelope: &pb.TaskEnvelope{
-			TaskId:      "task-1",
-			TenantId:    "acme",
-			SourceAgent: "agent-1",
-			Target:      &pb.Target{Type: "agent", Value: "agent-2"},
-			Priority:    "normal",
-			Payload:     &pb.TaskPayload{Type: "text", Content: "hello"},
-			Trace:       &pb.TraceContext{TraceId: "trace-1"},
+			JanusVersion: "0.4.0",
+			TaskId:       "task-1",
+			TenantId:     "acme",
+			SourceAgent:  "agent-1",
+			Target:       &pb.Target{Type: "agent", Value: "agent-2"},
+			Priority:     "normal",
+			Payload:      &pb.TaskPayload{Type: "text", Content: "hello"},
+			Trace:        &pb.TraceContext{TraceId: "trace-1"},
 		},
 	})
 	require.NoError(t, err)

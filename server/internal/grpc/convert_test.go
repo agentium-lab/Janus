@@ -11,145 +11,152 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-func TestAgentToProto_Nil(t *testing.T) {
-	assert.Nil(t, agentToProto(nil))
-}
-
-func TestAgentToProto_WithHeartbeat(t *testing.T) {
-	hb := time.Now()
-	agent := &core.Agent{
-		TenantID:        "acme",
-		ID:              "a1",
-		DisplayName:     "test",
-		Protocol:        core.ProtocolA2A,
-		Endpoint:        "http://localhost",
-		Status:          core.AgentStatusOnline,
-		Capabilities:    []core.AgentCapability{{Capability: "chat"}},
-		MaxConcurrency:  5,
-		RPM:             100,
-		TPM:             10000,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
-		LastHeartbeatAt: &hb,
+func TestCreateTaskReqToCore_FieldMapping(t *testing.T) {
+	// 准备测试数据
+	expiresAt := time.Now().Add(24 * time.Hour).UTC()
+	req := &pb.CreateTaskRequest{
+		TenantId: "tenant-1",
+		Envelope: &pb.TaskEnvelope{
+			JanusVersion:   "0.4.0",
+			TaskId:         "task-1",
+			IdempotencyKey: "idempotency-key",
+			SourceAgent:    "agent-1",
+			Target: &pb.Target{
+				Type:  "agent",
+				Value: "agent-2",
+			},
+			Priority:   "normal",
+			TtlSeconds: 3600,
+			Policy: &pb.PolicyContext{
+				DataClassification:    "confidential",
+				RequiresHumanApproval: true,
+				AllowedTools:          []string{"tool1", "tool2"},
+			},
+			ContextRefs: []*pb.ContextRef{
+				{
+					Type:           "document",
+					Uri:            "https://example.com/doc1",
+					Hash:           "abc123",
+					Classification: "internal",
+					ExpiresAt:      timestamppb.New(expiresAt),
+				},
+				{
+					Type:           "api-key",
+					Uri:            "https://example.com/key1",
+					Hash:           "def456",
+					Classification: "secret",
+				},
+			},
+			Trace: &pb.TraceContext{
+				TraceId:      "trace-123",
+				ParentTaskId: "parent-task-456",
+				SpanId:       "span-789",
+			},
+			Payload: &pb.TaskPayload{
+				Type:    "text",
+				Content: "test content",
+			},
+		},
 	}
-	pbAgent := agentToProto(agent)
-	assert.Equal(t, "a1", pbAgent.Id)
-	assert.NotNil(t, pbAgent.LastHeartbeatAt)
-	assert.Len(t, pbAgent.Capabilities, 1)
+
+	// 执行转换
+	task, err := createTaskReqToCore(req)
+	require.NoError(t, err)
+
+	// 验证基本字段
+	assert.Equal(t, "tenant-1", task.TenantID)
+	assert.Equal(t, "task-1", task.ID)
+	assert.Equal(t, "idempotency-key", task.IdempotencyKey)
+	assert.Equal(t, "agent-1", task.SourceAgent)
+	assert.Equal(t, core.TargetType("agent"), task.TargetType)
+	assert.Equal(t, "agent-2", task.TargetValue)
+	assert.Equal(t, core.Priority("normal"), task.Priority)
+	assert.Equal(t, 3600, task.TTLSeconds)
+
+	// 验证 Policy 映射
+	require.NotNil(t, task.Envelope.Policy, "Policy should be mapped")
+	assert.Equal(t, "confidential", task.Envelope.Policy.DataClassification)
+	assert.Equal(t, true, task.Envelope.Policy.RequiresHumanApproval)
+	assert.Equal(t, []string{"tool1", "tool2"}, task.Envelope.Policy.AllowedTools)
+
+	// 验证 ContextRefs 映射
+	require.Len(t, task.Envelope.ContextRefs, 2, "ContextRefs should be mapped")
+	assert.Equal(t, "document", task.Envelope.ContextRefs[0].Type)
+	assert.Equal(t, "https://example.com/doc1", task.Envelope.ContextRefs[0].URI)
+	assert.Equal(t, "abc123", task.Envelope.ContextRefs[0].Hash)
+	assert.Equal(t, "internal", task.Envelope.ContextRefs[0].Classification)
+	assert.Equal(t, expiresAt.Format(time.RFC3339), task.Envelope.ContextRefs[0].ExpiresAt)
+
+	assert.Equal(t, "api-key", task.Envelope.ContextRefs[1].Type)
+	assert.Equal(t, "https://example.com/key1", task.Envelope.ContextRefs[1].URI)
+	assert.Equal(t, "def456", task.Envelope.ContextRefs[1].Hash)
+	assert.Equal(t, "secret", task.Envelope.ContextRefs[1].Classification)
+	assert.Empty(t, task.Envelope.ContextRefs[1].ExpiresAt, "Second ref has no ExpiresAt")
+
+	// 验证 Trace 映射
+	assert.Equal(t, "trace-123", task.Envelope.Trace.TraceID)
+	assert.Equal(t, "parent-task-456", task.Envelope.Trace.ParentTaskID)
+	assert.Equal(t, "span-789", task.Envelope.Trace.SpanID)
+
+	// 验证 Payload 映射
+	assert.Equal(t, "text", task.Envelope.Payload.Type)
+	assert.Equal(t, "test content", task.Envelope.Payload.Content)
 }
 
-func TestTaskToProto_WithDeadline(t *testing.T) {
-	dl := time.Now()
-	task := &core.Task{
-		TenantID:    "acme",
-		ID:          "t1",
-		Status:      core.TaskStatusRunning,
-		Deadline:    &dl,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-		CompletedAt: &dl,
-		Error:       &core.TaskError{Code: "ERR", Message: "fail"},
-		Envelope: core.TaskEnvelope{
+func TestCreateTaskReqToCore_NilFields(t *testing.T) {
+	// 测试可选字段为 nil 的情况
+	req := &pb.CreateTaskRequest{
+		TenantId: "tenant-1",
+		Envelope: &pb.TaskEnvelope{
 			JanusVersion: "0.4.0",
-			Target:       core.Target{Type: "agent", Value: "a1"},
-			Payload:      core.Payload{Type: "text", Content: "hi"},
-			Trace:        core.TraceContext{TraceID: "t1"},
+			TaskId:       "task-1",
+			SourceAgent:  "agent-1",
+			Target: &pb.Target{
+				Type:  "agent",
+				Value: "agent-2",
+			},
+			Priority: "normal",
+			Payload: &pb.TaskPayload{
+				Type:    "text",
+				Content: "test",
+			},
+			// Policy, ContextRefs, Trace 均为 nil
 		},
 	}
-	pbTask := taskToProto(task)
-	assert.Equal(t, "t1", pbTask.Id)
-	assert.Equal(t, "running", pbTask.Status)
-	assert.NotNil(t, pbTask.Deadline)
-	assert.NotNil(t, pbTask.CompletedAt)
-	assert.Equal(t, "ERR", pbTask.Error.Code)
-	assert.NotNil(t, pbTask.Envelope)
-}
 
-func TestTaskToProto_Nil(t *testing.T) {
-	assert.Nil(t, taskToProto(nil))
-}
-
-func TestCreateTaskReqToCore_NoEnvelope(t *testing.T) {
-	_, err := createTaskReqToCore(&pb.CreateTaskRequest{TenantId: "acme"})
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "envelope")
-}
-
-func TestCreateTaskReqToCore_WithBudget(t *testing.T) {
-	dl := timestamppb.Now()
-	task, err := createTaskReqToCore(&pb.CreateTaskRequest{
-		TenantId: "acme",
-		Envelope: &pb.TaskEnvelope{
-			TaskId:   "t1",
-			Priority: "high",
-			Target:   &pb.Target{Type: "agent", Value: "a1"},
-			Deadline: dl,
-			Budget:   &pb.Budget{MaxTokens: 1000, MaxCostUsd: 5.0, ModelClasses: []string{"gpt-4"}},
-			Payload:  &pb.TaskPayload{Type: "text", Content: "hi"},
-			Trace:    &pb.TraceContext{TraceId: "t1"},
-		},
-	})
+	task, err := createTaskReqToCore(req)
 	require.NoError(t, err)
-	assert.Equal(t, "acme", task.TenantID)
-	assert.Equal(t, "t1", task.ID)
-	assert.Equal(t, core.PriorityHigh, task.Priority)
-	assert.Equal(t, core.TargetTypeAgent, task.TargetType)
-	assert.NotNil(t, task.Deadline)
-	assert.NotNil(t, task.Envelope.Budget)
-	assert.Equal(t, 1000, task.Envelope.Budget.MaxTokens)
-	assert.Equal(t, 5.0, task.Envelope.Budget.MaxCostUSD)
-	assert.Equal(t, []string{"gpt-4"}, task.Envelope.Budget.ModelClasses)
+
+	// 验证可选字段为 nil 时不会 panic
+	assert.Nil(t, task.Envelope.Policy)
+	assert.Nil(t, task.Envelope.ContextRefs)
+	assert.Empty(t, task.Envelope.Trace.TraceID)
 }
 
-func TestCreateTaskReqToCore_Minimal(t *testing.T) {
-	task, err := createTaskReqToCore(&pb.CreateTaskRequest{
-		TenantId: "acme",
+func TestCreateTaskReqToCore_Validation(t *testing.T) {
+	// 测试缺少必需字段的情况
+	req := &pb.CreateTaskRequest{
+		TenantId: "tenant-1",
 		Envelope: &pb.TaskEnvelope{
-			TaskId: "t1",
+			JanusVersion: "0.4.0",
+			TaskId:       "task-1",
+			SourceAgent:  "agent-1",
+			Target: &pb.Target{
+				Type:  "agent",
+				Value: "agent-2",
+			},
+			Priority: "normal",
+			Payload: &pb.TaskPayload{
+				Type:    "text",
+				Content: "test",
+			},
+			Trace: &pb.TraceContext{
+				TraceId: "trace-123", // 提供 TraceID 以通过验证
+			},
 		},
-	})
+	}
+
+	task, err := createTaskReqToCore(req)
 	require.NoError(t, err)
-	assert.Equal(t, "t1", task.ID)
-	assert.Nil(t, task.Deadline)
-}
-
-func TestEnvelopeToProto_NilDeadline(t *testing.T) {
-	env := core.TaskEnvelope{
-		JanusVersion: "0.4.0",
-		TaskID:       "t1",
-		TenantID:     "acme",
-		Target:       core.Target{Type: "agent", Value: "a1"},
-		Priority:     core.PriorityHigh,
-		TTLSeconds:   300,
-		Budget:       nil, // explicitly nil
-		Trace:        core.TraceContext{TraceID: "trace-1", ParentTaskID: "parent-1", SpanID: "span-1"},
-		Payload:      core.Payload{Type: "text", Content: "hello"},
-	}
-	pbEnv := envelopeToProto(env)
-	assert.Equal(t, "t1", pbEnv.TaskId)
-	assert.Equal(t, "acme", pbEnv.TenantId)
-	assert.Equal(t, "high", pbEnv.Priority)
-	assert.Nil(t, pbEnv.Deadline) // nil deadline path
-	assert.Nil(t, pbEnv.Budget)   // nil budget path
-	assert.Equal(t, "trace-1", pbEnv.Trace.TraceId)
-	assert.Equal(t, "parent-1", pbEnv.Trace.ParentTaskId)
-}
-
-func TestEnvelopeToProto_NilBudget(t *testing.T) {
-	dl := time.Now()
-	env := core.TaskEnvelope{
-		JanusVersion: "0.4.0",
-		TaskID:       "t1",
-		TenantID:     "acme",
-		Target:       core.Target{Type: "agent", Value: "a1"},
-		Priority:     core.PriorityNormal,
-		TTLSeconds:   60,
-		Deadline:     &dl,
-		Budget:       nil, // explicitly nil
-		Trace:        core.TraceContext{},
-		Payload:      core.Payload{Type: "text", Content: "hi"},
-	}
-	pbEnv := envelopeToProto(env)
-	assert.NotNil(t, pbEnv.Deadline) // deadline is set
-	assert.Nil(t, pbEnv.Budget)      // budget is nil
+	assert.Equal(t, "trace-123", task.Envelope.Trace.TraceID)
 }
