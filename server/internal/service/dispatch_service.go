@@ -576,7 +576,7 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 			return fmt.Errorf("complete task: %w", uerr)
 		}
 		if !taskOK {
-			return nil
+			return fmt.Errorf("task CAS failed: concurrent modification detected")
 		}
 		if resultRef != "" {
 			if serr := s.taskTx.SetResultRefTx(ctx, tx, tenantID, taskID, resultRef); serr != nil {
@@ -729,7 +729,7 @@ func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leas
 				return fmt.Errorf("set retry_scheduled: %w", uerr)
 			}
 			if !retryOK {
-				return nil
+				return fmt.Errorf("task CAS failed: concurrent modification detected")
 			}
 			if rerr := s.taskTx.UpdateRetryAtTx(ctx, tx, tenantID, taskID, retryAt); rerr != nil {
 				return fmt.Errorf("set retry_at: %w", rerr)
@@ -747,7 +747,7 @@ func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leas
 				return fmt.Errorf("dead letter: %w", uerr)
 			}
 			if !dlOK {
-				return nil
+				return fmt.Errorf("task CAS failed: concurrent modification detected")
 			}
 			// dlq_publish + dead_lettered event outbox
 			envelopeJSON, _ := json.Marshal(task.Envelope)
