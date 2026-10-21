@@ -447,6 +447,22 @@ func (s *TaskService) Complete(ctx context.Context, tenantID, taskID string) err
 	return s.transitionAndFinish(ctx, tenantID, taskID, core.TaskStatusCompleted, core.EventTaskCompleted, 0, "completed")
 }
 
+// Fail is the worker's explicit, unrecoverable failure declaration for a
+// task it holds. Contract — terminal, do not weaken:
+//   - the task moves to `failed` and accepts no further lifecycle action:
+//     a second Fail is an invalid transition and Replay is rejected;
+//   - any open attempt is closed with status "failed" in the SAME
+//     transaction, so its lease dies immediately (a heartbeat on the old
+//     lease id fails) and the agent's slot is released;
+//   - NO automatic retry ever follows: Fail never arms retry_at, and the
+//     retry scheduler only promotes retry_scheduled tasks, so an explicitly
+//     failed task is never requeued. Recoverable failures belong to Nack
+//     (retriable) or lease expiry — Fail means "never run this again".
+//
+// When taskErr is non-nil, its marshalled core.TaskError rides a task.failed
+// event durably into the outbox (audit trail) and best-effort to the live
+// queue under the SAME event id — the terminal transition itself has already
+// committed, so a delivery outage must not fail the call.
 func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr *core.TaskError) error {
 	if err := s.transitionAndFinish(ctx, tenantID, taskID, core.TaskStatusFailed, core.EventTaskFailed, 1, "failed"); err != nil {
 		return err
@@ -454,12 +470,20 @@ func (s *TaskService) Fail(ctx context.Context, tenantID, taskID string, taskErr
 
 	if taskErr != nil {
 		errBytes, _ := json.Marshal(taskErr)
-		_ = s.publishEvent(ctx, core.JanusEvent{
+		evt := core.JanusEvent{
 			EventType: core.EventTaskFailed,
 			TenantID:  tenantID,
 			TaskID:    taskID,
 			Payload:   errBytes,
-		})
+		}
+		// Durable copy first (same identity as the fast lane below): without
+		// this outbox row the TaskError payload never reached the audit trail —
+		// it was only published to the live queue and lost on an outage. An
+		// outbox write failure must never block real-time delivery: log, publish.
+		if oerr := s.txOutbox.InsertDirect(ctx, ulid(), tenantID, "event_publish", MarshalEvent(&evt)); oerr != nil {
+			logOutboxWrite(taskID, oerr)
+		}
+		_ = s.publishEvent(ctx, evt)
 	}
 	return nil
 }

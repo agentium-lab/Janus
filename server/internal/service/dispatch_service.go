@@ -219,6 +219,16 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		// completed/dead_lettered/cancelled/expired: ACK to clear stale delivery.
 		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
+	case task.Status == core.TaskStatusFailed || task.Status == core.TaskStatusBlocked:
+		// failed is terminal-by-contract (Fail's explicit unrecoverable
+		// declaration) but deliberately sits OUTSIDE TerminalStates so Replay
+		// keeps rejecting it; blocked tasks resume through their own unblock
+		// path. In both states the task must never be handed out again off a
+		// broker redelivery: ACK the stale delivery and stop. The pre-fix
+		// fall-through minted a NEW attempt and CAS'd the task back to
+		// claimed off a plain NATS redelivery, resurrecting failed work.
+		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
+		return nil, nil
 	case task.Status == core.TaskStatusRetryScheduled:
 		// retry_scheduled: the retry scheduler / outbox will re-publish at the
 		// backoff time. ACK this stale delivery so NATS stops redelivering it.
