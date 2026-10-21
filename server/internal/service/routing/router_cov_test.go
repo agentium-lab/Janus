@@ -113,15 +113,18 @@ func TestCov_RouteCapability_DataClassMismatch(t *testing.T) {
 	assert.Equal(t, "data_classification_mismatch", res.FilteredOut[0].Reason)
 }
 
-func TestCov_RouteCapability_PolicyCheckErrorNotFiltered(t *testing.T) {
-	// A policy checker error must not filter the candidate (fail-open).
+func TestCov_RouteCapability_PolicyCheckErrorFiltered(t *testing.T) {
+	// A policy checker error must filter the candidate (fail-closed).
 	r := NewRouter(&covLookup{candidates: []AgentCandidate{{
 		AgentID: "a1", MailboxID: "mb-1", Status: "online",
 		Capabilities: []core.AgentCapability{{Capability: "code_review"}},
 	}}}, &covPolicy{err: errors.New("policy svc down")}, nil)
 	res, err := r.Route(context.Background(), "acme", core.Target{Type: core.TargetTypeCapability, Value: "code_review"}, core.TaskEnvelope{})
-	require.NoError(t, err)
-	assert.Equal(t, "a1", res.AgentID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all candidates filtered")
+	require.NotNil(t, res)
+	require.Len(t, res.FilteredOut, 1)
+	assert.Equal(t, "policy_check_error", res.FilteredOut[0].Reason)
 }
 
 func TestCov_RouteCapability_PolicyDenied(t *testing.T) {

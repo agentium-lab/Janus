@@ -131,7 +131,7 @@ func TestRoute_CapabilityPolicyDeny(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestRoute_CapabilityPolicyCheckError_FailOpenWithLog(t *testing.T) {
+func TestRoute_CapabilityPolicyCheckError_FailClosed(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
@@ -147,10 +147,13 @@ func TestRoute_CapabilityPolicyCheckError_FailOpenWithLog(t *testing.T) {
 	result, err := r.Route(context.Background(), "acme",
 		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
 		core.TaskEnvelope{Policy: &core.PolicyContext{DataClassification: "internal"}})
-	require.NoError(t, err, "policy check errors must stay fail-open by doctrine")
-	assert.Equal(t, "agent-1", result.AgentID)
-	assert.Empty(t, result.FilteredOut)
-	assert.Contains(t, logs.String(), "fail-open")
+	require.Error(t, err, "policy check errors must fail-closed by doctrine")
+	assert.Contains(t, err.Error(), "all candidates filtered")
+	require.NotNil(t, result)
+	assert.Equal(t, "all_candidates_filtered", result.Reason)
+	assert.Len(t, result.FilteredOut, 1)
+	assert.Equal(t, "policy_check_error", result.FilteredOut[0].Reason)
+	assert.Contains(t, logs.String(), "fail-closed")
 	assert.Contains(t, logs.String(), "agent-1")
 }
 
