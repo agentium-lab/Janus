@@ -230,6 +230,13 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		// claimed off a plain NATS redelivery, resurrecting failed work.
 		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
+	case task.Status == core.TaskStatusApprovalPending:
+		// approval_pending: task is waiting for approval, must not be claimed.
+		// ACK the stale delivery and stop. The pre-fix fall-through minted a
+		// NEW attempt and CAS'd the task back to claimed, bypassing the
+		// approval gate.
+		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
+		return nil, nil
 	case task.Status == core.TaskStatusRetryScheduled:
 		// retry_scheduled: the retry scheduler / outbox will re-publish at the
 		// backoff time. ACK this stale delivery so NATS stops redelivering it.
