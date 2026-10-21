@@ -14,6 +14,7 @@ const (
 	EventTaskQueued          EventType = "task.queued"
 	EventTaskApprovalPending EventType = "task.approval_pending"
 	EventTaskClaimed         EventType = "task.claimed"
+	EventLeaseLost           EventType = "task.lease_lost"
 	EventTaskStarted         EventType = "task.started"
 	EventTaskHeartbeat       EventType = "task.heartbeat"
 	EventTaskProgress        EventType = "task.progress"

@@ -159,6 +159,29 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 					log.Printf("lease scanner: set retry_scheduled %s/%s: %v", e.TenantID, e.TaskID, err)
 					return false
 				}
+				// The lease expired and the task is requeued for redelivery: emit
+				// task.lease_lost so stream subscribers learn the in-flight attempt
+				// is gone (mirrors the dead-letter event write below; the same
+				// transaction guarantees state and signal commit together).
+				lostPayload, _ := json.Marshal(map[string]interface{}{
+					"reason":   "lease_expired",
+					"attempt":  e.Attempt,
+					"agent_id": e.AgentID,
+				})
+				lostEvent := core.JanusEvent{
+					EventType: core.EventLeaseLost, TenantID: e.TenantID, TaskID: e.TaskID,
+					SourceAgent: e.AgentID,
+					Payload:     lostPayload,
+				}
+				lostEventPayload := marshalLeaseEvent(&lostEvent)
+				if _, err := tx.Exec(ctx,
+					`INSERT INTO outbox_events (id, tenant_id, kind, payload)
+					 VALUES ($1, $2, 'event_publish', $3)`,
+					generateULID(), e.TenantID, lostEventPayload,
+				); err != nil {
+					log.Printf("lease scanner: lease_lost event %s/%s: %v", e.TenantID, e.TaskID, err)
+					return false
+				}
 			} else {
 				if _, err := tx.Exec(ctx,
 					`UPDATE tasks SET status = 'dead_lettered', updated_at = now()
