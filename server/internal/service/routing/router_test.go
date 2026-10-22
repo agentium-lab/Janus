@@ -347,3 +347,88 @@ func TestRoute_CapabilityTarget_ModelClassesMatch(t *testing.T) {
 	assert.Equal(t, "agent-1", result.AgentID)
 	assert.Equal(t, "mb-1", result.MailboxID)
 }
+
+func TestRoute_CapabilityTarget_TargetTeamSelection(t *testing.T) {
+	// Test that TargetTeamID acts as a SELECTION constraint, not a policy fact override.
+	// Candidates whose actual team doesn't match are filtered out.
+	lookup := &mockLookup{
+		candidates: []AgentCandidate{
+			{AgentID: "agent-1", Status: "online", MailboxID: "mb-1", TeamID: "team-a"},
+			{AgentID: "agent-2", Status: "online", MailboxID: "mb-2", TeamID: "team-b"},
+		},
+	}
+	r := NewRouter(lookup, nil, nil)
+
+	// Task targets team-a only
+	envelope := core.TaskEnvelope{
+		Policy: &core.PolicyContext{
+			TargetTeamID: "team-a",
+		},
+	}
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
+		envelope)
+
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+	// Only agent-1 (team-a) should pass the filter
+	assert.Equal(t, "agent-1", result.AgentID)
+}
+
+func TestRoute_CapabilityTarget_TargetTeamMismatchFiltersAll(t *testing.T) {
+	// Test that when TargetTeamID doesn't match any candidate, all are filtered.
+	lookup := &mockLookup{
+		candidates: []AgentCandidate{
+			{AgentID: "agent-1", Status: "online", MailboxID: "mb-1", TeamID: "team-a"},
+			{AgentID: "agent-2", Status: "online", MailboxID: "mb-2", TeamID: "team-b"},
+		},
+	}
+	r := NewRouter(lookup, nil, nil)
+
+	// Task targets team-c, but no candidate is in team-c
+	envelope := core.TaskEnvelope{
+		Policy: &core.PolicyContext{
+			TargetTeamID: "team-c",
+		},
+	}
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
+		envelope)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all candidates filtered")
+	require.NotNil(t, result)
+	assert.Equal(t, "all_candidates_filtered", result.Reason)
+	// Both candidates should be filtered with target_team_mismatch
+	assert.Len(t, result.FilteredOut, 2)
+	for _, f := range result.FilteredOut {
+		assert.Equal(t, "target_team_mismatch", f.Reason)
+	}
+}
+
+func TestRoute_AgentTarget_TargetTeamMismatchRejects(t *testing.T) {
+	// Test that for direct agent routing, TargetTeamID mismatch rejects the agent.
+	// The caller cannot flip policy by claiming a different team.
+	lookup := &mockLookup{
+		agentMailbox: map[string]string{"agent-1": "mb-1"},
+		candidates:   []AgentCandidate{{AgentID: "agent-1", TeamID: "team-a"}},
+	}
+	r := NewRouter(lookup, nil, nil)
+
+	// Task targets team-b, but agent-1 is in team-a
+	envelope := core.TaskEnvelope{
+		Policy: &core.PolicyContext{
+			TargetTeamID: "team-b",
+		},
+	}
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeAgent, Value: "agent-1"},
+		envelope)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not match requested target team")
+	assert.Nil(t, result)
+}

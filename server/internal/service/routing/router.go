@@ -113,15 +113,18 @@ func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string, envel
 	// A denied agent should not be routable just because the caller specified
 	// it by ID rather than by capability.
 	dataClass := ""
-	targetTeam := agent.TeamID // default: agent's team
 	if envelope.Policy != nil {
 		dataClass = envelope.Policy.DataClassification
-		if envelope.Policy.TargetTeamID != "" {
-			targetTeam = envelope.Policy.TargetTeamID // task-specified target team takes precedence
-		}
+	}
+	// TargetTeamID is a SELECTION constraint, not a policy fact override.
+	// If the task specifies a target team and the agent's actual team doesn't
+	// match, reject — the caller cannot flip policy by claiming a different team.
+	if envelope.Policy != nil && envelope.Policy.TargetTeamID != "" && envelope.Policy.TargetTeamID != agent.TeamID {
+		return nil, fmt.Errorf("agent %s team %q does not match requested target team %q", agentID, agent.TeamID, envelope.Policy.TargetTeamID)
 	}
 	if r.policy != nil {
-		allowed, perr := r.policy.CheckRoute(ctx, tenantID, agentID, dataClass, targetTeam)
+		// Policy fact is ALWAYS the agent's actual team, never the caller's claim.
+		allowed, perr := r.policy.CheckRoute(ctx, tenantID, agentID, dataClass, agent.TeamID)
 		if perr != nil {
 			return nil, fmt.Errorf("policy check for agent %s: %w", agentID, perr)
 		}
@@ -166,7 +169,7 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 	}
 
 	dataClass := ""
-	targetTeam := "" // task-specified target team (empty = use agent's team)
+	targetTeam := "" // task-specified target team (selection constraint only)
 	if envelope.Policy != nil {
 		dataClass = envelope.Policy.DataClassification
 		targetTeam = envelope.Policy.TargetTeamID
@@ -184,12 +187,15 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 			filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "data_classification_mismatch"})
 			continue
 		}
+		// TargetTeamID is a SELECTION constraint: filter candidates whose
+		// actual team doesn't match. Never override the policy fact.
+		if targetTeam != "" && c.TeamID != targetTeam {
+			filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "target_team_mismatch"})
+			continue
+		}
 		if r.policy != nil {
-			teamForCheck := c.TeamID
-			if targetTeam != "" {
-				teamForCheck = targetTeam // task-specified target team takes precedence
-			}
-			allowed, err := r.policy.CheckRoute(ctx, tenantID, c.AgentID, dataClass, teamForCheck)
+			// Policy fact is ALWAYS the candidate's actual team.
+			allowed, err := r.policy.CheckRoute(ctx, tenantID, c.AgentID, dataClass, c.TeamID)
 			if err != nil {
 				// Fail-closed by doctrine: policy check errors must reject
 				// the candidate, not silently allow it. A broken policy
