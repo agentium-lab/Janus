@@ -41,6 +41,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/agentium-lab/Janus/server/internal/expiry"
+	"github.com/agentium-lab/Janus/server/internal/recovery"
 	"github.com/agentium-lab/Janus/server/internal/retry"
 	"github.com/agentium-lab/Janus/server/internal/service"
 	"github.com/agentium-lab/Janus/server/internal/service/intent"
@@ -253,7 +254,7 @@ func main() {
 	acpGw := acp.NewGateway(agentSvc, taskSvc, taskSvc)
 	mcpGw := mcp.NewGateway(taskSvc, taskSvc, contextRefSvc).WithEventPublisher(outbox.NewOutboxEventRecorder(outboxRepo))
 
-	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, queueDrv).WithOutbox(outboxRepo, pool)
+	dlqSvc := handler.NewDLQServiceAdapter(taskRepo, queueDrv).WithOutbox(outboxRepo, pool).WithReplayGate(taskSvc.ReplayGate())
 	dlqH := handler.NewDLQHandler(dlqSvc)
 	catalogH := handler.NewCatalogHandler(agentRepo)
 
@@ -363,6 +364,10 @@ func main() {
 	go leaseScanner.Start(context.Background())
 	defer leaseScanner.Stop()
 
+	recoveryScanner := recovery.NewTaskScanner(pool, queueDrv, 5*time.Minute)
+	go recoveryScanner.Start(context.Background())
+	defer recoveryScanner.Stop()
+
 	pgDB, err := sql.Open("pgx", cfg.Postgres.DSN())
 	if err != nil {
 		log.Fatalf("auth db open: %v", err)
@@ -371,7 +376,10 @@ func main() {
 	validator := auth.NewAPIKeyValidator(pgDB)
 
 	var sharedTLSCfg *tls.Config
-	if cfg.TLS.Enabled && cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+	if cfg.TLS.Enabled {
+		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
+			log.Fatalf("tls: TLS enabled but cert_file and/or key_file not set; refusing to serve plaintext")
+		}
 		var err error
 		sharedTLSCfg, err = buildTLSConfig(cfg.TLS)
 		if err != nil {
@@ -504,7 +512,7 @@ func main() {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
+		WriteTimeout:      90 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 	go func() {
