@@ -55,6 +55,7 @@ func TestCanTransition(t *testing.T) {
 		{TaskStatusFailed, TaskStatusRetryScheduled},
 		{TaskStatusFailed, TaskStatusDeadLettered},
 		{TaskStatusRetryScheduled, TaskStatusQueued},
+		{TaskStatusDeadLettered, TaskStatusCancelled},
 	}
 
 	for _, tt := range valid {
@@ -72,7 +73,6 @@ func TestCanTransition_Invalid(t *testing.T) {
 		{TaskStatusCreated, TaskStatusRunning},
 		{TaskStatusCreated, TaskStatusCompleted},
 		{TaskStatusQueued, TaskStatusRunning},
-		{TaskStatusClaimed, TaskStatusBlocked},
 		{TaskStatusClaimed, TaskStatusFailed},
 		{TaskStatusCompleted, TaskStatusQueued},
 		{TaskStatusCompleted, TaskStatusRunning},
@@ -240,4 +240,28 @@ func validTestEnvelope() TaskEnvelope {
 		Payload:      Payload{Type: "code_review_request", Content: "Review this PR"},
 		Trace:        TraceContext{TraceID: "trace_01HZY8Q9ZWZK3F8R0V8Y5B7M2Q"},
 	}
+}
+
+// TestBuildReplayDedupeKey_Format verifies the shared dedupe key format used
+// by all three replay producers (task_service.Replay, retry.Scheduler,
+// dlq_handler.ReplayDLQ). The format must be identical across producers so
+// that concurrent replay+retry cannot generate different keys for the same
+// logical delivery.
+func TestBuildReplayDedupeKey_Format(t *testing.T) {
+	// replay kind
+	key := BuildReplayDedupeKey("acme", "task-1", "replay", 2, 1)
+	assert.Equal(t, "task_publish:acme:task-1:replay:2:attempt:1", key)
+
+	// dlq_replay kind
+	key = BuildReplayDedupeKey("acme", "task-1", "dlq_replay", 3, 1)
+	assert.Equal(t, "task_publish:acme:task-1:dlq_replay:3:attempt:1", key)
+
+	// retry uses same function with actual attempt_count
+	key = BuildReplayDedupeKey("acme", "task-1", "replay", 1, 5)
+	assert.Equal(t, "task_publish:acme:task-1:replay:1:attempt:5", key)
+
+	// Different generations produce different keys
+	key1 := BuildReplayDedupeKey("acme", "task-1", "replay", 1, 1)
+	key2 := BuildReplayDedupeKey("acme", "task-1", "replay", 2, 1)
+	assert.NotEqual(t, key1, key2, "different generations must produce different keys")
 }

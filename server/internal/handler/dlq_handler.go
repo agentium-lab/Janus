@@ -77,10 +77,10 @@ func tenantAndTaskFromDLQPath(path string) (string, string) {
 	parts := strings.Split(path, "/")
 	tenantID, taskID := "", ""
 	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) {
+		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
 			tenantID = parts[i+1]
 		}
-		if p == "dlq" && i+1 < len(parts) {
+		if p == "dlq" && i+1 < len(parts) && taskID == "" {
 			taskID = parts[i+1]
 		}
 	}
@@ -93,6 +93,14 @@ type DLQServiceAdapter struct {
 	queueDriver DLQQueueDriver
 	outboxRepo  *postgres.OutboxRepo
 	pool        *pgxpool.Pool
+	replayGate  DLQReplayGate
+}
+
+// DLQReplayGate checks approval and policy before allowing DLQ replay.
+// Mirrors the gates in TaskService.Replay so DLQ replay cannot bypass them.
+type DLQReplayGate interface {
+	CheckApproval(ctx context.Context, tenantID, taskID string) error
+	CheckPolicy(ctx context.Context, tenantID, sourceAgent, targetType, targetValue string) error
 }
 
 type DLQTaskRepo interface {
@@ -119,6 +127,18 @@ func (a *DLQServiceAdapter) WithOutbox(outboxRepo *postgres.OutboxRepo, pool *pg
 	return a
 }
 
+// WithReplayGate wires the approval/policy gate so DLQ replay cannot bypass
+// the same checks that gate ordinary Replay.
+//
+// CONTRACT: If the gate is nil (not wired), DLQ replay proceeds WITHOUT
+// approval/policy checks. This is a deliberate backdoor for dev/test setups
+// where no approval service is configured. Production wiring MUST call
+// WithReplayGate with a non-nil gate to enforce governance.
+func (a *DLQServiceAdapter) WithReplayGate(gate DLQReplayGate) *DLQServiceAdapter {
+	a.replayGate = gate
+	return a
+}
+
 func (a *DLQServiceAdapter) QueryDLQ(ctx context.Context, tenantID, mailboxID string, limit int) ([]*core.Task, error) {
 	if tenantID == "" {
 		return nil, nil
@@ -133,6 +153,17 @@ func (a *DLQServiceAdapter) ReplayDLQ(ctx context.Context, tenantID, taskID stri
 	}
 	if task.Status != core.TaskStatusDeadLettered {
 		return nil, fmt.Errorf("task is not dead_lettered, status: %s", task.Status)
+	}
+	// DLQ replay must pass the same gates as ordinary replay: a task whose
+	// approval was rejected or whose policy denies must not re-enter the
+	// queue through the DLQ backdoor.
+	if a.replayGate != nil {
+		if gerr := a.replayGate.CheckApproval(ctx, tenantID, taskID); gerr != nil {
+			return nil, fmt.Errorf("dlq replay approval gate: %w", gerr)
+		}
+		if gerr := a.replayGate.CheckPolicy(ctx, tenantID, task.SourceAgent, string(task.TargetType), task.TargetValue); gerr != nil {
+			return nil, fmt.Errorf("dlq replay policy gate: %w", gerr)
+		}
 	}
 
 	// Atomic path: route through outbox inside a single tx when wired.
@@ -200,7 +231,9 @@ func (a *DLQServiceAdapter) replayDLQAtomic(ctx context.Context, tenantID, taskI
 			TenantID: tenantID, MailboxID: task.MailboxID, TaskID: taskID,
 			Priority: task.Priority, Payload: envelopeJSON,
 		})
-		dedupeKey := fmt.Sprintf("task_publish:%s:%s:dlq_replay:%d", tenantID, taskID, generation)
+		// DLQ replay resets attempt_count to 1; include it in the dedupe key
+		// so it matches the format used by retry scheduler (replay:N:attempt:M).
+		dedupeKey := core.BuildReplayDedupeKey(tenantID, taskID, "dlq_replay", generation, 1)
 		if err := a.outboxRepo.InsertWithDedupe(ctx, tx, dlqULID(), tenantID, "task_publish", dedupeKey, queuePayload); err != nil {
 			return nil, fmt.Errorf("outbox task_publish: %w", err)
 		}
@@ -240,6 +273,45 @@ func dlqULID() string {
 }
 
 func (a *DLQServiceAdapter) DiscardDLQ(ctx context.Context, tenantID, taskID string) error {
+	task, err := a.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for discard: %w", err)
+	}
+	if task.Status != core.TaskStatusDeadLettered {
+		return fmt.Errorf("task is not dead_lettered, status: %s", task.Status)
+	}
+	// Discard is a terminal transition: no live attempt may remain. A
+	// dead_lettered task normally has no active attempt, but a race between
+	// the lease scanner's dead-letter and a late heartbeat could leave one.
+	if a.pool != nil {
+		tx, terr := a.pool.Begin(ctx)
+		if terr != nil {
+			return fmt.Errorf("begin discard tx: %w", terr)
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = tx.Rollback(ctx)
+			}
+		}()
+		if _, uerr := tx.Exec(ctx,
+			`UPDATE task_attempts SET status = 'cancelled', finished_at = now()
+			 WHERE tenant_id = $1 AND task_id = $2 AND status IN ('claimed', 'running')`,
+			tenantID, taskID); uerr != nil {
+			return fmt.Errorf("finish open attempts for discard: %w", uerr)
+		}
+		if _, uerr := tx.Exec(ctx,
+			`UPDATE tasks SET status = 'cancelled', updated_at = now()
+			 WHERE tenant_id = $1 AND id = $2 AND status = 'dead_lettered'`,
+			tenantID, taskID); uerr != nil {
+			return fmt.Errorf("update task cancelled: %w", uerr)
+		}
+		if cerr := tx.Commit(ctx); cerr != nil {
+			return fmt.Errorf("commit discard tx: %w", cerr)
+		}
+		committed = true
+		return nil
+	}
 	return a.taskRepo.UpdateStatus(ctx, tenantID, taskID, core.TaskStatusCancelled, 0)
 }
 

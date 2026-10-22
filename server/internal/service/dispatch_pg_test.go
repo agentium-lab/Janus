@@ -471,6 +471,42 @@ func TestTaskService_Unblock_LifecycleOutbox(t *testing.T) {
 	assert.True(t, hasStarted, "outbox should contain task.started event after unblock")
 }
 
+// TestTaskService_Block_TerminalStateRefusal_PG verifies that Block refuses
+// to operate on terminal-state tasks (completed/failed/cancelled/expired/dead_lettered).
+// This pins the eval-3 W2 fix: Block must not revive terminal tasks.
+func TestTaskService_Block_TerminalStateRefusal_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	terminalStates := []core.TaskStatus{
+		core.TaskStatusCompleted,
+		core.TaskStatusFailed,
+		core.TaskStatusCancelled,
+		core.TaskStatusExpired,
+		core.TaskStatusDeadLettered,
+	}
+
+	for _, status := range terminalStates {
+		t.Run(string(status), func(t *testing.T) {
+			task := createTestTask(t, env, "task-block-terminal-"+string(status))
+			// Force the task into the terminal state.
+			_, err := env.pool.Exec(ctx,
+				`UPDATE tasks SET status = $1 WHERE tenant_id = $2 AND id = $3`,
+				status, "acme", task.ID)
+			require.NoError(t, err)
+
+			// Block should refuse.
+			err = env.taskSvc.Block(ctx, "acme", task.ID, "test")
+			assert.Error(t, err, "Block should refuse terminal state %s", status)
+			assert.Contains(t, err.Error(), "terminal", "error should mention terminal state")
+
+			// Verify status unchanged.
+			got, _ := env.taskRepo.Get(ctx, "acme", task.ID)
+			assert.Equal(t, status, got.Status, "status should remain %s", status)
+		})
+	}
+}
+
 func TestTaskService_Replay_OutboxPublish(t *testing.T) {
 	env := setupServiceTestEnv(t)
 	ctx := context.Background()

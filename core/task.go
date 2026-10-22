@@ -46,6 +46,7 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 	TaskStatusQueued: {
 		TaskStatusClaimed:         true,
 		TaskStatusApprovalPending: true,
+		TaskStatusBlocked:         true,
 		TaskStatusExpired:         true,
 		TaskStatusCancelled:       true,
 	},
@@ -56,6 +57,7 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 	TaskStatusClaimed: {
 		TaskStatusRunning:        true,
 		TaskStatusCompleted:      true,
+		TaskStatusBlocked:        true,
 		TaskStatusRetryScheduled: true,
 		TaskStatusDeadLettered:   true,
 		TaskStatusCancelled:      true,
@@ -79,6 +81,9 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 	TaskStatusRetryScheduled: {
 		TaskStatusQueued: true,
 	},
+	TaskStatusDeadLettered: {
+		TaskStatusCancelled: true,
+	},
 }
 
 // CanTransition checks whether transitioning from current to next is valid.
@@ -88,6 +93,14 @@ func CanTransition(current, next TaskStatus) bool {
 		return false
 	}
 	return allowed[next]
+}
+
+// BuildReplayDedupeKey constructs a stable dedupe key for replay-driven
+// re-publish so the same delivery cannot be enqueued twice.
+// kind is "replay" or "dlq_replay"; generation distinguishes replay rounds;
+// attempt is the attempt_count at publish time (1 for fresh replays).
+func BuildReplayDedupeKey(tenantID, taskID, kind string, generation, attempt int) string {
+	return fmt.Sprintf("task_publish:%s:%s:%s:%d:attempt:%d", tenantID, taskID, kind, generation, attempt)
 }
 
 // Priority represents task priority level.
@@ -129,6 +142,7 @@ type PolicyContext struct {
 	DataClassification    string   `json:"data_classification,omitempty"`
 	RequiresHumanApproval bool     `json:"requires_human_approval,omitempty"`
 	AllowedTools          []string `json:"allowed_tools,omitempty"`
+	TargetTeamID          string   `json:"target_team_id,omitempty"`
 }
 
 // ContextRef represents a reference to external context.
