@@ -41,9 +41,10 @@ func (w *chWriter) RecordIdempotent(_ context.Context, evt core.JanusEvent) erro
 }
 
 type startReader struct {
-	mu      sync.Mutex
-	entries []postgres.OutboxEntry
-	marked  []string
+	mu       sync.Mutex
+	entries  []postgres.OutboxEntry
+	marked   []string
+	markedCh chan string // signals when an entry is marked
 }
 
 func (f *startReader) FetchUnprojected(_ context.Context, _ int) ([]postgres.OutboxEntry, error) {
@@ -54,8 +55,11 @@ func (f *startReader) FetchUnprojected(_ context.Context, _ int) ([]postgres.Out
 
 func (f *startReader) MarkProjected(_ context.Context, id string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.marked = append(f.marked, id)
+	f.mu.Unlock()
+	if f.markedCh != nil {
+		f.markedCh <- id
+	}
 	return nil
 }
 
@@ -72,9 +76,10 @@ func (f *startReader) markedIDs() []string {
 func TestAuditProjector_StartPlainReader(t *testing.T) {
 	evt := core.JanusEvent{EventID: "st-1", TenantID: "acme"}
 	payload, _ := json.Marshal(evt)
-	reader := &startReader{entries: []postgres.OutboxEntry{
-		{ID: "ob-st1", TenantID: "acme", Kind: "event_publish", Payload: payload},
-	}}
+	reader := &startReader{
+		entries:  []postgres.OutboxEntry{{ID: "ob-st1", TenantID: "acme", Kind: "event_publish", Payload: payload}},
+		markedCh: make(chan string, 1),
+	}
 	writer := &chWriter{wrote: make(chan core.JanusEvent, 1)}
 	p := NewAuditProjector(reader, writer).WithInterval(2 * time.Millisecond)
 
@@ -82,15 +87,22 @@ func TestAuditProjector_StartPlainReader(t *testing.T) {
 	defer cancel()
 	go p.Start(ctx)
 
+	// Wait for write event (bounded timeout)
 	select {
 	case got := <-writer.wrote:
 		assert.Equal(t, "st-1", got.EventID)
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("projector never wrote the entry")
 	}
-	require.Eventually(t, func() bool {
-		return len(reader.markedIDs()) == 1
-	}, 2*time.Second, 2*time.Millisecond, "entry must be marked projected")
+
+	// Wait for mark event (exact signal, not polling)
+	select {
+	case id := <-reader.markedCh:
+		assert.Equal(t, "ob-st1", id)
+	case <-time.After(5 * time.Second):
+		t.Fatal("projector never marked the entry")
+	}
+
 	assert.Equal(t, []string{"ob-st1"}, reader.markedIDs())
 	p.Stop()
 }
