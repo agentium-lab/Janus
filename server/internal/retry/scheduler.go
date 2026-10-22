@@ -157,8 +157,11 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 // buildRetryDedupeKey constructs a stable dedupe key for a retry-driven
 // re-publish so the same delivery cannot be enqueued twice.
 // Includes replay_count to distinguish retries across replay generations.
+// Uses attemptCount+1 as the delivery number: the scheduler enqueues the NEXT
+// delivery after the current attempt fails, ensuring each logical delivery
+// has a unique key (Replay's initial publish is delivery #1, first retry is #2, etc.).
 func buildRetryDedupeKey(tenantID, taskID string, replayCount, attemptCount int) string {
-	return core.BuildReplayDedupeKey(tenantID, taskID, "replay", replayCount, attemptCount)
+	return core.BuildReplayDedupeKey(tenantID, taskID, "replay", replayCount, attemptCount+1)
 }
 
 // buildRetryMessage unmarshals a task envelope and constructs the

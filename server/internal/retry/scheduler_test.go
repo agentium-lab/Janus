@@ -66,8 +66,9 @@ func TestScheduler_StartStop_StopMethod(t *testing.T) {
 }
 
 func TestBuildRetryDedupeKey(t *testing.T) {
-	assert.Equal(t, "task_publish:acme:task-1:replay:0:attempt:3", buildRetryDedupeKey("acme", "task-1", 0, 3))
-	assert.Equal(t, "task_publish:t2:task-2:replay:1:attempt:0", buildRetryDedupeKey("t2", "task-2", 1, 0))
+	// Scheduler uses attemptCount+1 as the next delivery number
+	assert.Equal(t, "task_publish:acme:task-1:replay:0:attempt:4", buildRetryDedupeKey("acme", "task-1", 0, 3))
+	assert.Equal(t, "task_publish:t2:task-2:replay:1:attempt:1", buildRetryDedupeKey("t2", "task-2", 1, 0))
 }
 
 func TestBuildRetryDedupeKey_StableAndUnique(t *testing.T) {
