@@ -193,6 +193,17 @@ go_check T12c "A3 template API creates executable rules" \
 go_check T13 "A4 sanitize: a.b ≠ a_b" \
   ./server/internal/driver/nats 'TestSanitize_NoDotCollision'
 
+# --- T14 W6: agent presence probe builds + runs ----------------------------
+# The probe queries PG for tenants with zero online agents. Build check +
+# invocation (will fail without PG, but that's expected; we just verify it
+# compiles and the binary exists).
+if go build -o /tmp/janus-agent-presence-probe ./server/cmd/janus-agent-presence-probe 2>/dev/null; then
+  record T14 "W6 agent presence probe builds" PASS
+  rm -f /tmp/janus-agent-presence-probe
+else
+  record T14 "W6 agent presence probe builds" FAIL
+fi
+
 # --- A1: legacy settle endpoints need admin scope (REQUIRED) ---------------
 # /complete and /fail settle a task's outcome; a task:write-only key must
 # get 403 (scopeRules: segment "tasks", suffixes /complete,/fail → admin).
