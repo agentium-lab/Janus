@@ -287,3 +287,63 @@ func TestFailedEvent(t *testing.T) {
 	assert.Equal(t, EventRoutingFailed, evt.EventType)
 	assert.Contains(t, evt.Reason, "offline")
 }
+
+func TestRoute_CapabilityTarget_ModelClassesHardConstraint(t *testing.T) {
+	// Test that when a task requires specific model_classes and no candidate
+	// matches, the routing fails with a clear error.
+	lookup := &mockLookup{
+		candidates: []AgentCandidate{
+			{AgentID: "agent-1", Status: "online", MailboxID: "mb-1", ModelClasses: []string{"gpt-4"}},
+			{AgentID: "agent-2", Status: "online", MailboxID: "mb-2", ModelClasses: []string{"claude-3"}},
+		},
+	}
+	r := NewRouter(lookup, nil, nil)
+
+	// Task requires gpt-5, but no agent supports it
+	envelope := core.TaskEnvelope{
+		Budget: &core.Budget{
+			ModelClasses: []string{"gpt-5"},
+		},
+	}
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
+		envelope)
+
+	// Should fail because no candidate matches the model_classes requirement
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "all candidates filtered")
+	// Router returns a result with FilteredOut details even on error
+	require.NotNil(t, result)
+	assert.Equal(t, "all_candidates_filtered", result.Reason)
+	assert.Len(t, result.FilteredOut, 2)
+	assert.Equal(t, "model_class_mismatch", result.FilteredOut[0].Reason)
+}
+
+func TestRoute_CapabilityTarget_ModelClassesMatch(t *testing.T) {
+	// Test that when a task requires specific model_classes and a candidate
+	// matches, the routing succeeds.
+	lookup := &mockLookup{
+		candidates: []AgentCandidate{
+			{AgentID: "agent-1", Status: "online", MailboxID: "mb-1", ModelClasses: []string{"gpt-4"}},
+			{AgentID: "agent-2", Status: "online", MailboxID: "mb-2", ModelClasses: []string{"claude-3"}},
+		},
+	}
+	r := NewRouter(lookup, nil, nil)
+
+	// Task requires gpt-4, agent-1 supports it
+	envelope := core.TaskEnvelope{
+		Budget: &core.Budget{
+			ModelClasses: []string{"gpt-4"},
+		},
+	}
+
+	result, err := r.Route(context.Background(), "acme",
+		core.Target{Type: core.TargetTypeCapability, Value: "code_review"},
+		envelope)
+
+	require.NoError(t, err)
+	assert.NotNil(t, result)
+	assert.Equal(t, "agent-1", result.AgentID)
+	assert.Equal(t, "mb-1", result.MailboxID)
+}
