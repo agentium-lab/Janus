@@ -25,6 +25,7 @@ message PolicyContext {
   string data_classification = 1;
   bool requires_human_approval = 2;
   repeated string allowed_tools = 3;
+  string target_team_id = 4;
 }
 
 // ContextRef

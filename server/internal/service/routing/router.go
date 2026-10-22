@@ -38,6 +38,7 @@ type RouterResult struct {
 }
 
 type AgentLookup interface {
+	GetAgent(ctx context.Context, tenantID, agentID string) (*AgentCandidate, error)
 	ListOnlineByCapability(ctx context.Context, tenantID, capability string) ([]AgentCandidate, error)
 	GetAgentMailbox(ctx context.Context, tenantID, agentID string) (mailboxID string, err error)
 	ValidateMailbox(ctx context.Context, tenantID, mailboxID string) (active bool, err error)
@@ -46,7 +47,7 @@ type AgentLookup interface {
 }
 
 type PolicyChecker interface {
-	CheckRoute(ctx context.Context, tenantID, agentID, dataClass string) (allowed bool, err error)
+	CheckRoute(ctx context.Context, tenantID, agentID, dataClass, teamID string) (allowed bool, err error)
 }
 
 type BudgetChecker interface {
@@ -69,7 +70,7 @@ func (r *Router) Route(ctx context.Context, tenantID string, target core.Target,
 	}()
 	switch target.Type {
 	case core.TargetTypeAgent:
-		return r.routeAgent(ctx, tenantID, target.Value)
+		return r.routeAgent(ctx, tenantID, target.Value, envelope)
 	case core.TargetTypeMailbox:
 		return r.routeMailbox(ctx, tenantID, target.Value)
 	case core.TargetTypeCapability:
@@ -103,10 +104,34 @@ func classifyRouteOutcome(result *RouterResult, err error) string {
 	return "error"
 }
 
-func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string) (*RouterResult, error) {
-	mailboxID, err := r.lookup.GetAgentMailbox(ctx, tenantID, agentID)
+func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string, envelope core.TaskEnvelope) (*RouterResult, error) {
+	agent, err := r.lookup.GetAgent(ctx, tenantID, agentID)
 	if err != nil {
 		return nil, fmt.Errorf("agent %s not found: %w", agentID, err)
+	}
+	// Direct agent target must pass the same policy gate as capability routing.
+	// A denied agent should not be routable just because the caller specified
+	// it by ID rather than by capability.
+	dataClass := ""
+	targetTeam := agent.TeamID // default: agent's team
+	if envelope.Policy != nil {
+		dataClass = envelope.Policy.DataClassification
+		if envelope.Policy.TargetTeamID != "" {
+			targetTeam = envelope.Policy.TargetTeamID // task-specified target team takes precedence
+		}
+	}
+	if r.policy != nil {
+		allowed, perr := r.policy.CheckRoute(ctx, tenantID, agentID, dataClass, targetTeam)
+		if perr != nil {
+			return nil, fmt.Errorf("policy check for agent %s: %w", agentID, perr)
+		}
+		if !allowed {
+			return nil, fmt.Errorf("agent %s denied by policy", agentID)
+		}
+	}
+	mailboxID, err := r.lookup.GetAgentMailbox(ctx, tenantID, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("agent %s mailbox not found: %w", agentID, err)
 	}
 	return &RouterResult{
 		TargetType: core.TargetTypeAgent,
@@ -141,8 +166,10 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 	}
 
 	dataClass := ""
+	targetTeam := "" // task-specified target team (empty = use agent's team)
 	if envelope.Policy != nil {
 		dataClass = envelope.Policy.DataClassification
+		targetTeam = envelope.Policy.TargetTeamID
 	}
 
 	var filtered []FilteredCandidate
@@ -158,7 +185,11 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 			continue
 		}
 		if r.policy != nil {
-			allowed, err := r.policy.CheckRoute(ctx, tenantID, c.AgentID, dataClass)
+			teamForCheck := c.TeamID
+			if targetTeam != "" {
+				teamForCheck = targetTeam // task-specified target team takes precedence
+			}
+			allowed, err := r.policy.CheckRoute(ctx, tenantID, c.AgentID, dataClass, teamForCheck)
 			if err != nil {
 				// Fail-closed by doctrine: policy check errors must reject
 				// the candidate, not silently allow it. A broken policy
@@ -182,7 +213,12 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 				continue
 			}
 		}
-		if envelope.Budget != nil && len(envelope.Budget.ModelClasses) > 0 && len(c.ModelClasses) > 0 {
+		if envelope.Budget != nil && len(envelope.Budget.ModelClasses) > 0 {
+			if len(c.ModelClasses) == 0 {
+				// Task requires model classes but candidate has none - hard constraint violation
+				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "model_class_required"})
+				continue
+			}
 			if !hasIntersection(envelope.Budget.ModelClasses, c.ModelClasses) {
 				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "model_class_mismatch"})
 				continue

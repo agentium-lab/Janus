@@ -138,6 +138,31 @@ func envelopeToProto(e core.TaskEnvelope) *pb.TaskEnvelope {
 		Type:    e.Payload.Type,
 		Content: e.Payload.Content,
 	}
+	if e.Policy != nil {
+		pbEnv.Policy = &pb.PolicyContext{
+			DataClassification:    e.Policy.DataClassification,
+			RequiresHumanApproval: e.Policy.RequiresHumanApproval,
+			AllowedTools:          e.Policy.AllowedTools,
+			TargetTeamId:          e.Policy.TargetTeamID,
+		}
+	}
+	if len(e.ContextRefs) > 0 {
+		pbEnv.ContextRefs = make([]*pb.ContextRef, len(e.ContextRefs))
+		for i, ref := range e.ContextRefs {
+			pbRef := &pb.ContextRef{
+				Type:           ref.Type,
+				Uri:            ref.URI,
+				Hash:           ref.Hash,
+				Classification: ref.Classification,
+			}
+			if ref.ExpiresAt != "" {
+				if t, err := time.Parse(time.RFC3339, ref.ExpiresAt); err == nil {
+					pbRef.ExpiresAt = timestamppb.New(t)
+				}
+			}
+			pbEnv.ContextRefs[i] = pbRef
+		}
+	}
 	return pbEnv
 }
 
@@ -183,6 +208,7 @@ func createTaskReqToCore(req *pb.CreateTaskRequest) (core.Task, error) {
 			DataClassification:    e.Policy.DataClassification,
 			RequiresHumanApproval: e.Policy.RequiresHumanApproval,
 			AllowedTools:          e.Policy.AllowedTools,
+			TargetTeamID:          e.Policy.TargetTeamId,
 		}
 	}
 	if e.ContextRefs != nil {
