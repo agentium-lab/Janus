@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // AgentStatus represents the current status of an agent.
 type AgentStatus string
@@ -43,7 +46,18 @@ type Agent struct {
 	MaxConcurrency  int               `json:"max_concurrency"`
 	RPM             int               `json:"rpm"`
 	TPM             int               `json:"tpm"`
+	Metadata        map[string]any    `json:"metadata,omitempty"`
 	CreatedAt       time.Time         `json:"created_at"`
 	UpdatedAt       time.Time         `json:"updated_at"`
 	LastHeartbeatAt *time.Time        `json:"last_heartbeat_at"`
+}
+
+// MetadataJSON returns the metadata as a JSON byte slice for DB storage.
+// Returns nil if metadata is empty.
+func (a *Agent) MetadataJSON() []byte {
+	if len(a.Metadata) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(a.Metadata)
+	return b
 }

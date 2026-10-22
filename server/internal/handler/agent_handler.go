@@ -29,15 +29,16 @@ func NewAgentHandler(svc AgentService) *AgentHandler {
 func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 	tenantID := tenantIDFromPath(r.URL.Path)
 	var req struct {
-		ID             string `json:"id"`
-		TeamID         string `json:"team_id"`
-		DisplayName    string `json:"display_name"`
-		Protocol       string `json:"protocol"`
-		Endpoint       string `json:"endpoint"`
-		Description    string `json:"description"`
-		MaxConcurrency int    `json:"max_concurrency"`
-		RPM            int    `json:"rpm"`
-		TPM            int    `json:"tpm"`
+		ID             string         `json:"id"`
+		TeamID         string         `json:"team_id"`
+		DisplayName    string         `json:"display_name"`
+		Protocol       string         `json:"protocol"`
+		Endpoint       string         `json:"endpoint"`
+		Description    string         `json:"description"`
+		MaxConcurrency int            `json:"max_concurrency"`
+		RPM            int            `json:"rpm"`
+		TPM            int            `json:"tpm"`
+		Metadata       map[string]any `json:"metadata"`
 		Capabilities   []struct {
 			Capability  string `json:"capability"`
 			Description string `json:"description"`
@@ -58,7 +59,7 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 		ID: req.ID, TenantID: tenantID, TeamID: req.TeamID, DisplayName: req.DisplayName,
 		Protocol: core.AgentProtocol(req.Protocol), Endpoint: req.Endpoint,
 		Description: req.Description, MaxConcurrency: req.MaxConcurrency,
-		RPM: req.RPM, TPM: req.TPM,
+		RPM: req.RPM, TPM: req.TPM, Metadata: req.Metadata,
 		Status: core.AgentStatusOffline,
 	}
 	for _, c := range req.Capabilities {

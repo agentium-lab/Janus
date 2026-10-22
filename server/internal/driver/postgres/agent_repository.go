@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -27,8 +28,8 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 		// registration counts as the first heartbeat, otherwise the sweeper
 		// (which offlines online agents with a NULL heartbeat) would kill
 		// every freshly registered agent on its next tick.
-		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm, last_heartbeat_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+		`INSERT INTO agents (id, tenant_id, team_id, display_name, protocol, endpoint, status, description, max_concurrency, rpm, tpm, metadata, last_heartbeat_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, '{}')::jsonb, now())
 		 ON CONFLICT (tenant_id, id) DO UPDATE SET
 		   display_name = EXCLUDED.display_name,
 		   protocol = EXCLUDED.protocol,
@@ -37,11 +38,13 @@ func (r *AgentRepository) Register(ctx context.Context, agent core.Agent) error 
 		   max_concurrency = EXCLUDED.max_concurrency,
 		   rpm = EXCLUDED.rpm,
 		   tpm = EXCLUDED.tpm,
+		   metadata = EXCLUDED.metadata,
 		   updated_at = now(),
 		   last_heartbeat_at = now()`,
 		agent.ID, agent.TenantID, nilIfEmpty(agent.TeamID), agent.DisplayName, string(agent.Protocol),
 		nilIfEmpty(agent.Endpoint), string(agent.Status), nilIfEmpty(agent.Description),
 		agent.MaxConcurrency, nilIfZero(agent.RPM), nilIfZero(agent.TPM),
+		agent.MetadataJSON(),
 	)
 	return err
 }
@@ -85,15 +88,16 @@ func (r *AgentRepository) Get(ctx context.Context, tenantID, agentID string) (*c
 	var maxConc int
 	var rpm, tpm *int
 	var lastHB *time.Time
+	var metadataJSON []byte
 
 	err := r.pool.QueryRow(ctx,
 		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
-		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
+		        max_concurrency, rpm, tpm, metadata, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 AND id = $2`,
 		tenantID, agentID,
 	).Scan(
 		&a.ID, &a.TenantID, &teamID, &a.DisplayName, &protocol, &endpoint, &status, &description,
-		&maxConc, &rpm, &tpm, &a.CreatedAt, &a.UpdatedAt, &lastHB,
+		&maxConc, &rpm, &tpm, &metadataJSON, &a.CreatedAt, &a.UpdatedAt, &lastHB,
 	)
 	if err != nil {
 		return nil, err
@@ -120,6 +124,9 @@ func (r *AgentRepository) Get(ctx context.Context, tenantID, agentID string) (*c
 	if lastHB != nil {
 		a.LastHeartbeatAt = lastHB
 	}
+	if len(metadataJSON) > 0 {
+		_ = json.Unmarshal(metadataJSON, &a.Metadata)
+	}
 	return &a, nil
 }
 
@@ -143,7 +150,7 @@ func (r *AgentRepository) UpdateHeartbeat(ctx context.Context, tenantID, agentID
 func (r *AgentRepository) List(ctx context.Context, tenantID string) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
-		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
+		        max_concurrency, rpm, tpm, metadata, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 ORDER BY id`,
 		tenantID,
 	)
@@ -157,7 +164,7 @@ func (r *AgentRepository) List(ctx context.Context, tenantID string) ([]*core.Ag
 func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, status core.AgentStatus) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
-		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
+		        max_concurrency, rpm, tpm, metadata, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE tenant_id = $1 AND status = $2 ORDER BY id`,
 		tenantID, string(status),
 	)
@@ -209,7 +216,7 @@ func (r *AgentRepository) MarkStaleOnline(ctx context.Context, threshold time.Du
 func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.AgentStatus) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT id, tenant_id, team_id, display_name, protocol, endpoint, status, description,
-		        max_concurrency, rpm, tpm, created_at, updated_at, last_heartbeat_at
+		        max_concurrency, rpm, tpm, metadata, created_at, updated_at, last_heartbeat_at
 		 FROM agents WHERE status = $1 ORDER BY id`,
 		string(status),
 	)
@@ -223,7 +230,7 @@ func (r *AgentRepository) ListAllByStatus(ctx context.Context, status core.Agent
 func (r *AgentRepository) FindByCapability(ctx context.Context, tenantID, capability string) ([]*core.Agent, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT DISTINCT a.id, a.tenant_id, a.team_id, a.display_name, a.protocol, a.endpoint, a.status, a.description,
-		        a.max_concurrency, a.rpm, a.tpm, a.created_at, a.updated_at, a.last_heartbeat_at
+		        a.max_concurrency, a.rpm, a.tpm, a.metadata, a.created_at, a.updated_at, a.last_heartbeat_at
 		 FROM agents a
 		 JOIN agent_capabilities ac ON a.tenant_id = ac.tenant_id AND a.id = ac.agent_id
 		 WHERE a.tenant_id = $1 AND ac.capability = $2 AND a.status = 'online'
@@ -285,10 +292,11 @@ func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 		var maxConc int
 		var rpm, tpm *int
 		var lastHB *time.Time
+		var metadataJSON []byte
 
 		err := rows.Scan(
 			&a.ID, &a.TenantID, &teamID, &a.DisplayName, &protocol, &endpoint, &status, &description,
-			&maxConc, &rpm, &tpm, &a.CreatedAt, &a.UpdatedAt, &lastHB,
+			&maxConc, &rpm, &tpm, &metadataJSON, &a.CreatedAt, &a.UpdatedAt, &lastHB,
 		)
 		if err != nil {
 			return nil, err
@@ -313,6 +321,9 @@ func scanAgents(rows pgx.Rows) ([]*core.Agent, error) {
 		}
 		if lastHB != nil {
 			a.LastHeartbeatAt = lastHB
+		}
+		if len(metadataJSON) > 0 {
+			_ = json.Unmarshal(metadataJSON, &a.Metadata)
 		}
 		agents = append(agents, &a)
 	}
