@@ -353,3 +353,4 @@ func TenantGuard(extractTenantFromPath func(string) string) func(http.Handler) h
 		})
 	}
 }
+
