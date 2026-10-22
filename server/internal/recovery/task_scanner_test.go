@@ -85,12 +85,14 @@ func TestTaskScanner_RecoverOldQueuedTasks(t *testing.T) {
 		MailboxID string
 		Priority  core.Priority
 		Envelope  []byte
+		CreatedAt time.Time
 	}{
 		TenantID:  "acme",
 		ID:        "task-1",
 		MailboxID: "mb-1",
 		Priority:  core.PriorityNormal,
 		Envelope:  envJSON,
+		CreatedAt: time.Now().Add(-10 * time.Minute),
 	}
 
 	ctx := context.Background()
@@ -118,12 +120,14 @@ func TestTaskScanner_SkipTaskWithoutMailbox(t *testing.T) {
 		MailboxID string
 		Priority  core.Priority
 		Envelope  []byte
+		CreatedAt time.Time
 	}{
 		TenantID:  "acme",
 		ID:        "task-1",
 		MailboxID: "",
 		Priority:  core.PriorityNormal,
 		Envelope:  []byte("{}"),
+		CreatedAt: time.Now().Add(-10 * time.Minute),
 	}
 
 	ctx := context.Background()
@@ -147,12 +151,14 @@ func TestTaskScanner_SkipTaskWithInvalidEnvelope(t *testing.T) {
 		MailboxID string
 		Priority  core.Priority
 		Envelope  []byte
+		CreatedAt time.Time
 	}{
 		TenantID:  "acme",
 		ID:        "task-1",
 		MailboxID: "mb-1",
 		Priority:  core.PriorityNormal,
 		Envelope:  []byte("invalid json"),
+		CreatedAt: time.Now().Add(-10 * time.Minute),
 	}
 
 	ctx := context.Background()
