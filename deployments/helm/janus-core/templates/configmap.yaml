@@ -12,6 +12,10 @@ data:
       enabled: {{ .Values.config.auth.enabled }}
     tls:
       enabled: {{ .Values.config.tls.enabled }}
+      {{- if .Values.config.tls.enabled }}
+      cert_file: {{ .Values.config.tls.certFile | default "/etc/janus/tls/tls.crt" | quote }}
+      key_file: {{ .Values.config.tls.keyFile | default "/etc/janus/tls/tls.key" | quote }}
+      {{- end }}
     heartbeat:
       sweeper_interval: {{ .Values.config.heartbeat.sweeperInterval | quote }}
       ttl: {{ .Values.config.heartbeat.ttl | quote }}

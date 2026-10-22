@@ -71,6 +71,7 @@ var ValidTransitions = map[TaskStatus]map[TaskStatus]bool{
 		TaskStatusDeadLettered:   true,
 	},
 	TaskStatusBlocked: {
+		TaskStatusQueued:    true,
 		TaskStatusRunning:   true,
 		TaskStatusCancelled: true,
 	},

@@ -106,6 +106,12 @@ spec:
               value: "{{ .Values.config.auth.enabled }}"
             - name: JANUS_TLS_ENABLED
               value: "{{ .Values.config.tls.enabled }}"
+            {{- if .Values.config.tls.enabled }}
+            - name: JANUS_TLS_CERT_FILE
+              value: "/etc/janus/tls/tls.crt"
+            - name: JANUS_TLS_KEY_FILE
+              value: "/etc/janus/tls/tls.key"
+            {{- end }}
             - name: JANUS_CONFIG_FILE
               value: "/etc/janus/janus.yaml"
           {{- with .Values.extraEnv }}
@@ -120,6 +126,9 @@ spec:
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
+              {{- if .Values.config.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
@@ -130,6 +139,9 @@ spec:
             httpGet:
               path: {{ .Values.probes.readiness.path }}
               port: http
+              {{- if .Values.config.tls.enabled }}
+              scheme: HTTPS
+              {{- end }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -140,6 +152,11 @@ spec:
           volumeMounts:
             - name: config
               mountPath: /etc/janus
+            {{- if .Values.config.tls.enabled }}
+            - name: tls
+              mountPath: /etc/janus/tls
+              readOnly: true
+            {{- end }}
             {{- if .Values.artifacts.enabled }}
             - name: artifacts
               mountPath: {{ .Values.artifacts.mountPath }}
@@ -151,6 +168,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "janus-core.fullname" . }}
+        {{- if .Values.config.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.config.tls.existingSecret | default (printf "%s-tls" (include "janus-core.fullname" .)) }}
+        {{- end }}
         {{- if .Values.artifacts.enabled }}
         - name: artifacts
           persistentVolumeClaim:

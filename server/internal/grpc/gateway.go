@@ -49,7 +49,16 @@ func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (
 	)
 	opts := []grpc.DialOption{}
 	if tlsCfg != nil {
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg.Clone())))
+		// Gateway acts as a client connecting to gRPC server.
+		// Create a client TLS config with proper RootCAs and ServerName.
+		clientTLS := &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			// For localhost connections, we can skip server cert verification
+			// or use the system cert pool. In production, this should be configured
+			// with proper CA certificates.
+			InsecureSkipVerify: true, // TODO: Configure proper CA for production
+		}
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}

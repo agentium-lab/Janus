@@ -96,6 +96,13 @@ config:
     enabled: true
   tls:
     enabled: false
+    # TLS certificate configuration
+    # When enabled, provide either:
+    # - existingSecret: name of a Secret containing tls.crt and tls.key
+    # - certFile and keyFile: paths to certificate files (for testing)
+    existingSecret: ""
+    certFile: ""
+    keyFile: ""
   heartbeat:
     sweeperInterval: 30s
     ttl: 60s
