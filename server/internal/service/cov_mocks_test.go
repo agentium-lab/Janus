@@ -362,6 +362,13 @@ func (m *cbRouterLookup) ListOnlineByCapability(_ context.Context, _, _ string) 
 	return nil, nil
 }
 
+func (m *cbRouterLookup) GetAgent(_ context.Context, _, _ string) (*routing.AgentCandidate, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &routing.AgentCandidate{AgentID: "agent-routed", MailboxID: m.mailbox, Status: "online"}, nil
+}
+
 func (m *cbRouterLookup) GetAgentMailbox(_ context.Context, _, _ string) (string, error) {
 	if m.err != nil {
 		return "", m.err

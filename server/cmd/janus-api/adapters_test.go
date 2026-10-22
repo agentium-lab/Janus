@@ -51,6 +51,14 @@ type routeTestLookup struct{ candidates []routing.AgentCandidate }
 func (l *routeTestLookup) ListOnlineByCapability(_ context.Context, _, _ string) ([]routing.AgentCandidate, error) {
 	return l.candidates, nil
 }
+func (l *routeTestLookup) GetAgent(_ context.Context, _, agentID string) (*routing.AgentCandidate, error) {
+	for _, c := range l.candidates {
+		if c.AgentID == agentID {
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
 func (l *routeTestLookup) GetAgentMailbox(_ context.Context, _, agentID string) (string, error) {
 	return agentID + ".default", nil
 }
@@ -80,15 +88,15 @@ func TestPolicyCheckerAdapter_TaskRouteTemplateDenyFiltersCandidate(t *testing.T
 	})
 	checker := policyCheckerAdapter{svc: service.NewPolicyService(repo)}
 
-	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential")
+	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential", "")
 	require.NoError(t, err)
 	assert.False(t, allowed, "denied data classification must filter the candidate")
 
-	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-1", "public")
+	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-1", "public", "")
 	require.NoError(t, err)
 	assert.True(t, allowed, "non-matching classification stays allowed")
 
-	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-2", "confidential")
+	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-2", "confidential", "")
 	require.NoError(t, err)
 	assert.True(t, allowed, "non-matching agent stays allowed")
 }
@@ -103,7 +111,7 @@ func TestPolicyCheckerAdapter_TaskRouteTemplateAllowKeepsCandidate(t *testing.T)
 	})
 	checker := policyCheckerAdapter{svc: service.NewPolicyService(repo)}
 
-	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential")
+	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential", "")
 	require.NoError(t, err)
 	assert.True(t, allowed)
 }
@@ -116,11 +124,11 @@ func TestPolicyCheckerAdapter_ExecuteRulesStillFilter(t *testing.T) {
 		map[string]string{"decision": "deny"})
 	checker := policyCheckerAdapter{svc: service.NewPolicyService(repo)}
 
-	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential")
+	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential", "")
 	require.NoError(t, err)
 	assert.False(t, allowed)
 
-	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-2", "confidential")
+	allowed, err = checker.CheckRoute(context.Background(), "acme", "agent-2", "confidential", "")
 	require.NoError(t, err)
 	assert.True(t, allowed)
 }
@@ -133,7 +141,7 @@ func TestPolicyCheckerAdapter_TaskRouteApprovalRequiredFilters(t *testing.T) {
 		map[string]string{"decision": "approval_required"})
 	checker := policyCheckerAdapter{svc: service.NewPolicyService(repo)}
 
-	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential")
+	allowed, err := checker.CheckRoute(context.Background(), "acme", "agent-1", "confidential", "")
 	require.NoError(t, err)
 	assert.False(t, allowed)
 }

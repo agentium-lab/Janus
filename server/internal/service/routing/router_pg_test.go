@@ -158,6 +158,22 @@ func (l *pgLookup) ListOnlineByCapability(ctx context.Context, tenantID, capabil
 	return out, rows.Err()
 }
 
+func (l *pgLookup) GetAgent(ctx context.Context, tenantID, agentID string) (*AgentCandidate, error) {
+	var c AgentCandidate
+	err := l.pool.QueryRow(ctx,
+		`SELECT a.id, COALESCE(m.id, ''), COALESCE(a.team_id, '')
+		 FROM agents a
+		 LEFT JOIN mailboxes m ON m.tenant_id = a.tenant_id AND m.agent_id = a.id AND m.status = 'active'
+		 WHERE a.tenant_id = $1 AND a.id = $2 AND a.status = 'online'
+		 LIMIT 1`,
+		tenantID, agentID).Scan(&c.AgentID, &c.MailboxID, &c.TeamID)
+	if err != nil {
+		return nil, fmt.Errorf("agent %s not found: %w", agentID, err)
+	}
+	c.Status = "online"
+	return &c, nil
+}
+
 func (l *pgLookup) GetAgentMailbox(ctx context.Context, tenantID, agentID string) (string, error) {
 	var mailboxID string
 	err := l.pool.QueryRow(ctx,

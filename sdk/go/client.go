@@ -118,7 +118,7 @@ func NewClient(cfg Config) *Client {
 		tenantID: cfg.TenantID,
 		apiKey:   cfg.APIKey,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: 90 * time.Second,
 		},
 	}
 }

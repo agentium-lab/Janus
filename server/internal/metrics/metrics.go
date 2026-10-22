@@ -55,6 +55,10 @@ var (
 		Name: "janus_tasks_expired_total",
 	}, []string{"tenant_id"})
 
+	TasksRecovered = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "janus_tasks_recovered_total",
+		Help: "Total number of queued tasks recovered after NATS message loss",
+	})
 	OutboxPending = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "janus_outbox_pending",
 		Help: "Number of outbox entries observed pending in the last publisher batch",

@@ -27,6 +27,20 @@ type covLookup struct {
 func (m *covLookup) ListOnlineByCapability(_ context.Context, _, _ string) ([]AgentCandidate, error) {
 	return m.candidates, m.candidateErr
 }
+func (m *covLookup) GetAgent(_ context.Context, _, agentID string) (*AgentCandidate, error) {
+	if m.agentMbxErr != nil {
+		return nil, m.agentMbxErr
+	}
+	for _, c := range m.candidates {
+		if c.AgentID == agentID {
+			return &c, nil
+		}
+	}
+	if _, ok := m.agentMailbox[agentID]; ok {
+		return &AgentCandidate{AgentID: agentID, Status: "online"}, nil
+	}
+	return nil, errors.New("not found")
+}
 func (m *covLookup) GetAgentMailbox(_ context.Context, _, _ string) (string, error) {
 	if m.agentMbxErr != nil {
 		return "", m.agentMbxErr
@@ -51,7 +65,7 @@ type covPolicy struct {
 	err    error
 }
 
-func (m *covPolicy) CheckRoute(_ context.Context, _, agentID, _ string) (bool, error) {
+func (m *covPolicy) CheckRoute(_ context.Context, _, agentID, _, _ string) (bool, error) {
 	if m.err != nil {
 		return false, m.err
 	}

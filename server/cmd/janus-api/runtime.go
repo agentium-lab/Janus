@@ -90,6 +90,13 @@ func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 			tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
 		},
 	}
+	if tlsCfg.CertFile != "" && tlsCfg.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(tlsCfg.CertFile, tlsCfg.KeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load server certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
 	if tlsCfg.ClientCAFile != "" {
 		caCert, err := os.ReadFile(tlsCfg.ClientCAFile)
 		if err != nil {

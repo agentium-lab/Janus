@@ -109,9 +109,13 @@ if [ "$SUCCESSES" -eq 0 ]; then
   exit 1
 fi
 
-SORTED=$(cat "$WORK"/lat-* | sort -n)
+SORTED=$(cat "$WORK"/lat-* 2>/dev/null | sort -n)
 P95_INDEX=$(( SUCCESSES * 95 / 100 ))
-P95=$(echo "$SORTED" | sed -n "$((P95_INDEX + 1))p")
+P95=$(echo "$SORTED" | sed -n "$((P95_INDEX + 1))p" | tr -d '[:space:]')
+if [ -z "$P95" ] || ! [[ "$P95" =~ ^[0-9]+$ ]]; then
+  echo "FAIL: could not determine p95 latency (got: '$P95')"
+  exit 1
+fi
 echo "  Success-path p95: ${P95}ms"
 
 if [ -n "$PG_DSN" ]; then

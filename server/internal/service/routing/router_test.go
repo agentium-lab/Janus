@@ -24,6 +24,18 @@ type mockLookup struct {
 func (m *mockLookup) ListOnlineByCapability(_ context.Context, _, _ string) ([]AgentCandidate, error) {
 	return m.candidates, nil
 }
+func (m *mockLookup) GetAgent(_ context.Context, _, agentID string) (*AgentCandidate, error) {
+	for _, c := range m.candidates {
+		if c.AgentID == agentID {
+			return &c, nil
+		}
+	}
+	// If agent has a mailbox mapping, return a minimal candidate
+	if _, ok := m.agentMailbox[agentID]; ok {
+		return &AgentCandidate{AgentID: agentID, Status: "online"}, nil
+	}
+	return nil, fmt.Errorf("not found")
+}
 func (m *mockLookup) GetAgentMailbox(_ context.Context, _, agentID string) (string, error) {
 	if mb, ok := m.agentMailbox[agentID]; ok {
 		return mb, nil
@@ -42,13 +54,13 @@ func (m *mockLookup) GetHumanMailboxes(_ context.Context, _, humanID string) ([]
 
 type mockPolicy struct{ denyAgents map[string]bool }
 
-func (m *mockPolicy) CheckRoute(_ context.Context, _, agentID, _ string) (bool, error) {
+func (m *mockPolicy) CheckRoute(_ context.Context, _, agentID, _, _ string) (bool, error) {
 	return !m.denyAgents[agentID], nil
 }
 
 type errorPolicy struct{ err error }
 
-func (p *errorPolicy) CheckRoute(_ context.Context, _, _, _ string) (bool, error) {
+func (p *errorPolicy) CheckRoute(_ context.Context, _, _, _, _ string) (bool, error) {
 	return false, p.err
 }
 
@@ -139,6 +151,7 @@ func TestRoute_CapabilityPolicyCheckError_FailClosed(t *testing.T) {
 	lookup := &mockLookup{
 		candidates: []AgentCandidate{{
 			AgentID: "agent-1", MailboxID: "mb-1", Status: "online",
+			DataClass: "internal",
 			Capabilities: []core.AgentCapability{{Capability: "code_review"}},
 		}},
 	}

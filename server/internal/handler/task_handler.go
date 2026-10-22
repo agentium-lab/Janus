@@ -344,10 +344,10 @@ func tenantAndTaskFromPath(path string) (string, string) {
 	tenantID := ""
 	taskID := ""
 	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) {
+		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
 			tenantID = parts[i+1]
 		}
-		if p == "tasks" && i+1 < len(parts) {
+		if p == "tasks" && i+1 < len(parts) && taskID == "" {
 			taskID = parts[i+1]
 		}
 	}

@@ -170,10 +170,10 @@ func tenantAndMailboxFromPath(path string) (string, string) {
 	parts := strings.Split(path, "/")
 	tenantID, mailboxID := "", ""
 	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) {
+		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
 			tenantID = parts[i+1]
 		}
-		if p == "mailboxes" && i+1 < len(parts) {
+		if p == "mailboxes" && i+1 < len(parts) && mailboxID == "" {
 			mailboxID = parts[i+1]
 		}
 	}

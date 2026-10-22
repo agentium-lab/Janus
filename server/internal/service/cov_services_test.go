@@ -451,7 +451,7 @@ func TestExtra_Block_RepoError(t *testing.T) {
 
 	err := svc.Block(ctx, "acme", "t1", "reason")
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "block task")
+	assert.Contains(t, err.Error(), "get task for block")
 }
 
 func TestExtra_MemoryLifecycle_ApplyTx_RunsFn(t *testing.T) {

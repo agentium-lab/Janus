@@ -137,8 +137,9 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 
 			tag, err := tx.Exec(ctx,
 				`UPDATE task_attempts SET status = 'failed', finished_at = now()
-				 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3 AND status IN ('claimed', 'running')`,
-				e.TenantID, e.TaskID, e.Attempt,
+				 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3 AND status IN ('claimed', 'running')
+				   AND COALESCE(heartbeat_at, started_at) + (COALESCE($4, 300) || ' seconds')::interval < now()`,
+				e.TenantID, e.TaskID, e.Attempt, e.AckWait,
 			)
 			if err != nil {
 				log.Printf("lease scanner: mark attempt failed %s/%s: %v", e.TenantID, e.TaskID, err)

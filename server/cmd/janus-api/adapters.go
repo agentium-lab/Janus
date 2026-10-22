@@ -81,12 +81,12 @@ type policyCheckerAdapter struct {
 // evaluations allow; deny or approval_required from either filters it.
 // An Evaluate error is returned to the caller — the router keeps the
 // candidate (fail-open) by doctrine.
-func (a policyCheckerAdapter) CheckRoute(ctx context.Context, tenantID, agentID, dataClass string) (bool, error) {
+func (a policyCheckerAdapter) CheckRoute(ctx context.Context, tenantID, agentID, dataClass, teamID string) (bool, error) {
 	input := core.PolicyInput{
 		TenantID: tenantID,
 		Actor:    core.PolicyActor{Type: "agent", ID: agentID},
 		Resource: core.PolicyResource{Type: "agent", Value: agentID},
-		Context:  core.PolicyContextData{DataClassification: dataClass, TargetAgentID: agentID},
+		Context:  core.PolicyContextData{DataClassification: dataClass, TargetAgentID: agentID, TargetTeamID: teamID},
 	}
 	for _, action := range []string{"execute", "task.route"} {
 		input.Action = action
