@@ -116,9 +116,10 @@ func TenantFromContext(ctx context.Context) string {
 // requires. segment must appear as a path segment; suffixes narrow the match.
 // First matching rule wins; unmatched requests fall back to method defaults.
 type scopeRule struct {
-	segment  string
-	suffixes []string
-	scope    string
+	segment      string
+	suffixes     []string
+	scope        string
+	notAfter     []string // segment must not appear after these segments
 }
 
 var scopeRules = []scopeRule{
@@ -132,7 +133,7 @@ var scopeRules = []scopeRule{
 	// unlike /dispatch/ack|nack they carry no lease CAS, so they are gated
 	// to admin instead of any task:write key.
 	{segment: "tasks", suffixes: []string{"/complete", "/fail"}, scope: ScopeAdmin},
-	{segment: "traces", scope: ScopeAuditRead},
+	{segment: "traces", scope: ScopeAuditRead, notAfter: []string{"mailboxes"}},
 	{segment: "outbox", suffixes: []string{"/retry-dead"}, scope: ScopeAdmin},
 }
 
@@ -163,6 +164,10 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 		if len(rule.suffixes) > 0 && !hasAnySuffix(path, rule.suffixes) {
 			continue
 		}
+		// Check if segment appears after a forbidden segment
+		if len(rule.notAfter) > 0 && segmentAfterAny(path, rule.segment, rule.notAfter) {
+			continue
+		}
 		return rule.scope, true
 	}
 	if method == http.MethodGet || method == http.MethodHead {
@@ -174,6 +179,24 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 func hasSegment(path, seg string) bool {
 	for _, part := range strings.Split(path, "/") {
 		if part == seg {
+			return true
+		}
+	}
+	return false
+}
+
+// segmentAfterAny checks if segment appears after any of the forbidden segments
+func segmentAfterAny(path, segment string, forbidden []string) bool {
+	parts := strings.Split(path, "/")
+	foundForbidden := false
+	for _, part := range parts {
+		for _, f := range forbidden {
+			if part == f {
+				foundForbidden = true
+				break
+			}
+		}
+		if foundForbidden && part == segment {
 			return true
 		}
 	}
