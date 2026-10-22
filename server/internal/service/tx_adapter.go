@@ -47,6 +47,12 @@ func (a *TaskRepoTxAdapter) GetTx(ctx context.Context, _ pgx.Tx, tenantID, taskI
 	return a.Get(ctx, tenantID, taskID)
 }
 
+// GetTxForUpdate is the in-memory equivalent of GetTx. Since in-memory
+// operations are already atomic, this is identical to GetTx.
+func (a *TaskRepoTxAdapter) GetTxForUpdate(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (*core.Task, error) {
+	return a.GetTx(ctx, tx, tenantID, taskID)
+}
+
 func (a *TaskRepoTxAdapter) CountByStatusTx(ctx context.Context, _ pgx.Tx, tenantID string, status core.TaskStatus) (int, error) {
 	return a.CountByStatus(ctx, tenantID, status)
 }

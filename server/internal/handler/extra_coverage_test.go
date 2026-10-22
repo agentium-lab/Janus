@@ -94,7 +94,7 @@ func TestTaskHandler_Unblock(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]string
 	json.NewDecoder(w.Body).Decode(&resp)
-	assert.Equal(t, "running", resp["status"])
+	assert.Equal(t, "queued", resp["status"], "Unblock should return queued status")
 }
 
 func TestTaskHandler_Unblock_Error(t *testing.T) {

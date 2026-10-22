@@ -451,7 +451,11 @@ func (s *DispatchService) StartTaskAs(ctx context.Context, tenantID, taskID, lea
 	}
 
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		task, gerr := s.taskTx.GetTx(ctx, tx, tenantID, taskID)
+		// Use FOR UPDATE to lock the task row, ensuring that the attempt read
+		// and task status update are atomic. This prevents concurrent operations
+		// (e.g., Cancel→Replay→new Pull) from changing the attempt between our
+		// read and update.
+		task, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
 		}
@@ -571,7 +575,7 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 			return nil
 		}
 
-		task, gerr := s.taskTx.GetTx(ctx, tx, tenantID, taskID)
+		task, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
 		if gerr != nil {
 			return fmt.Errorf("get task: %w", gerr)
 		}

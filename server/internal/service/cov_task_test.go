@@ -579,7 +579,7 @@ func TestExtra_TaskService_Unblock(t *testing.T) {
 	require.NoError(t, err)
 
 	got, _ := taskRepo.Get(ctx, "acme", "t1")
-	assert.Equal(t, core.TaskStatusRunning, got.Status)
+	assert.Equal(t, core.TaskStatusQueued, got.Status, "Unblock should re-queue the task")
 }
 
 func TestExtra_TaskService_Cancel(t *testing.T) {

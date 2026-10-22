@@ -249,7 +249,7 @@ func TestCov_TaskService_Cancel(t *testing.T) {
 
 	t.Run("repo lookup failure surfaces", func(t *testing.T) {
 		svc := NewTaskService(&cbTaskRepo{getErr: errors.New("db down")}, &mockQueueDriver{}, nil, nil)
-		require.ErrorContains(t, svc.Cancel(ctx, "acme", "t1"), "get task for transition")
+		require.ErrorContains(t, svc.Cancel(ctx, "acme", "t1"), "get task for cancel")
 	})
 
 	t.Run("terminal task rejected", func(t *testing.T) {

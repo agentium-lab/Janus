@@ -336,7 +336,7 @@ func (h *TaskHandler) Unblock(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "running"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
 }
 
 func tenantAndTaskFromPath(path string) (string, string) {

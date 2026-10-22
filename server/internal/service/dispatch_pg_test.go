@@ -456,19 +456,19 @@ func TestTaskService_Unblock_LifecycleOutbox(t *testing.T) {
 	require.NoError(t, err)
 
 	got, _ := env.taskRepo.Get(ctx, "acme", task.ID)
-	assert.Equal(t, core.TaskStatusRunning, got.Status)
+	assert.Equal(t, core.TaskStatusQueued, got.Status, "Unblock should re-queue the task (not set to running)")
 
 	outbox, _ := env.outboxRepo.FetchPending(ctx, 100)
-	hasStarted := false
+	hasQueued := false
 	for _, e := range outbox {
 		if e.Kind == "event_publish" {
 			var event core.JanusEvent
-			if json.Unmarshal(e.Payload, &event) == nil && event.EventType == core.EventTaskStarted {
-				hasStarted = true
+			if json.Unmarshal(e.Payload, &event) == nil && event.EventType == core.EventTaskQueued {
+				hasQueued = true
 			}
 		}
 	}
-	assert.True(t, hasStarted, "outbox should contain task.started event after unblock")
+	assert.True(t, hasQueued, "outbox should contain task.queued event after unblock")
 }
 
 // TestTaskService_Block_TerminalStateRefusal_PG verifies that Block refuses

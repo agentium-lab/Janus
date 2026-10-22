@@ -300,11 +300,18 @@ func (a *DLQServiceAdapter) DiscardDLQ(ctx context.Context, tenantID, taskID str
 			tenantID, taskID); uerr != nil {
 			return fmt.Errorf("finish open attempts for discard: %w", uerr)
 		}
-		if _, uerr := tx.Exec(ctx,
+		tag, uerr := tx.Exec(ctx,
 			`UPDATE tasks SET status = 'cancelled', updated_at = now()
 			 WHERE tenant_id = $1 AND id = $2 AND status = 'dead_lettered'`,
-			tenantID, taskID); uerr != nil {
+			tenantID, taskID)
+		if uerr != nil {
 			return fmt.Errorf("update task cancelled: %w", uerr)
+		}
+		// Check if the task was actually updated. If not, a concurrent operation
+		// (e.g., Replay) has already changed the status, so we must rollback to
+		// avoid leaving task_attempts cancelled but task in a different state.
+		if tag.RowsAffected() == 0 {
+			return fmt.Errorf("task %s is no longer dead_lettered (concurrent modification)", taskID)
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
 			return fmt.Errorf("commit discard tx: %w", cerr)

@@ -511,21 +511,18 @@ func (s *TaskService) Cancel(ctx context.Context, tenantID, taskID string) error
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
 	}
-	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
-	if err != nil {
-		return fmt.Errorf("get task for transition: %w", err)
-	}
-	if current.Status.IsTerminal() {
-		return fmt.Errorf("%w: task %s is %s, cannot transition to %s", core.ErrTaskInTerminalState, taskID, current.Status, core.TaskStatusCancelled)
-	}
-	if !core.CanTransition(current.Status, core.TaskStatusCancelled) {
-		return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, core.TaskStatusCancelled, taskID)
-	}
-	// Status transition and open-attempt cleanup commit atomically: a
-	// finish that runs after the transition's commit could miss an attempt
-	// created by a Pull racing the cancel (the audit's deterministic
-	// interleaving), and its error was previously discarded.
+
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		current, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
+		if gerr != nil {
+			return fmt.Errorf("get task for cancel: %w", gerr)
+		}
+		if current.Status.IsTerminal() {
+			return fmt.Errorf("%w: task %s is %s, cannot transition to %s", core.ErrTaskInTerminalState, taskID, current.Status, core.TaskStatusCancelled)
+		}
+		if !core.CanTransition(current.Status, core.TaskStatusCancelled) {
+			return fmt.Errorf("%w: %s -> %s for task %s", core.ErrInvalidTransition, current.Status, core.TaskStatusCancelled, taskID)
+		}
 		if terr := s.TransitionInTx(ctx, tx, tenantID, taskID, current.Status, core.TaskStatusCancelled, core.EventTaskCancelled, 0); terr != nil {
 			return terr
 		}
@@ -542,19 +539,26 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
 	}
-	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
-	if err != nil {
-		return fmt.Errorf("get task for block: %w", err)
-	}
-	// Block must not revive terminal tasks (completed/failed/cancelled/expired/dead_lettered).
-	// Non-terminal states (queued/claimed/running/approval_pending) may be blocked.
-	if current.Status.IsTerminal() {
-		return fmt.Errorf("%w: task %s is %s, cannot block", core.ErrTaskInTerminalState, taskID, current.Status)
-	}
 
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
-		if uerr := s.taskTx.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
+		// Lock the task row to prevent concurrent modifications
+		current, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
+		if gerr != nil {
+			return fmt.Errorf("get task for block: %w", gerr)
+		}
+		// Block must not revive terminal tasks (completed/failed/cancelled/expired/dead_lettered).
+		// Non-terminal states (queued/claimed/running/approval_pending) may be blocked.
+		// This check is INSIDE the transaction to prevent TOCTOU races.
+		if current.Status.IsTerminal() {
+			return fmt.Errorf("%w: task %s is %s, cannot block", core.ErrTaskInTerminalState, taskID, current.Status)
+		}
+		// Use CAS to ensure the status hasn't changed between our read and update
+		ok, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, current.Status, core.TaskStatusBlocked, 0)
+		if uerr != nil {
 			return fmt.Errorf("block task: %w", uerr)
+		}
+		if !ok {
+			return fmt.Errorf("task %s status changed concurrently, cannot block", taskID)
 		}
 		// Block suspends execution; no live attempt may remain (a lease pinned
 		// by a claimed/running attempt would outlive the block and resume
@@ -573,7 +577,61 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 }
 
 func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) error {
-	return s.transition(ctx, tenantID, taskID, core.TaskStatusRunning, core.EventTaskStarted, 0)
+	if tenantID == "" || taskID == "" {
+		return fmt.Errorf("tenant id and task id are required")
+	}
+	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for unblock: %w", err)
+	}
+	if current.Status != core.TaskStatusBlocked {
+		return fmt.Errorf("task %s is %s, not blocked", taskID, current.Status)
+	}
+
+	// Unblock re-queues the task (blocked → queued) and publishes it to the
+	// queue so agents can pick it up with a fresh lease/attempt.
+	if err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		ok, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, core.TaskStatusQueued, 0)
+		if uerr != nil {
+			return fmt.Errorf("unblock task: %w", uerr)
+		}
+		if !ok {
+			return fmt.Errorf("task %s status changed concurrently, cannot unblock", taskID)
+		}
+
+		// Publish the task to the queue so it can be picked up again
+		if current.MailboxID != "" {
+			payload, _ := json.Marshal(current.Envelope)
+			msg := core.TaskMessage{
+				TenantID:  tenantID,
+				MailboxID: current.MailboxID,
+				TaskID:    taskID,
+				Priority:  current.Priority,
+				Payload:   payload,
+			}
+			queuePayload, _ := json.Marshal(msg)
+			dedupeKey := fmt.Sprintf("task_publish:%s:%s:unblock", tenantID, taskID)
+			if ierr := s.txOutbox.InsertWithDedupe(ctx, tx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); ierr != nil {
+				return fmt.Errorf("outbox insert unblock: %w", ierr)
+			}
+		}
+
+		queuedEvent := core.JanusEvent{
+			EventType:   core.EventTaskQueued,
+			TenantID:    tenantID,
+			TaskID:      taskID,
+			SourceAgent: current.SourceAgent,
+			Payload:     mustMarshal(map[string]string{"status": "unblocked"}),
+		}
+		if ierr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "event_publish", MarshalEvent(&queuedEvent)); ierr != nil {
+			return fmt.Errorf("outbox insert unblock event: %w", ierr)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	recordTaskMetric(tenantID, core.TaskStatusQueued)
+	return nil
 }
 
 func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*core.Task, error) {

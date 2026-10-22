@@ -854,7 +854,7 @@ func TestAgentToAgentWithApprovalGate(t *testing.T) {
 		require.NoError(t, err)
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
-		assert.Equal(t, core.TaskStatusRunning, got.Status)
+		assert.Equal(t, core.TaskStatusQueued, got.Status, "Unblock should re-queue the task")
 	})
 
 	t.Run("step4_review_agent_completes_and_sends_to_code_agent", func(t *testing.T) {
@@ -866,6 +866,13 @@ func TestAgentToAgentWithApprovalGate(t *testing.T) {
 			},
 		}
 
+		// After Unblock, the task is queued again, so the agent must pull and start it
+		task, err := reviewAgent.pullAndProcess(ctx)
+		require.NoError(t, err)
+		require.NotNil(t, task)
+		assert.Equal(t, "task-review-002", task.ID)
+
+		reviewAgent.start(ctx, task.ID)
 		reviewAgent.complete(ctx, "task-review-002")
 
 		got, _ := taskRepo.Get(ctx, tenantID, "task-review-002")
@@ -877,7 +884,7 @@ func TestAgentToAgentWithApprovalGate(t *testing.T) {
 		assert.Equal(t, "review-agent", codeTask.SourceAgent)
 		assert.Equal(t, "code-mb", codeTask.MailboxID)
 
-		task, err := codeAgent.pullAndProcess(ctx)
+		task, err = codeAgent.pullAndProcess(ctx)
 		require.NoError(t, err)
 		require.NotNil(t, task)
 		assert.Equal(t, "task-code-002", task.ID)
