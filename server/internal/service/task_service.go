@@ -542,10 +542,27 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 	if tenantID == "" || taskID == "" {
 		return fmt.Errorf("tenant id and task id are required")
 	}
+	current, err := s.taskRepo.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("get task for block: %w", err)
+	}
+	// Block must not revive terminal tasks (completed/failed/cancelled/expired/dead_lettered).
+	// Non-terminal states (queued/claimed/running/approval_pending) may be blocked.
+	if current.Status.IsTerminal() {
+		return fmt.Errorf("%w: task %s is %s, cannot block", core.ErrTaskInTerminalState, taskID, current.Status)
+	}
 
 	return s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
 		if uerr := s.taskTx.UpdateStatusTx(ctx, tx, tenantID, taskID, core.TaskStatusBlocked, 0); uerr != nil {
 			return fmt.Errorf("block task: %w", uerr)
+		}
+		// Block suspends execution; no live attempt may remain (a lease pinned
+		// by a claimed/running attempt would outlive the block and resume
+		// work the operator intended to pause).
+		if s.attemptTx != nil {
+			if _, ferr := s.attemptTx.FinishOpenAttemptsTx(ctx, tx, tenantID, taskID, "blocked"); ferr != nil {
+				return fmt.Errorf("finish open attempts for block: %w", ferr)
+			}
 		}
 		payload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskBlocked, TenantID: tenantID, TaskID: taskID,
@@ -638,7 +655,11 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 				Payload:   payload,
 			}
 			queuePayload, _ := json.Marshal(msg)
-			dedupeKey := fmt.Sprintf("task_publish:%s:%s:replay:%d", tenantID, taskID, generation)
+			// Replay resets attempt_count to 1; include it in the dedupe key
+			// so it matches the format used by retry scheduler (replay:N:attempt:M).
+			// This prevents a replay and a concurrent retry from generating
+			// different keys for the same logical delivery.
+			dedupeKey := core.BuildReplayDedupeKey(tenantID, taskID, "replay", generation, 1)
 			if ierr := s.txOutbox.InsertWithDedupe(ctx, tx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); ierr != nil {
 				return fmt.Errorf("outbox insert replay: %w", ierr)
 			}
@@ -870,4 +891,63 @@ func ulid() string {
 	randBytes := make([]byte, 6)
 	_, _ = crand.Read(randBytes)
 	return fmt.Sprintf("%x%x", b, randBytes)
+}
+
+// taskServiceReplayGate adapts TaskService's approval and policy checks into
+// the DLQReplayGate interface so DLQ replay passes the same gates.
+type taskServiceReplayGate struct {
+	svc *TaskService
+}
+
+func (g *taskServiceReplayGate) CheckApproval(ctx context.Context, tenantID, taskID string) error {
+	if g.svc.approvalSvc == nil {
+		return nil
+	}
+	latest, err := g.svc.approvalSvc.repo.GetLatestByTask(ctx, tenantID, taskID)
+	if err != nil {
+		return fmt.Errorf("approval check: %w", err)
+	}
+	if latest != nil {
+		if latest.Decision == "rejected" {
+			return fmt.Errorf("replay denied: the task's approval was rejected")
+		}
+		if latest.Decision == "expired" {
+			return fmt.Errorf("replay denied: the task's approval expired")
+		}
+		if latest.Decision == "" && latest.Status == "pending" {
+			return fmt.Errorf("replay denied: an approval is still pending for this task")
+		}
+	}
+	return nil
+}
+
+func (g *taskServiceReplayGate) CheckPolicy(ctx context.Context, tenantID, sourceAgent, targetType, targetValue string) error {
+	if g.svc.policySvc == nil {
+		return nil
+	}
+	decision, err := g.svc.policySvc.Evaluate(ctx, core.PolicyInput{
+		TenantID: tenantID,
+		Actor:    core.PolicyActor{Type: "agent", ID: sourceAgent},
+		Action:   "task.publish",
+		Resource: core.PolicyResource{Type: targetType, Value: targetValue},
+	})
+	if err != nil {
+		return fmt.Errorf("policy check: %w", err)
+	}
+	if decision.Decision == core.PolicyDecisionDeny {
+		return fmt.Errorf("replay denied: %s", decision.Reason)
+	}
+	if decision.Decision == core.PolicyDecisionApprovalRequired {
+		return fmt.Errorf("replay requires approval; approve through the approval workflow before replaying")
+	}
+	return nil
+}
+
+// ReplayGate returns a DLQReplayGate backed by this TaskService's approval
+// and policy services. Wire it into DLQServiceAdapter.WithReplayGate.
+func (s *TaskService) ReplayGate() interface {
+	CheckApproval(ctx context.Context, tenantID, taskID string) error
+	CheckPolicy(ctx context.Context, tenantID, sourceAgent, targetType, targetValue string) error
+} {
+	return &taskServiceReplayGate{svc: s}
 }

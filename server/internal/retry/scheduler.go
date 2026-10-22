@@ -105,8 +105,10 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 
 			tag, err := tx.Exec(ctx,
 				`UPDATE tasks SET status = 'queued', retry_at = NULL, updated_at = now()
-				 WHERE tenant_id = $1 AND id = $2 AND status = 'retry_scheduled'`,
-				t.TenantID, t.ID,
+				 WHERE tenant_id = $1 AND id = $2 AND status = 'retry_scheduled'
+				   AND retry_at IS NOT NULL AND retry_at <= now()
+				   AND replay_count = $3 AND attempt_count = $4`,
+				t.TenantID, t.ID, t.ReplayCount, t.AttemptCount,
 			)
 			if err != nil {
 				log.Printf("retry scheduler update %s: %v", t.ID, err)
@@ -156,7 +158,7 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 // re-publish so the same delivery cannot be enqueued twice.
 // Includes replay_count to distinguish retries across replay generations.
 func buildRetryDedupeKey(tenantID, taskID string, replayCount, attemptCount int) string {
-	return fmt.Sprintf("task_publish:%s:%s:replay:%d:attempt:%d", tenantID, taskID, replayCount, attemptCount)
+	return core.BuildReplayDedupeKey(tenantID, taskID, "replay", replayCount, attemptCount)
 }
 
 // buildRetryMessage unmarshals a task envelope and constructs the
