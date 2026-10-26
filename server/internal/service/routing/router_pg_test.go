@@ -22,6 +22,7 @@ package routing
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
@@ -194,6 +195,23 @@ func (l *pgLookup) ValidateMailbox(ctx context.Context, tenantID, mailboxID stri
 		return false, err
 	}
 	return status == "active", nil
+}
+
+func (l *pgLookup) GetMailboxOwner(ctx context.Context, tenantID, mailboxID string) (*AgentCandidate, error) {
+	var c AgentCandidate
+	err := l.pool.QueryRow(ctx,
+		`SELECT a.id, COALESCE(a.team_id, '')
+		 FROM mailboxes m JOIN agents a ON a.tenant_id = m.tenant_id AND a.id = m.agent_id
+		 WHERE m.tenant_id = $1 AND m.id = $2 LIMIT 1`,
+		tenantID, mailboxID).Scan(&c.AgentID, &c.TeamID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	c.MailboxID = mailboxID
+	return &c, nil
 }
 
 func (l *pgLookup) GetGroupMailboxes(ctx context.Context, tenantID, groupID string) ([]string, error) {

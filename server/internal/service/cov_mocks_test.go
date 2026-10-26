@@ -380,6 +380,13 @@ func (m *cbRouterLookup) ValidateMailbox(_ context.Context, _, _ string) (bool, 
 	return true, nil
 }
 
+func (m *cbRouterLookup) GetMailboxOwner(_ context.Context, _, _ string) (*routing.AgentCandidate, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return &routing.AgentCandidate{AgentID: "agent-routed", MailboxID: m.mailbox, Status: "online"}, nil
+}
+
 func (m *cbRouterLookup) GetGroupMailboxes(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }

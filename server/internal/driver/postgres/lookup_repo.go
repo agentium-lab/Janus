@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/agentium-lab/Janus/server/internal/service/routing"
@@ -125,6 +127,38 @@ func (r *agentLookupRepo) ValidateMailbox(ctx context.Context, tenantID, mailbox
 		return false, fmt.Errorf("validate mailbox: %w", err)
 	}
 	return status == "active", nil
+}
+
+// GetMailboxOwner resolves the agent that owns a mailbox (mailboxes.agent_id
+// joined to the trusted agents record). No owner (system/ownerless mailbox
+// or unknown mailbox) resolves to (nil, nil) so callers can fail closed on
+// governance; an infra error is returned as an error.
+func (r *agentLookupRepo) GetMailboxOwner(ctx context.Context, tenantID, mailboxID string) (*routing.AgentCandidate, error) {
+	var c routing.AgentCandidate
+	var modelClassesJSON string
+	err := r.pool.QueryRow(ctx,
+		`SELECT a.id, COALESCE(a.team_id, ''),
+		        COALESCE(a.metadata->>'data_classification', ''),
+		        COALESCE(a.metadata->'model_classes', '[]'::jsonb)::text
+		 FROM mailboxes m
+		 JOIN agents a ON a.tenant_id = m.tenant_id AND a.id = m.agent_id
+		 WHERE m.tenant_id = $1 AND m.id = $2
+		 LIMIT 1`,
+		tenantID, mailboxID,
+	).Scan(&c.AgentID, &c.TeamID, &c.DataClass, &modelClassesJSON)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("mailbox owner lookup: %w", err)
+	}
+	if modelClassesJSON != "" && modelClassesJSON != "[]" {
+		if err := json.Unmarshal([]byte(modelClassesJSON), &c.ModelClasses); err != nil {
+			return nil, fmt.Errorf("parse model_classes: %w", err)
+		}
+	}
+	c.MailboxID = mailboxID
+	return &c, nil
 }
 
 func (r *agentLookupRepo) GetGroupMailboxes(ctx context.Context, tenantID, groupID string) ([]string, error) {

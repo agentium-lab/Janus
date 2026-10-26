@@ -222,6 +222,21 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	if task.TargetValue == "" {
 		return nil, fmt.Errorf("target value is required")
 	}
+	// Context refs prepare BEFORE routing: existing-ID refs resolve to their
+	// trusted records here, so the trusted classification (not the caller's
+	// declaration) governs every route admission below. ApplyPlanTx still
+	// commits inside createAtomic; Prepare itself writes nothing.
+	var refPlan []RefWrite
+	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
+		var perr error
+		refPlan, perr = s.contextRefSvc.Prepare(ctx, task.TenantID, task.Envelope.ContextRefs)
+		if perr != nil {
+			return nil, fmt.Errorf("context ref prepare: %w", perr)
+		}
+	}
+	if cerr := applyEffectiveClassification(&task.Envelope, refPlan); cerr != nil {
+		return nil, cerr
+	}
 	if s.router != nil {
 		result, err := s.router.Route(ctx, task.TenantID, core.Target{Type: task.TargetType, Value: task.TargetValue}, task.Envelope)
 		if err != nil {
@@ -290,19 +305,9 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 		}
 	}
 
-	// Context refs: validate and pre-generate IDs BEFORE the create
-	// transaction — a bad ref must reject the create before anything is
-	// published, and the generated IDs must ride in the persisted envelope.
-	// The explicit write plan (insert vs bind per ref) commits inside
-	// createAtomic.
-	var refPlan []RefWrite
-	if s.contextRefSvc != nil && len(task.Envelope.ContextRefs) > 0 {
-		var perr error
-		refPlan, perr = s.contextRefSvc.Prepare(ctx, task.TenantID, task.Envelope.ContextRefs)
-		if perr != nil {
-			return nil, fmt.Errorf("context ref prepare: %w", perr)
-		}
-	}
+	// Context refs: the write plan was prepared BEFORE routing (see above);
+	// the generated IDs ride in the persisted envelope and the plan commits
+	// inside createAtomic.
 
 	var result *core.Task
 	if err := s.createAtomic(ctx, task, refPlan); err != nil {
@@ -326,6 +331,46 @@ func (s *TaskService) Create(ctx context.Context, task core.Task) (*core.Task, e
 	}
 
 	return result, nil
+}
+
+// applyEffectiveClassification folds the declared data classification and
+// the trusted classifications of the prepared context refs into one
+// effective value written into the envelope BEFORE routing. Every non-empty
+// value must agree; a mismatch rejects the create so the caller can neither
+// under- nor over-declare relative to the trusted records.
+func applyEffectiveClassification(env *core.TaskEnvelope, plan []RefWrite) error {
+	declared := ""
+	if env.Policy != nil {
+		declared = env.Policy.DataClassification
+	}
+	var refClasses []string
+	for _, w := range plan {
+		if w.Ref.Classification != "" {
+			refClasses = append(refClasses, w.Ref.Classification)
+		}
+	}
+	distinct := map[string]bool{}
+	if declared != "" {
+		distinct[declared] = true
+	}
+	for _, c := range refClasses {
+		distinct[c] = true
+	}
+	if len(distinct) > 1 {
+		return fmt.Errorf("data classification mismatch: envelope declares %q, context refs declare %v", declared, refClasses)
+	}
+	effective := ""
+	for c := range distinct {
+		effective = c
+	}
+	if effective == "" {
+		return nil
+	}
+	if env.Policy == nil {
+		env.Policy = &core.PolicyContext{}
+	}
+	env.Policy.DataClassification = effective
+	return nil
 }
 
 // createAtomic persists the task, its lifecycle events, and (when routed to a
@@ -710,6 +755,15 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 		}
 	}
 
+	// Replay must re-pass the routing admission gate: a task whose mailbox
+	// owner is now policy-denied (or whose mailbox lost its owner) must not
+	// re-enter the queue through Replay. Skipped when no router is wired.
+	if s.router != nil && task.MailboxID != "" {
+		if aerr := s.router.CheckMailboxAdmission(ctx, task.TenantID, task.MailboxID, task.Envelope); aerr != nil {
+			return nil, fmt.Errorf("replay admission: %w", aerr)
+		}
+	}
+
 	// Atomic replay: reset + republish + status transition + created event
 	// commit together. The reset itself is the gate — a conditional UPDATE
 	// on terminal status — so two concurrent replays cannot both pass and
@@ -1021,11 +1075,25 @@ func (g *taskServiceReplayGate) CheckPolicy(ctx context.Context, tenantID, sourc
 	return nil
 }
 
-// ReplayGate returns a DLQReplayGate backed by this TaskService's approval
-// and policy services. Wire it into DLQServiceAdapter.WithReplayGate.
+// CheckAdmission re-runs the mailbox routing admission for DLQ replay so a
+// policy-denied (or ownerless) mailbox owner cannot re-enter the queue.
+func (g *taskServiceReplayGate) CheckAdmission(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) error {
+	if g.svc.router == nil || mailboxID == "" {
+		return nil
+	}
+	if err := g.svc.router.CheckMailboxAdmission(ctx, tenantID, mailboxID, envelope); err != nil {
+		return fmt.Errorf("replay admission: %w", err)
+	}
+	return nil
+}
+
+// ReplayGate returns a DLQReplayGate backed by this TaskService's approval,
+// policy, and routing-admission checks. Wire it into
+// DLQServiceAdapter.WithReplayGate.
 func (s *TaskService) ReplayGate() interface {
 	CheckApproval(ctx context.Context, tenantID, taskID string) error
 	CheckPolicy(ctx context.Context, tenantID, sourceAgent, targetType, targetValue string) error
+	CheckAdmission(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) error
 } {
 	return &taskServiceReplayGate{svc: s}
 }

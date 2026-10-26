@@ -65,6 +65,14 @@ func (l *routeTestLookup) GetAgentMailbox(_ context.Context, _, agentID string) 
 func (l *routeTestLookup) ValidateMailbox(_ context.Context, _, _ string) (bool, error) {
 	return true, nil
 }
+func (l *routeTestLookup) GetMailboxOwner(_ context.Context, _, mailboxID string) (*routing.AgentCandidate, error) {
+	for _, c := range l.candidates {
+		if c.MailboxID == mailboxID {
+			return &c, nil
+		}
+	}
+	return nil, nil
+}
 func (l *routeTestLookup) GetGroupMailboxes(_ context.Context, _, _ string) ([]string, error) {
 	return nil, nil
 }

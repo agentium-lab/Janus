@@ -42,6 +42,7 @@ type AgentLookup interface {
 	ListOnlineByCapability(ctx context.Context, tenantID, capability string) ([]AgentCandidate, error)
 	GetAgentMailbox(ctx context.Context, tenantID, agentID string) (mailboxID string, err error)
 	ValidateMailbox(ctx context.Context, tenantID, mailboxID string) (active bool, err error)
+	GetMailboxOwner(ctx context.Context, tenantID, mailboxID string) (*AgentCandidate, error)
 	GetGroupMailboxes(ctx context.Context, tenantID, groupID string) ([]string, error)
 	GetHumanMailboxes(ctx context.Context, tenantID, humanID string) ([]string, error)
 }
@@ -72,11 +73,11 @@ func (r *Router) Route(ctx context.Context, tenantID string, target core.Target,
 	case core.TargetTypeAgent:
 		return r.routeAgent(ctx, tenantID, target.Value, envelope)
 	case core.TargetTypeMailbox:
-		return r.routeMailbox(ctx, tenantID, target.Value)
+		return r.routeMailbox(ctx, tenantID, target.Value, envelope)
 	case core.TargetTypeCapability:
 		return r.routeCapability(ctx, tenantID, target.Value, envelope)
 	case core.TargetTypeGroup:
-		return r.routeGroup(ctx, tenantID, target.Value)
+		return r.routeGroup(ctx, tenantID, target.Value, envelope)
 	case core.TargetTypeHuman:
 		return r.routeHuman(ctx, tenantID, target.Value)
 	default:
@@ -144,7 +145,7 @@ func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string, envel
 	}, nil
 }
 
-func (r *Router) routeMailbox(ctx context.Context, tenantID, mailboxID string) (*RouterResult, error) {
+func (r *Router) routeMailbox(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) (*RouterResult, error) {
 	active, err := r.lookup.ValidateMailbox(ctx, tenantID, mailboxID)
 	if err != nil {
 		return nil, fmt.Errorf("mailbox %s validation failed: %w", mailboxID, err)
@@ -152,11 +153,72 @@ func (r *Router) routeMailbox(ctx context.Context, tenantID, mailboxID string) (
 	if !active {
 		return nil, fmt.Errorf("mailbox %s is not active", mailboxID)
 	}
+	// Same final admission gate as agent/capability routing: a direct
+	// mailbox target must not bypass policy just because the caller named
+	// the mailbox instead of the agent. r.policy == nil keeps the dev
+	// permissive active-check-only path.
+	agentID := ""
+	if r.policy != nil {
+		owner, _, aerr := r.admitMailbox(ctx, tenantID, mailboxID, envelope)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if owner != nil {
+			agentID = owner.AgentID
+		}
+	}
 	return &RouterResult{
 		TargetType: core.TargetTypeMailbox,
 		MailboxID:  mailboxID,
+		AgentID:    agentID,
 		Reason:     "direct mailbox target",
 	}, nil
+}
+
+// admitMailbox resolves a mailbox's owning agent and runs the unified
+// admission gate: TargetTeamID selection constraint plus policy CheckRoute
+// with the OWNER's team as the policy fact, fail-closed on checker errors.
+// A mailbox with no resolvable owner cannot be governed and is rejected.
+// The returned reason is the FilteredCandidate reason on failure.
+func (r *Router) admitMailbox(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) (*AgentCandidate, string, error) {
+	owner, err := r.lookup.GetMailboxOwner(ctx, tenantID, mailboxID)
+	if err != nil {
+		return nil, "owner_lookup_error", fmt.Errorf("mailbox %s owner lookup: %w", mailboxID, err)
+	}
+	if owner == nil {
+		return nil, "ownerless", fmt.Errorf("mailbox %s has no resolvable owner agent, cannot govern routing", mailboxID)
+	}
+	dataClass := ""
+	targetTeam := ""
+	if envelope.Policy != nil {
+		dataClass = envelope.Policy.DataClassification
+		targetTeam = envelope.Policy.TargetTeamID
+	}
+	// TargetTeamID is a SELECTION constraint, never a policy fact override.
+	if targetTeam != "" && targetTeam != owner.TeamID {
+		return nil, "target_team_mismatch", fmt.Errorf("mailbox %s owner agent %s team %q does not match requested target team %q", mailboxID, owner.AgentID, owner.TeamID, targetTeam)
+	}
+	if r.policy != nil {
+		allowed, perr := r.policy.CheckRoute(ctx, tenantID, owner.AgentID, dataClass, owner.TeamID)
+		if perr != nil {
+			return nil, "policy_check_error", fmt.Errorf("policy check for mailbox %s owner agent %s: %w", mailboxID, owner.AgentID, perr)
+		}
+		if !allowed {
+			return nil, "policy_denied", fmt.Errorf("mailbox %s owner agent %s denied by policy", mailboxID, owner.AgentID)
+		}
+	}
+	return owner, "", nil
+}
+
+// CheckMailboxAdmission re-runs the mailbox admission gate for republish
+// paths (Replay, DLQ replay): owner resolution + TargetTeamID + policy.
+// A nil policy checker keeps the dev-permissive path (no governance).
+func (r *Router) CheckMailboxAdmission(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) error {
+	if r.policy == nil {
+		return nil
+	}
+	_, _, err := r.admitMailbox(ctx, tenantID, mailboxID, envelope)
+	return err
 }
 
 func (r *Router) routeCapability(ctx context.Context, tenantID, capability string, envelope core.TaskEnvelope) (*RouterResult, error) {
@@ -266,20 +328,45 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 	}, nil
 }
 
-func (r *Router) routeGroup(ctx context.Context, tenantID, groupID string) (*RouterResult, error) {
+func (r *Router) routeGroup(ctx context.Context, tenantID, groupID string, envelope core.TaskEnvelope) (*RouterResult, error) {
 	mailboxes, err := r.lookup.GetGroupMailboxes(ctx, tenantID, groupID)
 	if err != nil || len(mailboxes) == 0 {
 		return nil, fmt.Errorf("no group mailbox mapping for %s", groupID)
 	}
+	var filtered []FilteredCandidate
 	for _, mb := range mailboxes {
 		active, _ := r.lookup.ValidateMailbox(ctx, tenantID, mb)
-		if active {
+		if !active {
+			filtered = append(filtered, FilteredCandidate{AgentID: mb, Reason: "inactive"})
+			continue
+		}
+		if r.policy == nil {
 			return &RouterResult{
 				TargetType: core.TargetTypeGroup,
 				MailboxID:  mb,
 				Reason:     "group_mailbox:" + groupID,
 			}, nil
 		}
+		// Same admission gate per mailbox as direct mailbox routing: the
+		// first admissible mailbox wins, denials collect reasons.
+		owner, reason, aerr := r.admitMailbox(ctx, tenantID, mb, envelope)
+		if aerr != nil {
+			filtered = append(filtered, FilteredCandidate{AgentID: mb, Reason: reason})
+			continue
+		}
+		return &RouterResult{
+			TargetType: core.TargetTypeGroup,
+			MailboxID:  mb,
+			AgentID:    owner.AgentID,
+			Reason:     "group_mailbox:" + groupID,
+		}, nil
+	}
+	if r.policy != nil && len(filtered) > 0 {
+		return &RouterResult{
+				TargetType:  core.TargetTypeGroup,
+				FilteredOut: filtered,
+				Reason:      "all_candidates_filtered",
+		}, fmt.Errorf("all candidates filtered for group %s", groupID)
 	}
 	return nil, fmt.Errorf("no active mailbox in group %s", groupID)
 }

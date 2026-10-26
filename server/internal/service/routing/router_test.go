@@ -14,11 +14,13 @@ import (
 )
 
 type mockLookup struct {
-	candidates   []AgentCandidate
-	mailboxes    map[string]bool
-	agentMailbox map[string]string
-	groupMap     map[string][]string
-	humanMap     map[string][]string
+	candidates    []AgentCandidate
+	mailboxes     map[string]bool
+	agentMailbox  map[string]string
+	groupMap      map[string][]string
+	humanMap      map[string][]string
+	mailboxOwner  map[string]*AgentCandidate
+	ownerLookupEr error
 }
 
 func (m *mockLookup) ListOnlineByCapability(_ context.Context, _, _ string) ([]AgentCandidate, error) {
@@ -44,6 +46,12 @@ func (m *mockLookup) GetAgentMailbox(_ context.Context, _, agentID string) (stri
 }
 func (m *mockLookup) ValidateMailbox(_ context.Context, _, mailboxID string) (bool, error) {
 	return m.mailboxes[mailboxID], nil
+}
+func (m *mockLookup) GetMailboxOwner(_ context.Context, _, mailboxID string) (*AgentCandidate, error) {
+	if m.ownerLookupEr != nil {
+		return nil, m.ownerLookupEr
+	}
+	return m.mailboxOwner[mailboxID], nil
 }
 func (m *mockLookup) GetGroupMailboxes(_ context.Context, _, groupID string) ([]string, error) {
 	return m.groupMap[groupID], nil

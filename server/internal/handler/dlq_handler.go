@@ -96,11 +96,13 @@ type DLQServiceAdapter struct {
 	replayGate  DLQReplayGate
 }
 
-// DLQReplayGate checks approval and policy before allowing DLQ replay.
-// Mirrors the gates in TaskService.Replay so DLQ replay cannot bypass them.
+// DLQReplayGate checks approval, publish policy, and mailbox routing
+// admission before allowing DLQ replay. Mirrors the gates in
+// TaskService.Replay so DLQ replay cannot bypass them.
 type DLQReplayGate interface {
 	CheckApproval(ctx context.Context, tenantID, taskID string) error
 	CheckPolicy(ctx context.Context, tenantID, sourceAgent, targetType, targetValue string) error
+	CheckAdmission(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) error
 }
 
 type DLQTaskRepo interface {
@@ -163,6 +165,9 @@ func (a *DLQServiceAdapter) ReplayDLQ(ctx context.Context, tenantID, taskID stri
 		}
 		if gerr := a.replayGate.CheckPolicy(ctx, tenantID, task.SourceAgent, string(task.TargetType), task.TargetValue); gerr != nil {
 			return nil, fmt.Errorf("dlq replay policy gate: %w", gerr)
+		}
+		if gerr := a.replayGate.CheckAdmission(ctx, tenantID, task.MailboxID, task.Envelope); gerr != nil {
+			return nil, fmt.Errorf("dlq replay admission gate: %w", gerr)
 		}
 	}
 

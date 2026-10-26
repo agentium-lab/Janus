@@ -53,6 +53,9 @@ func (m *covLookup) GetAgentMailbox(_ context.Context, _, _ string) (string, err
 func (m *covLookup) ValidateMailbox(_ context.Context, _, _ string) (bool, error) {
 	return false, m.validateErr
 }
+func (m *covLookup) GetMailboxOwner(_ context.Context, _, _ string) (*AgentCandidate, error) {
+	return nil, nil
+}
 func (m *covLookup) GetGroupMailboxes(_ context.Context, _, _ string) ([]string, error) {
 	return m.groupMap["g"], m.groupErr
 }

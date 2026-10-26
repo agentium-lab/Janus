@@ -157,3 +157,46 @@ func TestAgentLookupRepo_AgentWithoutMailboxDoesNotBreakListing(t *testing.T) {
 	require.Len(t, candidates, 1)
 	assert.Equal(t, "mb-full", candidates[0].AgentID)
 }
+
+func TestAgentLookupRepo_GetMailboxOwner(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "acme")
+	ctx := context.Background()
+
+	_, err := pool.Exec(ctx, `
+		INSERT INTO agents (id, tenant_id, display_name, protocol, status, metadata, max_concurrency, team_id)
+		VALUES ('own-agent', 'acme', 'Owner', 'a2a', 'online',
+		        '{"data_classification":"confidential"}'::jsonb, 2, 'team-x')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ('mb-own', 'acme', 'own-agent', 'active')`)
+	require.NoError(t, err)
+	_, err = pool.Exec(ctx, `
+		INSERT INTO mailboxes (id, tenant_id, agent_id, status)
+		VALUES ('mb-dangling', 'acme', 'ghost-agent', 'active')`)
+	require.NoError(t, err)
+
+	repo := NewAgentLookupRepo(pool)
+
+	owner, err := repo.GetMailboxOwner(ctx, "acme", "mb-own")
+	require.NoError(t, err)
+	require.NotNil(t, owner)
+	assert.Equal(t, "own-agent", owner.AgentID)
+	assert.Equal(t, "mb-own", owner.MailboxID)
+	assert.Equal(t, "team-x", owner.TeamID)
+	assert.Equal(t, "confidential", owner.DataClass)
+
+	none, err := repo.GetMailboxOwner(ctx, "acme", "mb-dangling")
+	require.NoError(t, err)
+	assert.Nil(t, none, "mailbox with dangling agent reference must resolve to (nil, nil) so callers fail closed")
+
+	unknown, err := repo.GetMailboxOwner(ctx, "acme", "mb-ghost")
+	require.NoError(t, err)
+	assert.Nil(t, unknown)
+
+	foreign, err := repo.GetMailboxOwner(ctx, "other", "mb-own")
+	require.NoError(t, err)
+	assert.Nil(t, foreign, "tenant scoping must hold")
+}
