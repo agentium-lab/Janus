@@ -471,6 +471,83 @@ func TestTaskService_Unblock_LifecycleOutbox(t *testing.T) {
 	assert.True(t, hasQueued, "outbox should contain task.queued event after unblock")
 }
 
+// eval-5 #1: a task gated behind approval must not be blockable — Block
+// forced approval_pending -> blocked and a later Unblock re-queued it past
+// the approval gate. Operators who must stop a pending task use Cancel.
+func TestTaskService_Block_ApprovalPendingRefused_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	approvalRepo := postgres.NewApprovalRepo(env.pool)
+	approvalSvc := NewApprovalService(approvalRepo, env.taskSvc, nil).WithTxPath(env.lifecycle, env.outboxRepo)
+
+	task := createTestTask(t, env, "task-block-appr-1")
+	_, err := env.pool.Exec(ctx,
+		`UPDATE tasks SET status = 'approval_pending' WHERE tenant_id = 'acme' AND id = $1`, task.ID)
+	require.NoError(t, err)
+	_, aerr := approvalSvc.RequestApproval(ctx, core.Approval{
+		TenantID: "acme", TaskID: task.ID, RequestedBy: "agent-1",
+	})
+	require.NoError(t, aerr)
+
+	err = env.taskSvc.Block(ctx, "acme", task.ID, "operator pause")
+	require.Error(t, err, "Block must refuse an approval_pending task")
+	require.Contains(t, err.Error(), "approval")
+
+	got, gerr := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, gerr)
+	assert.Equal(t, core.TaskStatusApprovalPending, got.Status, "refused block must leave the task gated")
+
+	var attempts int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id=$1`, task.ID).Scan(&attempts))
+	assert.Zero(t, attempts, "refused block must leave no attempt side effects")
+}
+
+// eval-5 #1 (unblock side): a blocked task whose approval verdict is still
+// pending or already rejected must not be unblockable into the queue — the
+// pre-tx re-check mirrors Replay's gate.
+func TestTaskService_Unblock_ApprovalVerdictRefused_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	approvalRepo := postgres.NewApprovalRepo(env.pool)
+	approvalSvc := NewApprovalService(approvalRepo, env.taskSvc, nil).WithTxPath(env.lifecycle, env.outboxRepo)
+	env.taskSvc.WithApproval(approvalSvc)
+
+	for _, tc := range []struct {
+		name     string
+		status   string
+		decision string
+	}{
+		{"pending", "pending", ""},
+		{"rejected", "rejected", "rejected"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := createTestTask(t, env, "task-unblock-appr-"+tc.name)
+			require.NoError(t, env.taskSvc.Block(ctx, "acme", task.ID, "review"))
+			require.NoError(t, approvalRepo.Create(ctx, core.Approval{
+				TenantID: "acme", ID: "appr-unblock-" + tc.name, TaskID: task.ID,
+				RequestedBy: "agent-1", Status: tc.status, Decision: tc.decision,
+				ExpiresAt: time.Now().Add(24 * time.Hour),
+			}))
+
+			err := env.taskSvc.Unblock(ctx, "acme", task.ID)
+			require.Error(t, err, "unblock must respect the %s approval verdict", tc.name)
+			require.Contains(t, err.Error(), "approval")
+
+			got, gerr := env.taskRepo.Get(ctx, "acme", task.ID)
+			require.NoError(t, gerr)
+			assert.Equal(t, core.TaskStatusBlocked, got.Status, "refused unblock must leave the task blocked")
+
+			var publishes int
+			require.NoError(t, env.pool.QueryRow(ctx,
+				`SELECT count(*) FROM outbox_events WHERE tenant_id='acme' AND kind='task_publish'`).Scan(&publishes))
+			assert.Zero(t, publishes, "refused unblock must not enqueue a delivery")
+		})
+	}
+}
+
 // TestTaskService_Block_TerminalStateRefusal_PG verifies that Block refuses
 // to operate on terminal-state tasks (completed/failed/cancelled/expired/dead_lettered).
 // This pins the eval-3 W2 fix: Block must not revive terminal tasks.

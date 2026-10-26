@@ -547,10 +547,13 @@ func (s *TaskService) Block(ctx context.Context, tenantID, taskID, reason string
 			return fmt.Errorf("get task for block: %w", gerr)
 		}
 		// Block must not revive terminal tasks (completed/failed/cancelled/expired/dead_lettered).
-		// Non-terminal states (queued/claimed/running/approval_pending) may be blocked.
+		// Non-terminal states (queued/claimed/running) may be blocked.
 		// This check is INSIDE the transaction to prevent TOCTOU races.
 		if current.Status.IsTerminal() {
 			return fmt.Errorf("%w: task %s is %s, cannot block", core.ErrTaskInTerminalState, taskID, current.Status)
+		}
+		if current.Status == core.TaskStatusApprovalPending {
+			return fmt.Errorf("task %s is approval_pending; block would bypass the approval gate — use cancel instead", taskID)
 		}
 		// Use CAS to ensure the status hasn't changed between our read and update
 		ok, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, taskID, current.Status, core.TaskStatusBlocked, 0)
@@ -586,6 +589,23 @@ func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) erro
 	}
 	if current.Status != core.TaskStatusBlocked {
 		return fmt.Errorf("task %s is %s, not blocked", taskID, current.Status)
+	}
+	if s.approvalSvc != nil {
+		latest, aerr := s.approvalSvc.repo.GetLatestByTask(ctx, tenantID, taskID)
+		if aerr != nil {
+			return fmt.Errorf("unblock approval check: %w", aerr)
+		}
+		if latest != nil {
+			if latest.Decision == "rejected" {
+				return fmt.Errorf("unblock denied: the task's approval was rejected")
+			}
+			if latest.Decision == "expired" {
+				return fmt.Errorf("unblock denied: the task's approval expired")
+			}
+			if latest.Decision == "" && latest.Status == "pending" {
+				return fmt.Errorf("unblock denied: an approval is still pending for this task")
+			}
+		}
 	}
 
 	// Unblock re-queues the task (blocked → queued) and publishes it to the
