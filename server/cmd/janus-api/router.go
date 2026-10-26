@@ -47,8 +47,10 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 			return
 		}
 		// Dispatch must see only the resource part: a tenant named
-		// pull/dlq/traces must not hijack the switch below.
-		p := tenantResourcePart(r.URL.Path)
+		// pull/dlq/traces must not hijack the switch below. The leading
+		// slash is kept so boundary-equal suffix routes (POST /mailboxes,
+		// /budgets, /outbox/retry-dead, /audit/replay) still match.
+		p := "/" + tenantResourcePart(r.URL.Path)
 
 		switch {
 		case hasSegment(p, "dlq") && hasSuffix(p, "/replay"):
@@ -204,8 +206,9 @@ func hasSuffix(path, suffix string) bool {
 }
 
 // tenantResourcePart strips "/v1/tenants/<id>" so routing matches only
-// the resource part of the path; "/v1/tenants/<id>" yields "" (the switch
-// default still serves the tenant-get contract on GET).
+// the resource part of the path; "/v1/tenants/<id>" yields "" (the mux
+// re-adds the leading slash; the switch default still serves the
+// tenant-get contract on GET).
 func tenantResourcePart(path string) string {
 	const prefix = "/v1/tenants/"
 	if !strings.HasPrefix(path, prefix) {
