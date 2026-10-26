@@ -157,6 +157,9 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 		!strings.HasPrefix(path, "/acp/") {
 		return "", false
 	}
+	// Rules must see only the resource part: a tenant named like a resource
+	// word (e.g. "traces") must never change the required scope.
+	path = tenantResourcePart(path)
 	for _, rule := range scopeRules {
 		if !hasSegment(path, rule.segment) {
 			continue
@@ -174,6 +177,21 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 		return ScopeTaskRead, true
 	}
 	return ScopeTaskWrite, true
+}
+
+// tenantResourcePart strips "/v1/tenants/<id>" so callers match only the
+// resource part of the path; "/v1/tenants/<id>" with nothing after the
+// tenant id yields "". Paths outside the tenant subtree are unchanged.
+func tenantResourcePart(path string) string {
+	const prefix = "/v1/tenants/"
+	if !strings.HasPrefix(path, prefix) {
+		return path
+	}
+	rest := path[len(prefix):]
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[i+1:]
+	}
+	return ""
 }
 
 func hasSegment(path, seg string) bool {

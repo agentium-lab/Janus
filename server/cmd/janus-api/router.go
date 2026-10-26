@@ -42,7 +42,13 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 	})
 
 	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
+		if r.URL.Path == "/v1/tenants/" {
+			http.NotFound(w, r)
+			return
+		}
+		// Dispatch must see only the resource part: a tenant named
+		// pull/dlq/traces must not hijack the switch below.
+		p := tenantResourcePart(r.URL.Path)
 
 		switch {
 		case hasSegment(p, "dlq") && hasSuffix(p, "/replay"):
@@ -195,6 +201,21 @@ func hasLastSegment(path, seg string) bool {
 
 func hasSuffix(path, suffix string) bool {
 	return strings.HasSuffix(strings.TrimRight(path, "/"), suffix)
+}
+
+// tenantResourcePart strips "/v1/tenants/<id>" so routing matches only
+// the resource part of the path; "/v1/tenants/<id>" yields "" (the switch
+// default still serves the tenant-get contract on GET).
+func tenantResourcePart(path string) string {
+	const prefix = "/v1/tenants/"
+	if !strings.HasPrefix(path, prefix) {
+		return path
+	}
+	rest := path[len(prefix):]
+	if i := strings.Index(rest, "/"); i >= 0 {
+		return rest[i+1:]
+	}
+	return ""
 }
 
 func extractTenantFromPath(path string) string {
