@@ -111,3 +111,47 @@ func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 	}
 	return cfg, nil
 }
+
+// buildGatewayClientTLS constructs the CLIENT-side *tls.Config the
+// grpc-gateway uses to dial the local gRPC server (RegisterGateway). Unlike
+// buildTLSConfig (server side), this verifies the server's certificate
+// against Gateway.CACertFile and presents a client keypair for mTLS when
+// configured. With no CA file the gateway cannot verify the server at all:
+// it keeps InsecureSkipVerify (encryption-only) and logs one explicit
+// warning — a dev-only posture, never silent.
+func buildGatewayClientTLS(tlsCfg config.TLSConfig) (*tls.Config, error) {
+	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
+	gw := tlsCfg.Gateway
+	if gw.CACertFile != "" {
+		caPEM, err := os.ReadFile(gw.CACertFile)
+		if err != nil {
+			return nil, fmt.Errorf("read gateway CA cert: %w", err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("failed to parse gateway CA certificate")
+		}
+		cfg.RootCAs = pool
+	} else {
+		// No CA configured: certificate verification is impossible. Keep the
+		// connection encrypted but unauthenticated and say so loudly.
+		cfg.InsecureSkipVerify = true // dev-only fallback, warned below
+		log.Println("WARNING: grpc-gateway has no gateway CA configured (JANUS_TLS_GATEWAY_CA_CERT_FILE); "+
+			"the gRPC server's identity is NOT verified — TLS is encryption-only. "+
+			"This is a dev-only posture; configure the gateway CA for production.")
+	}
+	if gw.ServerName != "" {
+		cfg.ServerName = gw.ServerName
+	}
+	if gw.ClientCertFile != "" || gw.ClientKeyFile != "" {
+		if gw.ClientCertFile == "" || gw.ClientKeyFile == "" {
+			return nil, fmt.Errorf("tls: gateway client certificate requires both client_cert_file and client_key_file")
+		}
+		cert, err := tls.LoadX509KeyPair(gw.ClientCertFile, gw.ClientKeyFile)
+		if err != nil {
+			return nil, fmt.Errorf("load gateway client certificate: %w", err)
+		}
+		cfg.Certificates = []tls.Certificate{cert}
+	}
+	return cfg, nil
+}

@@ -467,6 +467,122 @@ jobs:
           done
           curl -sf http://127.0.0.1:18080/readyz
 
+      - name: TLS-mode upgrade (verified gateway + HTTPS endpoints)
+        run: |
+          set -euo pipefail
+          # Self-signed CA + CA-signed server certificate. The SANs cover
+          # "localhost" — the in-process grpc-gateway dials its own gRPC
+          # server on localhost — and 127.0.0.1 for the port-forward probes.
+          # The gateway CA secret lets the gateway VERIFY the gRPC server
+          # (eval-5 identity fix). mTLS (clientCaSecret) is deliberately NOT
+          # enabled here: it would demand client certificates from the
+          # kubelet HTTPS probes, which cannot present one.
+          mkdir -p /tmp/tls && cd /tmp/tls
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout ca.key -out ca.crt -days 2 -subj "/CN=janus-nightly-ca" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign"
+          cat > server.ext <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=critical,digitalSignature,keyEncipherment
+          extendedKeyUsage=serverAuth
+          subjectAltName=DNS:localhost,IP:127.0.0.1
+          EOF
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout tls.key -out server.csr -subj "/CN=localhost"
+          openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
+            -out tls.crt -days 2 -sha256 -extfile server.ext
+          openssl verify -CAfile ca.crt tls.crt
+          kubectl -n "$NS" create secret generic janus-tls-server \
+            --from-file=tls.crt=tls.crt --from-file=tls.key=tls.key
+          kubectl -n "$NS" create secret generic janus-tls-gateway-ca \
+            --from-file=ca.crt=ca.crt
+          # Seed an API key so the /grpc/ REST probe can pass auth and reach
+          # the gateway mux (key_hash = sha256 hex, mirroring auth.hashKey).
+          PROBE_KEY="janus_nightly_tls_probe"
+          KEY_HASH=$(printf '%s' "$PROBE_KEY" | sha256sum | cut -d' ' -f1)
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc \
+            "INSERT INTO api_keys (tenant_id, key_hash, name, prefix) VALUES ('t0', '$KEY_HASH', 'nightly-tls-probe', '${PROBE_KEY:0:8}') ON CONFLICT DO NOTHING"
+          helm upgrade "$RELEASE" deployments/helm/janus-core \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=e2e \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --set config.tls.enabled=true \
+            --set config.tls.existingSecret=janus-tls-server \
+            --set config.tls.gatewayCaSecret=janus-tls-gateway-ca \
+            --wait --timeout 5m
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=300s
+          kubectl -n "$NS" port-forward svc/janus-core 18443:8080 >/tmp/port-forward-tls.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --cacert /tmp/tls/ca.crt https://127.0.0.1:18443/readyz && break
+            sleep 1
+          done
+          for path in /healthz /readyz; do
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/tls/ca.crt "https://127.0.0.1:18443$path")
+            echo "TLS $path -> $CODE"
+            [ "$CODE" = "200" ]
+          done
+          # Full round trip: HTTPS -> auth -> gateway mux -> gateway's own
+          # verified TLS dial -> gRPC ListAgents. 200 proves the gateway
+          # trusted the CA and the server certificate verified as localhost.
+          CODE=$(curl -s -o /tmp/grpc-probe.json -w '%{http_code}' \
+            --cacert /tmp/tls/ca.crt \
+            -H "x-api-key: $PROBE_KEY" \
+            "https://127.0.0.1:18443/grpc/v1/tenants/t0/agents")
+          echo "TLS /grpc/v1/tenants/t0/agents -> $CODE $(cat /tmp/grpc-probe.json)"
+          [ "$CODE" = "200" ]
+
+      - name: TLS-mode negative (wrong gateway CA must break /grpc/)
+        run: |
+          set -euo pipefail
+          # A second, unrelated CA wired as the gateway CA: the gateway must
+          # FAIL to verify the gRPC server, so /grpc/ returns 503 while the
+          # plain HTTPS health endpoints (no gRPC dial) stay 200. Under the
+          # pre-fix InsecureSkipVerify behavior a wrong CA changed nothing —
+          # this gate exists to catch exactly that regression.
+          cd /tmp/tls
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout wrong-ca.key -out wrong-ca.crt -days 2 -subj "/CN=janus-nightly-wrong-ca" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign"
+          kubectl -n "$NS" create secret generic janus-tls-wrong-ca \
+            --from-file=ca.crt=wrong-ca.crt
+          helm upgrade "$RELEASE" deployments/helm/janus-core \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=e2e \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --set config.tls.enabled=true \
+            --set config.tls.existingSecret=janus-tls-server \
+            --set config.tls.gatewayCaSecret=janus-tls-wrong-ca \
+            --wait --timeout 5m
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=300s
+          kubectl -n "$NS" port-forward svc/janus-core 18443:8080 >/tmp/port-forward-tls2.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --cacert /tmp/tls/ca.crt https://127.0.0.1:18443/healthz && break
+            sleep 1
+          done
+          PROBE_KEY="janus_nightly_tls_probe"
+          CODE=$(curl -s -o /tmp/grpc-wrong-ca.json -w '%{http_code}' \
+            --cacert /tmp/tls/ca.crt \
+            -H "x-api-key: $PROBE_KEY" \
+            "https://127.0.0.1:18443/grpc/v1/tenants/t0/agents")
+          echo "wrong-CA /grpc/v1/tenants/t0/agents -> $CODE $(cat /tmp/grpc-wrong-ca.json)"
+          [ "$CODE" = "503" ]
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/tls/ca.crt "https://127.0.0.1:18443/healthz")
+          echo "wrong-CA /healthz -> $CODE (health must stay up)"
+          [ "$CODE" = "200" ]
+
       - name: Dump cluster state on failure
         if: failure()
         run: |

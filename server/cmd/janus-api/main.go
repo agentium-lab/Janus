@@ -376,6 +376,7 @@ func main() {
 	validator := auth.NewAPIKeyValidator(pgDB)
 
 	var sharedTLSCfg *tls.Config
+	var gwClientTLS *tls.Config
 	if cfg.TLS.Enabled {
 		if cfg.TLS.CertFile == "" || cfg.TLS.KeyFile == "" {
 			log.Fatalf("tls: TLS enabled but cert_file and/or key_file not set; refusing to serve plaintext")
@@ -384,6 +385,13 @@ func main() {
 		sharedTLSCfg, err = buildTLSConfig(cfg.TLS)
 		if err != nil {
 			log.Fatalf("tls: %v", err)
+		}
+		// The gateway is a gRPC CLIENT of the local server: it needs its own
+		// config (RootCAs/ServerName/client keypair), never the server-side
+		// one — passing sharedTLSCfg here would silently skip verification.
+		gwClientTLS, err = buildGatewayClientTLS(cfg.TLS)
+		if err != nil {
+			log.Fatalf("tls: gateway client: %v", err)
 		}
 	}
 	grpcOpts := []grpcserver.Option{}
@@ -402,7 +410,7 @@ func main() {
 	defer grpcSrv.Stop()
 
 	grpcAddr := fmt.Sprintf("localhost:%d", cfg.GRPCPort)
-	gwMux, err := grpcserver.RegisterGateway(context.Background(), grpcAddr, sharedTLSCfg)
+	gwMux, err := grpcserver.RegisterGateway(context.Background(), grpcAddr, gwClientTLS)
 	if err != nil {
 		log.Fatalf("grpc-gateway: %v", err)
 	}

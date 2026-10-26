@@ -103,6 +103,26 @@ config:
     existingSecret: ""
     certFile: ""
     keyFile: ""
+    # Name of a Secret containing ca.crt: the CA the in-process grpc-gateway
+    # uses to VERIFY the gRPC server's certificate (fixes the gateway
+    # identity defect — without it the gateway warns and skips verification).
+    # May point at the same Secret as existingSecret when it carries ca.crt.
+    gatewayCaSecret: ""
+    # grpc-gateway client TLS. serverName defaults to the in-process dial
+    # host ("localhost"); set it when the server certificate has no
+    # localhost SAN (e.g. a service-DNS certificate).
+    gateway:
+      serverName: ""
+      # Name of a Secret containing tls.crt + tls.key that the gateway
+      # presents as a CLIENT certificate. Required when clientCaSecret is
+      # set, or the server rejects the gateway's own connection.
+      clientCertSecret: ""
+    # Name of a Secret containing ca.crt: CA the SERVER trusts to verify
+    # client certificates (mTLS). When set, BOTH the HTTP and gRPC servers
+    # require client certificates — kubelet HTTP probes cannot present one,
+    # so such deployments must front Janus with a TLS-terminating proxy and
+    # disable the in-chart probes (probes.*.enabled=false).
+    clientCaSecret: ""
   heartbeat:
     sweeperInterval: 30s
     ttl: 60s

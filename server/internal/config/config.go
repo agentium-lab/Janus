@@ -122,10 +122,32 @@ type AuthConfig struct {
 // When CertFile and KeyFile are both set, servers use TLS. When ClientCAFile
 // is also set, client certificates are verified (mTLS).
 type TLSConfig struct {
-	Enabled      bool   `mapstructure:"enabled"`
-	CertFile     string `mapstructure:"cert_file"`
-	KeyFile      string `mapstructure:"key_file"`
-	ClientCAFile string `mapstructure:"client_ca_file"`
+	Enabled      bool              `mapstructure:"enabled"`
+	CertFile     string            `mapstructure:"cert_file"`
+	KeyFile      string            `mapstructure:"key_file"`
+	ClientCAFile string            `mapstructure:"client_ca_file"`
+	// Gateway configures the grpc-gateway's CLIENT-side TLS connection to
+	// the local gRPC server (verification + optional client keypair).
+	Gateway GatewayTLSConfig `mapstructure:"gateway"`
+}
+
+// GatewayTLSConfig configures how the grpc-gateway — an in-process gRPC
+// CLIENT dialing the local gRPC server — verifies that server and
+// authenticates itself under mTLS.
+type GatewayTLSConfig struct {
+	// CACertFile is the CA bundle used to verify the gRPC server's
+	// certificate. When empty the gateway cannot verify the server at all
+	// and falls back to InsecureSkipVerify (warned at startup) — a
+	// dev-only posture.
+	CACertFile string `mapstructure:"ca_cert_file"`
+	// ServerName overrides the DNS name verified against the server
+	// certificate. Defaults to the dial address host ("localhost"); set it
+	// when the server certificate carries no localhost SAN.
+	ServerName string `mapstructure:"server_name"`
+	// ClientCertFile and ClientKeyFile present a client certificate when
+	// the gRPC server requires mTLS; both must be set together.
+	ClientCertFile string `mapstructure:"client_cert_file"`
+	ClientKeyFile  string `mapstructure:"client_key_file"`
 }
 
 // CORSConfig controls the Cross-Origin Resource Sharing policy. The default
@@ -259,6 +281,10 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_TLS_CERT_FILE":                  "tls.cert_file",
 		"JANUS_TLS_KEY_FILE":                   "tls.key_file",
 		"JANUS_TLS_CLIENT_CA_FILE":             "tls.client_ca_file",
+		"JANUS_TLS_GATEWAY_CA_CERT_FILE":       "tls.gateway.ca_cert_file",
+		"JANUS_TLS_GATEWAY_SERVER_NAME":        "tls.gateway.server_name",
+		"JANUS_TLS_GATEWAY_CLIENT_CERT_FILE":   "tls.gateway.client_cert_file",
+		"JANUS_TLS_GATEWAY_CLIENT_KEY_FILE":    "tls.gateway.client_key_file",
 		"JANUS_CORS_ALLOWED_ORIGINS":           "cors.allowed_origins",
 		"JANUS_METRICS_ENABLED":                "metrics.enabled",
 		"JANUS_METRICS_PATH":                   "metrics.path",

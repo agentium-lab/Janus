@@ -112,6 +112,24 @@ spec:
             - name: JANUS_TLS_KEY_FILE
               value: "/etc/janus/tls/tls.key"
             {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.clientCaSecret }}
+            - name: JANUS_TLS_CLIENT_CA_FILE
+              value: "/etc/janus/client-ca/ca.crt"
+            {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gatewayCaSecret }}
+            - name: JANUS_TLS_GATEWAY_CA_CERT_FILE
+              value: "/etc/janus/gateway-ca/ca.crt"
+            {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.serverName }}
+            - name: JANUS_TLS_GATEWAY_SERVER_NAME
+              value: {{ .Values.config.tls.gateway.serverName | quote }}
+            {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.clientCertSecret }}
+            - name: JANUS_TLS_GATEWAY_CLIENT_CERT_FILE
+              value: "/etc/janus/gateway-client/tls.crt"
+            - name: JANUS_TLS_GATEWAY_CLIENT_KEY_FILE
+              value: "/etc/janus/gateway-client/tls.key"
+            {{- end }}
             - name: JANUS_CONFIG_FILE
               value: "/etc/janus/janus.yaml"
           {{- with .Values.extraEnv }}
@@ -157,6 +175,21 @@ spec:
               mountPath: /etc/janus/tls
               readOnly: true
             {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.clientCaSecret }}
+            - name: client-ca
+              mountPath: /etc/janus/client-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gatewayCaSecret }}
+            - name: gateway-ca
+              mountPath: /etc/janus/gateway-ca
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.clientCertSecret }}
+            - name: gateway-client
+              mountPath: /etc/janus/gateway-client
+              readOnly: true
+            {{- end }}
             {{- if .Values.artifacts.enabled }}
             - name: artifacts
               mountPath: {{ .Values.artifacts.mountPath }}
@@ -172,6 +205,21 @@ spec:
         - name: tls
           secret:
             secretName: {{ .Values.config.tls.existingSecret | default (printf "%s-tls" (include "janus-core.fullname" .)) }}
+        {{- end }}
+        {{- if and .Values.config.tls.enabled .Values.config.tls.clientCaSecret }}
+        - name: client-ca
+          secret:
+            secretName: {{ .Values.config.tls.clientCaSecret }}
+        {{- end }}
+        {{- if and .Values.config.tls.enabled .Values.config.tls.gatewayCaSecret }}
+        - name: gateway-ca
+          secret:
+            secretName: {{ .Values.config.tls.gatewayCaSecret }}
+        {{- end }}
+        {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.clientCertSecret }}
+        - name: gateway-client
+          secret:
+            secretName: {{ .Values.config.tls.gateway.clientCertSecret }}
         {{- end }}
         {{- if .Values.artifacts.enabled }}
         - name: artifacts

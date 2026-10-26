@@ -36,6 +36,13 @@ func headerMatcher(key string) (string, bool) {
 	return runtime.DefaultHeaderMatcher(key)
 }
 
+// RegisterGateway builds the grpc-gateway HTTP mux that translates REST
+// requests under /grpc/ into gRPC calls against the server at grpcAddr.
+// tlsCfg is the CLIENT-side TLS configuration for that in-process gRPC
+// connection: RootCAs + ServerName verify the server's identity, and an
+// optional Certificates entry presents a client keypair when the server
+// requires mTLS. Build it with buildGatewayClientTLS (cmd wiring) — never
+// pass the SERVER-side config, and never silently skip verification.
 func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (http.Handler, error) {
 	// Use proto field names (snake_case) in JSON, matching the HTTP handlers.
 	mux := runtime.NewServeMux(
@@ -49,16 +56,10 @@ func RegisterGateway(ctx context.Context, grpcAddr string, tlsCfg *tls.Config) (
 	)
 	opts := []grpc.DialOption{}
 	if tlsCfg != nil {
-		// Gateway acts as a client connecting to gRPC server.
-		// Create a client TLS config with proper RootCAs and ServerName.
-		clientTLS := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-			// For localhost connections, we can skip server cert verification
-			// or use the system cert pool. In production, this should be configured
-			// with proper CA certificates.
-			InsecureSkipVerify: true, // TODO: Configure proper CA for production
-		}
-		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(clientTLS)))
+		// The gateway is a gRPC client connecting to the local gRPC server:
+		// use the caller-supplied client config verbatim so its RootCAs,
+		// ServerName and client keypair govern verification and mTLS.
+		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
