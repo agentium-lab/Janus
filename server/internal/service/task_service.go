@@ -630,8 +630,8 @@ func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) erro
 				Payload:   payload,
 			}
 			queuePayload, _ := json.Marshal(msg)
-			dedupeKey := fmt.Sprintf("task_publish:%s:%s:unblock", tenantID, taskID)
-			if ierr := s.txOutbox.InsertWithDedupe(ctx, tx, ulid(), tenantID, "task_publish", dedupeKey, queuePayload); ierr != nil {
+			// The blocked->queued CAS is this round's exactly-once gate; the ulid outbox id is the round-unique delivery identity.
+			if ierr := s.txOutbox.Insert(ctx, tx, ulid(), tenantID, "task_publish", queuePayload); ierr != nil {
 				return fmt.Errorf("outbox insert unblock: %w", ierr)
 			}
 		}

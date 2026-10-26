@@ -548,6 +548,74 @@ func TestTaskService_Unblock_ApprovalVerdictRefused_PG(t *testing.T) {
 	}
 }
 
+// eval-5 #2: the unblock task_publish used a FIXED dedupe key
+// (task_publish:<tenant>:<task>:unblock); outbox rows are retained forever,
+// so every unblock round after the first was silently swallowed by
+// ON CONFLICT DO NOTHING and the re-queued task never delivered again.
+func TestTaskService_Unblock_SecondRoundDelivers_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = env.pool.Exec(ctx, `INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('acme','blk-agent','B','a2a','online') ON CONFLICT DO NOTHING`)
+	_, _ = env.pool.Exec(ctx, `INSERT INTO mailboxes (tenant_id, id, agent_id, status, retry_policy) VALUES ('acme','blk-mb','blk-agent','active','{"max_attempts":3,"backoff_type":"exponential","initial_seconds":1,"max_seconds":60,"jitter":false}') ON CONFLICT DO NOTHING`)
+
+	task := core.Task{
+		ID: "unblock-round-2", TenantID: "acme", MailboxID: "blk-mb", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "blk-mb",
+		Status: core.TaskStatusQueued, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{JanusVersion: "1", TaskID: "unblock-round-2", TenantID: "acme",
+			SourceAgent: "agent-1", Target: core.Target{Type: "mailbox", Value: "blk-mb"},
+			Payload: core.Payload{Type: "text", Content: "blk"}},
+	}
+	require.NoError(t, env.taskRepo.Create(ctx, task))
+
+	drainPublishes := func() int {
+		entries, _ := env.outboxRepo.FetchPending(ctx, 100)
+		n := 0
+		for _, e := range entries {
+			if e.Kind != "task_publish" {
+				continue
+			}
+			var msg core.TaskMessage
+			if json.Unmarshal(e.Payload, &msg) == nil && msg.TaskID == task.ID {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Round 1: block -> drain -> unblock -> drain.
+	require.NoError(t, env.taskSvc.Block(ctx, "acme", task.ID, "round 1"))
+	_, _ = env.outboxRepo.FetchPending(ctx, 100)
+	require.NoError(t, env.taskSvc.Unblock(ctx, "acme", task.ID))
+	require.Equal(t, 1, drainPublishes(), "round 1's unblock enqueues its task_publish")
+
+	// Round 2: block again -> drain -> unblock again.
+	require.NoError(t, env.taskSvc.Block(ctx, "acme", task.ID, "round 2"))
+	_, _ = env.outboxRepo.FetchPending(ctx, 100)
+	require.NoError(t, env.taskSvc.Unblock(ctx, "acme", task.ID))
+	require.Equal(t, 1, drainPublishes(), "round 2's unblock must enqueue a NEW task_publish, not be swallowed by the fixed dedupe key")
+
+	got, gerr := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, gerr)
+	require.Equal(t, core.TaskStatusQueued, got.Status)
+
+	// End-to-end delivery of round 2 with no recovery scanner running:
+	// the drained task_publish feeds the consumer, which pulls a lease.
+	env.dispatch = env.dispatch.WithQueueDriver(&perCallDriver{queue: []core.TaskDelivery{
+		{TaskID: task.ID, DeliveryRef: core.DeliveryRef("blk-ref-2"), Payload: []byte(`{}`)},
+	}})
+	res, perr := env.dispatch.PullTask(ctx, "acme", "blk-mb", "blk-agent")
+	require.NoError(t, perr)
+	require.NotNil(t, res)
+	require.NoError(t, env.dispatch.StartTask(ctx, "acme", task.ID, res.LeaseID))
+	require.NoError(t, env.dispatch.AckTask(ctx, "acme", task.ID, res.LeaseID, "s3://blk-r2", nil))
+
+	final, ferr := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, ferr)
+	assert.Equal(t, core.TaskStatusCompleted, final.Status)
+}
+
 // TestTaskService_Block_TerminalStateRefusal_PG verifies that Block refuses
 // to operate on terminal-state tasks (completed/failed/cancelled/expired/dead_lettered).
 // This pins the eval-3 W2 fix: Block must not revive terminal tasks.
