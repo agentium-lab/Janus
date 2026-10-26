@@ -194,12 +194,58 @@ go_check T13 "A4 sanitize: a.b ≠ a_b" \
   ./server/internal/driver/nats 'TestSanitize_NoDotCollision'
 
 # --- T14 W6: agent presence probe builds + runs ----------------------------
-# The probe queries PG for tenants with zero online agents. Build check +
-# invocation (will fail without PG, but that's expected; we just verify it
-# compiles and the binary exists).
+# Probe semantics (server/cmd/janus-agent-presence-probe/main.go; the log
+# lines land on stderr): exit 0 = every tenant has an online agent,
+# exit 1 = alert, tenants with zero online agents listed. The run leg
+# seeds a throwaway schema'd DB (healthy tenant -> expect 0, agent-less
+# tenant added -> expect 1) and activates only with full JANUS_PG_* +
+# psql; otherwise SKIP, matching the other PG-gated checks.
 if go build -o /tmp/janus-agent-presence-probe ./server/cmd/janus-agent-presence-probe 2>/dev/null; then
   record T14 "W6 agent presence probe builds" PASS
-  rm -f /tmp/janus-agent-presence-probe
+  if [ -n "${JANUS_PG_HOST:-}" ] && [ -n "${JANUS_PG_PORT:-}" ] && \
+     [ -n "${JANUS_PG_USER:-}" ] && [ -n "${JANUS_PG_PASSWORD:-}" ] && \
+     command -v psql &>/dev/null; then
+    t14_db="janus_matrix_t14_$$"
+    t14_dsn="postgres://${JANUS_PG_USER}:${JANUS_PG_PASSWORD}@${JANUS_PG_HOST}:${JANUS_PG_PORT}/${t14_db}?sslmode=disable"
+    t14_psql() { PGPASSWORD="$JANUS_PG_PASSWORD" psql -h "$JANUS_PG_HOST" -p "$JANUS_PG_PORT" -U "$JANUS_PG_USER" "$@"; }
+    t14_migrate() {
+      local f
+      for f in migrations/*.up.sql; do
+        t14_psql -d "$t14_db" -v ON_ERROR_STOP=1 -qf "$f" >/dev/null 2>&1 || return 1
+      done
+    }
+    t14_ok=1 t14_note="" t14_out=""
+    t14_psql -d postgres -qc "CREATE DATABASE $t14_db" >/dev/null 2>&1 || { t14_ok=0; t14_note="create database failed"; }
+    if [ "$t14_ok" = 1 ]; then
+      t14_migrate || { t14_ok=0; t14_note="migrations failed"; }
+    fi
+    if [ "$t14_ok" = 1 ]; then
+      t14_psql -d "$t14_db" -qc "INSERT INTO tenants (id, name) VALUES ('t14-covered','T14 Covered')" >/dev/null 2>&1
+      t14_psql -d "$t14_db" -qc "INSERT INTO agents (tenant_id, id, display_name, protocol, status) VALUES ('t14-covered','t14-agent','T14 Agent','a2a','online')" >/dev/null 2>&1
+      t14_out=$(JANUS_PG_DSN="$t14_dsn" /tmp/janus-agent-presence-probe 2>&1); t14_rc=$?
+      if [ "$t14_rc" -ne 0 ] || ! printf '%s\n' "$t14_out" | grep -q "all tenants have at least one online agent"; then
+        t14_ok=0; t14_note="healthy leg: expected rc=0 + coverage line, got rc=$t14_rc"
+      fi
+    fi
+    if [ "$t14_ok" = 1 ]; then
+      t14_psql -d "$t14_db" -qc "INSERT INTO tenants (id, name) VALUES ('t14-bare','T14 Bare')" >/dev/null 2>&1
+      t14_out=$(JANUS_PG_DSN="$t14_dsn" /tmp/janus-agent-presence-probe 2>&1); t14_rc=$?
+      if [ "$t14_rc" -ne 1 ] || ! printf '%s\n' "$t14_out" | grep -q "zero online agents"; then
+        t14_ok=0; t14_note="alert leg: expected rc=1 + WARNING line, got rc=$t14_rc"
+      fi
+    fi
+    if [ "$t14_ok" = 1 ]; then
+      record T14b "W6 probe run: healthy=exit0 + alert=exit1 (PG)" PASS
+    else
+      echo "---- T14b output ----"; printf '%s\n' "$t14_out" | tail -5
+      record T14b "W6 probe run: healthy=exit0 + alert=exit1 (PG)" FAIL "$t14_note"
+    fi
+    t14_psql -d postgres -qc "DROP DATABASE IF EXISTS $t14_db" >/dev/null 2>&1
+    rm -f /tmp/janus-agent-presence-probe
+  else
+    record T14b "W6 probe run: healthy=exit0 + alert=exit1 (PG)" SKIP "needs JANUS_PG_* + psql"
+    rm -f /tmp/janus-agent-presence-probe
+  fi
 else
   record T14 "W6 agent presence probe builds" FAIL
 fi
