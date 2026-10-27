@@ -51,10 +51,23 @@ func openRoutingTestDB(t *testing.T) *pgxpool.Pool {
 	if user == "" {
 		user = "janus"
 	}
+	// NEVER interpolate an unset password as a bare "password=" key: libpq/pgx
+	// skip whitespace after '=', so "password= dbname=X" parses as
+	// password="dbname=X" with dbname dropped, and the connection then
+	// defaults to the database named after the user (observed: landed on the
+	// shared "janus" database, where a later run's CREATE TABLE failed with
+	// 42P07 "already exists"). Omit the key entirely instead.
+	buildDSN := func(dbname string) string {
+		dsn := fmt.Sprintf("host=%s port=%s user=%s", host, port, user)
+		if password != "" {
+		dsn += fmt.Sprintf(" password=%s", password)
+		}
+		return dsn + fmt.Sprintf(" dbname=%s sslmode=disable", dbname)
+	}
 	testDB := fmt.Sprintf("janus_routingtest_%d", time.Now().UnixNano())
 
 	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
+	adminDSN := buildDSN("janus_test")
 	adminConn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Skipf("postgres not reachable (set JANUS_PG_HOST/PORT/USER to enable): %v", err)
@@ -63,8 +76,22 @@ func openRoutingTestDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
-	pool, err := pgxpool.New(ctx, dsn)
+	// Register cleanup IMMEDIATELY after the throwaway DB exists so any later
+	// fixture failure (pool, migrations, mapping tables) still drops it.
+	var pool *pgxpool.Pool
+	t.Cleanup(func() {
+		if pool != nil {
+			pool.Close()
+		}
+		ctx := context.Background()
+		adminConn, err := pgx.Connect(ctx, adminDSN)
+		if err == nil {
+			adminConn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", testDB))
+			adminConn.Close(ctx)
+		}
+	})
+
+	pool, err = pgxpool.New(ctx, buildDSN(testDB))
 	require.NoError(t, err)
 	require.NoError(t, pool.Ping(ctx))
 
@@ -86,15 +113,16 @@ func openRoutingTestDB(t *testing.T) *pgxpool.Pool {
 
 	// NOT production schema: these tables exist only to seed group/human ->
 	// mailbox mappings the Router resolves via the AgentLookup seam.
+	// IF NOT EXISTS keeps the batch idempotent inside the throwaway DB.
 	_, err = pool.Exec(ctx, `
-		CREATE TABLE routing_group_mailboxes (
+		CREATE TABLE IF NOT EXISTS routing_group_mailboxes (
 			tenant_id  text NOT NULL,
 			group_id   text NOT NULL,
 			mailbox_id text NOT NULL,
 			priority   integer NOT NULL DEFAULT 0,
 			PRIMARY KEY (tenant_id, group_id, mailbox_id)
 		);
-		CREATE TABLE routing_human_mailboxes (
+		CREATE TABLE IF NOT EXISTS routing_human_mailboxes (
 			tenant_id  text NOT NULL,
 			human_id   text NOT NULL,
 			mailbox_id text NOT NULL,
@@ -102,16 +130,6 @@ func openRoutingTestDB(t *testing.T) *pgxpool.Pool {
 		);
 	`)
 	require.NoError(t, err, "create routing mapping tables")
-
-	t.Cleanup(func() {
-		pool.Close()
-		ctx := context.Background()
-		adminConn, err := pgx.Connect(ctx, adminDSN)
-		if err == nil {
-			adminConn.Exec(ctx, fmt.Sprintf("DROP DATABASE IF EXISTS %s", testDB))
-			adminConn.Close(ctx)
-		}
-	})
 
 	return pool
 }
