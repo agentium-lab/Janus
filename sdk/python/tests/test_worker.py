@@ -4,7 +4,7 @@ On presumed lease loss (5 consecutive heartbeat failures) the worker must
 ALWAYS abandon the task: stop driving the handler, neither ACK nor NACK
 (the server re-queues it once the dead lease expires), and move on to the
 next poll. The optional on_lease_lost callback is a notification hook
-only — it fires right before the abandon and cannot prevent it.
+only — it fires as the abandon takes effect and cannot prevent it.
 """
 
 import threading
@@ -194,15 +194,25 @@ class TestLeaseLossDefaultAbandon:
     def test_successful_handler_result_dropped_after_lease_loss(self):
         broker = FakeBroker([_pull("task-a")], heartbeat_fails_for={"task-a"})
         release = threading.Event()
+        abandoned = threading.Event()
 
         def legacy_handler(task):  # single-param handler, never uses progress
             release.wait(5)
             return "ref-a", None
 
-        worker, thread = _run_worker(broker, legacy_handler)
+        def on_lease_lost(task_id):
+            abandoned.set()
+
+        worker, thread = _run_worker(broker, legacy_handler, on_lease_lost=on_lease_lost)
         try:
-            assert wait_until(lambda: broker.heartbeats.count("task-a") >= 5), (
-                "heartbeat never failed often enough to presume lease loss"
+            # Gate on the abandon itself, not on the failing-heartbeat
+            # count: the 5th append is observable while lease_lost may
+            # still be unset (the append->set gap is where the CI flake
+            # ACKed a lost lease). The callback fires strictly after
+            # lease_lost.set(), so releasing the handler here means the
+            # post-handler check deterministically sees the abandon.
+            assert wait_until(abandoned.is_set), (
+                "lease was never presumed lost"
             )
             release.set()
             assert wait_until(lambda: broker.pulls >= 2), (

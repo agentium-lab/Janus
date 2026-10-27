@@ -45,7 +45,8 @@ class JanusWorker:
     cooperative handler unwinds), the task is neither ACKed nor NACKed (the
     server re-queues it once the dead lease expires), and the loop moves on
     to the next poll. The optional on_lease_lost callback is a pure
-    notification hook invoked right before the abandon; it cannot make the
+    notification hook invoked as the abandon takes effect (after the
+    worker has already marked the lease lost); it cannot make the
     worker keep processing a task it no longer owns.
 
     Args:
@@ -54,9 +55,9 @@ class JanusWorker:
         mailbox_id: The mailbox to poll.
         poll_interval: Seconds between polls when queue is empty (default 2).
         heartbeat_interval: Seconds between task heartbeats (default 30).
-        on_lease_lost: Notification hook called with the task ID right
-            before that task is abandoned on presumed lease loss. Default
-            None — the abandon happens with or without it.
+        on_lease_lost: Notification hook called with the task ID as
+            that task's abandon takes effect (the lease is already marked
+            lost). Default None — the abandon happens with or without it.
     """
 
     def __init__(
@@ -148,18 +149,24 @@ class JanusWorker:
                 except Exception:
                     failures += 1
                     if failures >= 5:
+                        # Set the flag BEFORE announcing: anyone who has
+                        # seen the warning or the on_lease_lost callback
+                        # must also see lease_lost already set, or a
+                        # handler completing inside that gap passes the
+                        # post-handler check and ACKs a lost lease.
+                        lease_lost.set()
                         logger.warning(
                             "janus worker: lease for task %s presumed lost after %d heartbeat failures; abandoning task",
                             task.id, failures,
                         )
-                        # Notification hook only: fires right before the
-                        # abandon, but cannot keep the worker on this task.
+                        # Notification hook only: fires as the abandon
+                        # takes effect, but cannot keep the worker on this
+                        # task.
                         if self._on_lease_lost is not None:
                             try:
                                 self._on_lease_lost(task.id)
                             except Exception:
                                 pass
-                        lease_lost.set()
                         return
                 hb_stop.wait(self._heartbeat_interval)
 
