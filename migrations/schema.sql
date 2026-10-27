@@ -168,9 +168,6 @@ CREATE TABLE IF NOT EXISTS budget_usage_ledger (
 CREATE INDEX IF NOT EXISTS budget_usage_ledger_scope_idx
     ON budget_usage_ledger (tenant_id, scope_type, scope_id, recorded_at);
 
-CREATE INDEX IF NOT EXISTS budget_usage_ledger_scope_idx
-    ON budget_usage_ledger (tenant_id, scope_type, scope_id, occurred_at);
-
 CREATE TABLE IF NOT EXISTS policy_rules (
     tenant_id text NOT NULL,
     id text NOT NULL,
