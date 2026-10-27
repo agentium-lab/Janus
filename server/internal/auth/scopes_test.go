@@ -31,13 +31,15 @@ func TestRequiredScope(t *testing.T) {
 		want     string
 		required bool
 	}{
-		{"approve needs admin", http.MethodPost, "/v1/tenants/acme/tasks/t1/approvals/a1/approve", ScopeAdmin, true},
 		{"reject needs admin", http.MethodPost, "/v1/tenants/acme/approvals/a1/reject", ScopeAdmin, true},
+		{"task get stays read", http.MethodGet, "/v1/tenants/acme/tasks/t1", ScopeTaskRead, true},
 		{"approval list stays read", http.MethodGet, "/v1/tenants/acme/approvals", ScopeTaskRead, true},
 		{"api-keys always admin", http.MethodPost, "/v1/tenants/acme/api-keys", ScopeAdmin, true},
 		{"dlq replay admin", http.MethodPost, "/v1/tenants/acme/dlq/e1/replay", ScopeAdmin, true},
 		{"dlq query read", http.MethodGet, "/v1/tenants/acme/dlq", ScopeTaskRead, true},
-		{"traces audit read", http.MethodGet, "/v1/tenants/acme/traces/abc/events", ScopeAuditRead, true},
+		{"traces audit read", http.MethodGet, "/v1/tenants/acme/traces/abc", ScopeAuditRead, true},
+		{"undefined nesting approve needs no scope (router 404s)", http.MethodPost, "/v1/tenants/acme/tasks/t1/approvals/a1/approve", "", false},
+		{"undefined traces events needs no scope (router 404s)", http.MethodGet, "/v1/tenants/acme/traces/abc/events", "", false},
 		{"policy rule create admin", http.MethodPost, "/v1/tenants/acme/policy-rules", ScopeAdmin, true},
 		{"policy rule list admin", http.MethodGet, "/v1/tenants/acme/policy-rules", ScopeAdmin, true},
 		{"budget upsert admin", http.MethodPost, "/v1/tenants/acme/budgets", ScopeAdmin, true},

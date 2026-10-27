@@ -112,34 +112,144 @@ func TenantFromContext(ctx context.Context) string {
 	return ""
 }
 
-// scopeRule maps a request shape inside /v1/tenants/... to the scope it
-// requires. segment must appear as a path segment; suffixes narrow the match.
-// First matching rule wins; unmatched requests fall back to method defaults.
-type scopeRule struct {
-	segment      string
-	suffixes     []string
-	scope        string
-	notAfter     []string // segment must not appear after these segments
+// TenantRoute is one entry of the tenant-subtree route table: the method and
+// net/http ServeMux pattern (Go 1.22+ syntax) of a documented route plus the
+// scope that route demands. The table is the single source of truth shared
+// by HTTP dispatch (cmd/janus-api/router.go) and RequiredScope below, so the
+// scope a request needs can never disagree with the handler it reaches.
+// Shapes absent from the table are undefined: no scope is required and the
+// router rejects them with 404 before any handler runs.
+type TenantRoute struct {
+	Method  string
+	Pattern string
+	Scope   string
 }
 
-var scopeRules = []scopeRule{
-	{segment: "approvals", suffixes: []string{"/approve", "/reject"}, scope: ScopeAdmin},
-	{segment: "api-keys", scope: ScopeAdmin},
-	{segment: "policy-rules", scope: ScopeAdmin},
-	{segment: "budgets", scope: ScopeAdmin},
-	{segment: "dlq", suffixes: []string{"/replay", "/discard"}, scope: ScopeAdmin},
-	{segment: "audit", suffixes: []string{"/replay"}, scope: ScopeAdmin},
+// TenantRoutes enumerates every canonical route under /v1/tenants/{tenantID}
+// per docs/Janus-api-contract.md. Admin rows are governance and destructive
+// operations; audit:read rows are trace/event reads; the rest follow the
+// data-plane read/write split.
+var TenantRoutes = []TenantRoute{
+	// tenant
+	{http.MethodGet, "/v1/tenants/{tenantID}", ScopeTaskRead},
+	// agents
+	{http.MethodPost, "/v1/tenants/{tenantID}/agents", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/agents", ScopeTaskRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/agents/{agentID}", ScopeTaskRead},
+	{http.MethodPost, "/v1/tenants/{tenantID}/agents/{agentID}/heartbeat", ScopeTaskWrite},
+	// mailboxes
+	{http.MethodPost, "/v1/tenants/{tenantID}/mailboxes", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/mailboxes/{mailboxID}", ScopeTaskRead},
+	{http.MethodPatch, "/v1/tenants/{tenantID}/mailboxes/{mailboxID}", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/mailboxes/{mailboxID}/pause", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/mailboxes/{mailboxID}/resume", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", ScopeTaskWrite},
+	// dead letter queue
+	{http.MethodGet, "/v1/tenants/{tenantID}/dlq", ScopeTaskRead},
+	{http.MethodPost, "/v1/tenants/{tenantID}/dlq/{taskID}/replay", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/dlq/{taskID}/discard", ScopeAdmin},
+	// tasks
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/tasks/{taskID}", ScopeTaskRead},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/start", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/heartbeat", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/ack", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/nack", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/cancel", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/block", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/unblock", ScopeTaskWrite},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/replay", ScopeTaskWrite},
 	// Legacy force-status endpoints bypass the dispatch lease protocol:
 	// unlike /dispatch/ack|nack they carry no lease CAS, so they are gated
 	// to admin instead of any task:write key.
-	{segment: "tasks", suffixes: []string{"/complete", "/fail"}, scope: ScopeAdmin},
-	{segment: "traces", scope: ScopeAuditRead, notAfter: []string{"mailboxes"}},
-	{segment: "outbox", suffixes: []string{"/retry-dead"}, scope: ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/complete", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/fail", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/tasks/{taskID}/progress", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/tasks/{taskID}/stream", ScopeTaskRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/tasks/{taskID}/events", ScopeTaskRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/tasks/{taskID}/traces", ScopeAuditRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/traces/{traceID}", ScopeAuditRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/events", ScopeTaskRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/catalog", ScopeTaskRead},
+	// audit and outbox recovery
+	{http.MethodPost, "/v1/tenants/{tenantID}/audit/replay", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/outbox/retry-dead", ScopeAdmin},
+	// governance management
+	{http.MethodPost, "/v1/tenants/{tenantID}/policy-rules", ScopeAdmin},
+	{http.MethodGet, "/v1/tenants/{tenantID}/policy-rules", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/policy-rules/templates", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/budgets", ScopeAdmin},
+	{http.MethodGet, "/v1/tenants/{tenantID}/budgets", ScopeAdmin},
+	{http.MethodGet, "/v1/tenants/{tenantID}/budgets/{scopeType}", ScopeAdmin},
+	{http.MethodGet, "/v1/tenants/{tenantID}/budgets/{scopeType}/{scopeID}", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/api-keys", ScopeAdmin},
+	{http.MethodGet, "/v1/tenants/{tenantID}/api-keys", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/api-keys/{keyID}/revoke", ScopeAdmin},
+	// approvals: decisions settle an approval, an operator-level privilege
+	{http.MethodPost, "/v1/tenants/{tenantID}/approvals", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/approvals", ScopeTaskRead},
+	{http.MethodGet, "/v1/tenants/{tenantID}/approvals/{approvalID}", ScopeTaskRead},
+	{http.MethodPost, "/v1/tenants/{tenantID}/approvals/{approvalID}/approve", ScopeAdmin},
+	{http.MethodPost, "/v1/tenants/{tenantID}/approvals/{approvalID}/reject", ScopeAdmin},
+	// context refs
+	{http.MethodPost, "/v1/tenants/{tenantID}/context-refs", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/context-refs/{refID}", ScopeTaskRead},
+	{http.MethodDelete, "/v1/tenants/{tenantID}/context-refs/{refID}", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/tasks/{taskID}/context-refs", ScopeTaskRead},
+}
+
+var (
+	tenantScopeMux      *http.ServeMux
+	tenantScopeByTarget map[string]string
+)
+
+func init() {
+	tenantScopeMux = http.NewServeMux()
+	tenantScopeByTarget = make(map[string]string, len(TenantRoutes))
+	stub := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	for _, rt := range TenantRoutes {
+		target := rt.Method + " " + rt.Pattern
+		tenantScopeMux.Handle(target, stub)
+		tenantScopeByTarget[target] = rt.Scope
+	}
+}
+
+// TenantRouteScope resolves the scope a tenant-subtree request demands by
+// matching method+path against the same ServeMux patterns the router
+// dispatches on. ok=false marks an undefined shape: no scope is required
+// because the router 404s the request before any handler runs.
+func TenantRouteScope(method, path string) (string, bool) {
+	if p := normalizeTenantSubtreePath(path); p != path {
+		path = p
+	}
+	req, err := http.NewRequest(method, path, nil)
+	if err != nil {
+		return "", false
+	}
+	_, target := tenantScopeMux.Handler(req)
+	scope, ok := tenantScopeByTarget[target]
+	return scope, ok
+}
+
+// normalizeTenantSubtreePath trims trailing slashes inside the tenant
+// subtree so "POST /v1/tenants/t/tasks/" and "POST /v1/tenants/t/tasks"
+// resolve to the same route in the scope lookup and in the router. The bare
+// "/v1/tenants/" prefix root stays untouched (it is 404 by contract).
+func normalizeTenantSubtreePath(path string) string {
+	if !strings.HasPrefix(path, "/v1/tenants/") || path == "/v1/tenants/" {
+		return path
+	}
+	trimmed := strings.TrimRight(path, "/")
+	if trimmed == "" || trimmed == "/v1/tenants" {
+		return path
+	}
+	return trimmed
 }
 
 // RequiredScope resolves which scope a request demands. ok=false marks paths
-// outside the versioned data-plane API (probes, gateways) as needing no
-// key scope.
+// outside the versioned data-plane API (probes, non-gateway paths) and
+// undefined tenant-subtree shapes: the latter never reach a handler because
+// the route table 404s them.
 func RequiredScope(method, path string) (scope string, ok bool) {
 	if path == "/v1/tenants" {
 		return ScopePlatformAdmin, true // tenant management is the platform control plane
@@ -151,83 +261,21 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 	if path == "/ws" {
 		return ScopeTaskRead, true
 	}
-	if !strings.HasPrefix(path, "/v1/tenants/") &&
-		!strings.HasPrefix(path, "/a2a/") &&
+	if strings.HasPrefix(path, "/v1/tenants/") {
+		return TenantRouteScope(method, path)
+	}
+	if !strings.HasPrefix(path, "/a2a/") &&
 		!strings.HasPrefix(path, "/mcp") &&
 		!strings.HasPrefix(path, "/acp/") {
 		return "", false
 	}
-	// Rules must see only the resource part: a tenant named like a resource
-	// word (e.g. "traces") must never change the required scope.
-	path = tenantResourcePart(path)
-	for _, rule := range scopeRules {
-		if !hasSegment(path, rule.segment) {
-			continue
-		}
-		if len(rule.suffixes) > 0 && !hasAnySuffix(path, rule.suffixes) {
-			continue
-		}
-		// Check if segment appears after a forbidden segment
-		if len(rule.notAfter) > 0 && segmentAfterAny(path, rule.segment, rule.notAfter) {
-			continue
-		}
-		return rule.scope, true
-	}
+	// Gateway prefixes (/a2a/, /mcp, /acp/) carry the method-default scope;
+	// each gateway re-checks with protocol-level detail behind its own
+	// surface.
 	if method == http.MethodGet || method == http.MethodHead {
 		return ScopeTaskRead, true
 	}
 	return ScopeTaskWrite, true
-}
-
-// tenantResourcePart strips "/v1/tenants/<id>" so callers match only the
-// resource part of the path; "/v1/tenants/<id>" with nothing after the
-// tenant id yields "". Paths outside the tenant subtree are unchanged.
-func tenantResourcePart(path string) string {
-	const prefix = "/v1/tenants/"
-	if !strings.HasPrefix(path, prefix) {
-		return path
-	}
-	rest := path[len(prefix):]
-	if i := strings.Index(rest, "/"); i >= 0 {
-		return rest[i+1:]
-	}
-	return ""
-}
-
-func hasSegment(path, seg string) bool {
-	for _, part := range strings.Split(path, "/") {
-		if part == seg {
-			return true
-		}
-	}
-	return false
-}
-
-// segmentAfterAny checks if segment appears after any of the forbidden segments
-func segmentAfterAny(path, segment string, forbidden []string) bool {
-	parts := strings.Split(path, "/")
-	foundForbidden := false
-	for _, part := range parts {
-		for _, f := range forbidden {
-			if part == f {
-				foundForbidden = true
-				break
-			}
-		}
-		if foundForbidden && part == segment {
-			return true
-		}
-	}
-	return false
-}
-
-func hasAnySuffix(path string, suffixes []string) bool {
-	for _, suf := range suffixes {
-		if strings.HasSuffix(path, suf) {
-			return true
-		}
-	}
-	return false
 }
 
 type APIKeyValidator struct {
@@ -394,4 +442,3 @@ func TenantGuard(extractTenantFromPath func(string) string) func(http.Handler) h
 		})
 	}
 }
-

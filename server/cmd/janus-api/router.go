@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -8,11 +9,16 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	_ "github.com/agentium-lab/Janus/server/internal/metrics"
 )
 
-// HTTP routing table and method-guard helpers.
+// HTTP routing. The /v1/tenants/{tenantID} data plane is driven entirely by
+// auth.TenantRoutes: every table entry registers one method+pattern on a
+// net/http ServeMux (Go 1.22+ patterns) bound to its handler and wrapped
+// with a scope guard carrying the entry's scope. Undefined path shapes match
+// no pattern and get ServeMux's 404 — no scope check, no handler.
 
 func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
 	mux := http.NewServeMux()
@@ -41,184 +47,117 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		}
 	})
 
-	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/tenants/" {
-			http.NotFound(w, r)
+	handlers := tenantRouteHandlers(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, sseH, progressH, dlqH, catalogH, apiKeyH, policyH, budgetH)
+	for _, rt := range auth.TenantRoutes {
+		target := rt.Method + " " + rt.Pattern
+		h, ok := handlers[target]
+		if !ok {
+			panic("janus-api: tenant route " + target + " has no handler binding")
+		}
+		mux.Handle(target, requireScope(rt.Scope, h))
+	}
+
+	return withTenantPathNormalization(mux)
+}
+
+// tenantRouteHandlers binds every route-table entry to its HTTP handler.
+func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) map[string]http.HandlerFunc {
+	return map[string]http.HandlerFunc{
+		// tenant
+		"GET /v1/tenants/{tenantID}": tenantH.Get,
+		// agents
+		"POST /v1/tenants/{tenantID}/agents":                     agentH.Register,
+		"GET /v1/tenants/{tenantID}/agents":                      agentH.List,
+		"GET /v1/tenants/{tenantID}/agents/{agentID}":            agentH.Get,
+		"POST /v1/tenants/{tenantID}/agents/{agentID}/heartbeat": agentH.Heartbeat,
+		// mailboxes
+		"POST /v1/tenants/{tenantID}/mailboxes":                    mailboxH.Create,
+		"GET /v1/tenants/{tenantID}/mailboxes/{mailboxID}":         mailboxH.Get,
+		"PATCH /v1/tenants/{tenantID}/mailboxes/{mailboxID}":       mailboxH.Update,
+		"POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pause":  mailboxH.Pause,
+		"POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/resume": mailboxH.Resume,
+		"POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull":   dispatchH.Pull,
+		// dead letter queue
+		"GET /v1/tenants/{tenantID}/dlq":                   dlqH.Query,
+		"POST /v1/tenants/{tenantID}/dlq/{taskID}/replay":  dlqH.Replay,
+		"POST /v1/tenants/{tenantID}/dlq/{taskID}/discard": dlqH.Discard,
+		// tasks
+		"POST /v1/tenants/{tenantID}/tasks":                    taskH.Create,
+		"GET /v1/tenants/{tenantID}/tasks/{taskID}":            taskH.Get,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/start":     dispatchH.Start,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/heartbeat": dispatchH.Heartbeat,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/ack":       dispatchH.Ack,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/nack":      dispatchH.Nack,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/cancel":    taskH.Cancel,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/block":     taskH.Block,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/unblock":   taskH.Unblock,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/replay":    taskH.Replay,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/complete":  taskH.Complete,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/fail":      taskH.Fail,
+		"POST /v1/tenants/{tenantID}/tasks/{taskID}/progress":  progressH.Report,
+		"GET /v1/tenants/{tenantID}/tasks/{taskID}/stream":     sseH.ServeHTTP,
+		"GET /v1/tenants/{tenantID}/tasks/{taskID}/events":     auditH.QueryByTask,
+		"GET /v1/tenants/{tenantID}/tasks/{taskID}/traces":     auditH.QueryByTrace,
+		"GET /v1/tenants/{tenantID}/traces/{traceID}":          auditH.QueryByTrace,
+		"GET /v1/tenants/{tenantID}/events":                    auditH.QueryByTenant,
+		"GET /v1/tenants/{tenantID}/catalog":                   catalogH.List,
+		// audit and outbox recovery
+		"POST /v1/tenants/{tenantID}/audit/replay":      auditH.ReplayAudit,
+		"POST /v1/tenants/{tenantID}/outbox/retry-dead": auditH.RetryOutboxDead,
+		// governance management
+		"POST /v1/tenants/{tenantID}/policy-rules":                 policyH.Create,
+		"GET /v1/tenants/{tenantID}/policy-rules":                  policyH.List,
+		"POST /v1/tenants/{tenantID}/policy-rules/templates":       policyH.CreateFromTemplate,
+		"POST /v1/tenants/{tenantID}/budgets":                      budgetH.Upsert,
+		"GET /v1/tenants/{tenantID}/budgets":                       budgetH.List,
+		"GET /v1/tenants/{tenantID}/budgets/{scopeType}":           budgetH.Get,
+		"GET /v1/tenants/{tenantID}/budgets/{scopeType}/{scopeID}": budgetH.Get,
+		"POST /v1/tenants/{tenantID}/api-keys":                     apiKeyH.Create,
+		"GET /v1/tenants/{tenantID}/api-keys":                      apiKeyH.List,
+		"POST /v1/tenants/{tenantID}/api-keys/{keyID}/revoke":      apiKeyH.Revoke,
+		// approvals
+		"POST /v1/tenants/{tenantID}/approvals":                      approvalH.Request,
+		"GET /v1/tenants/{tenantID}/approvals":                       approvalH.ListPending,
+		"GET /v1/tenants/{tenantID}/approvals/{approvalID}":          approvalH.Get,
+		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/approve": approvalH.Approve,
+		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/reject":  approvalH.Reject,
+		// context refs
+		"POST /v1/tenants/{tenantID}/context-refs":               contextRefH.Attach,
+		"GET /v1/tenants/{tenantID}/context-refs/{refID}":        contextRefH.Get,
+		"DELETE /v1/tenants/{tenantID}/context-refs/{refID}":     contextRefH.Detach,
+		"GET /v1/tenants/{tenantID}/tasks/{taskID}/context-refs": contextRefH.ListByTask,
+	}
+}
+
+// requireScope enforces the route-table scope at dispatch: a request whose
+// authenticated principal lacks the scope is refused with the same body
+// auth.ScopeGuard produces (the middleware applies the same decision from
+// the same table; this guard keeps scope and dispatch fused). No principal
+// in context (auth disabled in dev mode) passes through.
+func requireScope(scope string, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if principal, ok := auth.PrincipalFromContext(r.Context()); ok && !principal.HasScope(scope) {
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(w, fmt.Sprintf(`{"error":"missing required scope %q"}`, scope), http.StatusForbidden)
 			return
 		}
-		// Dispatch must see only the resource part: a tenant named
-		// pull/dlq/traces must not hijack the switch below. The leading
-		// slash is kept so boundary-equal suffix routes (POST /mailboxes,
-		// /budgets, /outbox/retry-dead, /audit/replay) still match.
-		p := "/" + tenantResourcePart(r.URL.Path)
-
-		switch {
-		case hasSegment(p, "dlq") && hasSuffix(p, "/replay"):
-			postOnly(w, r, dlqH.Replay)
-		case hasSegment(p, "dlq") && hasSuffix(p, "/discard"):
-			postOnly(w, r, dlqH.Discard)
-		case hasSegment(p, "dlq") && r.Method == http.MethodGet:
-			dlqH.Query(w, r)
-		case hasSegment(p, "pull"):
-			postOnly(w, r, dispatchH.Pull)
-		case hasSegment(p, "traces"):
-			getOnly(w, r, auditH.QueryByTrace)
-		case hasSuffix(p, "/outbox/retry-dead"):
-			postOnly(w, r, auditH.RetryOutboxDead)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/progress"):
-			postOnly(w, r, progressH.Report)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/stream"):
-			getOnly(w, r, sseH.ServeHTTP)
-		case hasSegment(p, "mailboxes") && hasSuffix(p, "/pause"):
-			postOnly(w, r, mailboxH.Pause)
-		case hasSegment(p, "mailboxes") && hasSuffix(p, "/resume"):
-			postOnly(w, r, mailboxH.Resume)
-		case hasSegment(p, "mailboxes") && hasSuffix(p, "/mailboxes"):
-			postOnly(w, r, mailboxH.Create)
-		case hasSegment(p, "mailboxes") && r.Method == http.MethodPatch:
-			mailboxH.Update(w, r)
-		case hasSegment(p, "mailboxes"):
-			getOnly(w, r, mailboxH.Get)
-		case hasSegment(p, "heartbeat") && hasSegment(p, "agents"):
-			postOnly(w, r, agentH.Heartbeat)
-		case hasSegment(p, "agents") && !hasLastSegment(p, "agents"):
-			getOnly(w, r, agentH.Get)
-		case hasSegment(p, "agents") && hasLastSegment(p, "agents"):
-			if r.Method == http.MethodPost {
-				agentH.Register(w, r)
-			} else {
-				agentH.List(w, r)
-			}
-		case hasSuffix(p, "/catalog"):
-			getOnly(w, r, catalogH.List)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/start"):
-			postOnly(w, r, dispatchH.Start)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/heartbeat"):
-			postOnly(w, r, dispatchH.Heartbeat)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/ack"):
-			postOnly(w, r, dispatchH.Ack)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/nack"):
-			postOnly(w, r, dispatchH.Nack)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/cancel"):
-			postOnly(w, r, taskH.Cancel)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/block"):
-			postOnly(w, r, taskH.Block)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/unblock"):
-			postOnly(w, r, taskH.Unblock)
-		case hasSegment(p, "policy-rules") && hasSuffix(p, "/templates"):
-			postOnly(w, r, policyH.CreateFromTemplate)
-		case hasSegment(p, "policy-rules") && r.Method == http.MethodGet:
-			getOnly(w, r, policyH.List)
-		case hasSegment(p, "policy-rules"):
-			postOnly(w, r, policyH.Create)
-		case hasSegment(p, "budgets") && hasSuffix(p, "/budgets") && r.Method == http.MethodGet:
-			getOnly(w, r, budgetH.List)
-		case hasSegment(p, "budgets") && hasSuffix(p, "/budgets"):
-			postOnly(w, r, budgetH.Upsert)
-		case hasSegment(p, "budgets") && r.Method == http.MethodGet:
-			getOnly(w, r, budgetH.Get)
-		case hasSegment(p, "api-keys") && hasSuffix(p, "/revoke"):
-			postOnly(w, r, apiKeyH.Revoke)
-		case hasSegment(p, "api-keys") && r.Method == http.MethodGet:
-			getOnly(w, r, apiKeyH.List)
-		case hasSegment(p, "api-keys"):
-			postOnly(w, r, apiKeyH.Create)
-		case hasSegment(p, "approvals") && hasSuffix(p, "/approve"):
-			postOnly(w, r, approvalH.Approve)
-		case hasSegment(p, "approvals") && hasSuffix(p, "/reject"):
-			postOnly(w, r, approvalH.Reject)
-		case hasSegment(p, "approvals") && !hasLastSegment(p, "approvals"):
-			getOnly(w, r, approvalH.Get)
-		case hasSegment(p, "approvals") && hasLastSegment(p, "approvals"):
-			if r.Method == http.MethodPost {
-				postOnly(w, r, approvalH.Request)
-			} else {
-				getOnly(w, r, approvalH.ListPending)
-			}
-		case hasSegment(p, "tasks") && hasSuffix(p, "/replay"):
-			postOnly(w, r, taskH.Replay)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/complete"):
-			postOnly(w, r, taskH.Complete)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/fail"):
-			postOnly(w, r, taskH.Fail)
-		case hasSegment(p, "tasks") && hasSuffix(p, "/events"):
-			getOnly(w, r, auditH.QueryByTask)
-		case hasSegment(p, "tasks") && !hasLastSegment(p, "tasks"):
-			getOnly(w, r, taskH.Get)
-		case hasSegment(p, "tasks") && hasLastSegment(p, "tasks"):
-			postOnly(w, r, taskH.Create)
-		case hasSegment(p, "events"):
-			getOnly(w, r, auditH.QueryByTenant)
-		case hasSuffix(p, "/audit/replay"):
-			postOnly(w, r, auditH.ReplayAudit)
-		case hasSegment(p, "context-refs") && hasSuffix(p, "/attach"):
-			postOnly(w, r, contextRefH.Attach)
-		case hasSegment(p, "context-refs") && hasSuffix(p, "/detach"):
-			postOnly(w, r, contextRefH.Detach)
-		case hasSegment(p, "context-refs") && hasSuffix(p, "/list"):
-			getOnly(w, r, contextRefH.ListByTask)
-		case hasSegment(p, "context-refs") && !hasLastSegment(p, "context-refs"):
-			getOnly(w, r, contextRefH.Get)
-		default:
-			if r.Method == http.MethodGet {
-				tenantH.Get(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		}
+		next(w, r)
 	})
-
-	return mux
 }
 
-func postOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
-	if r.Method == http.MethodPost {
-		fn(w, r)
-	} else {
-		http.NotFound(w, r)
-	}
-}
-
-func getOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
-	if r.Method == http.MethodGet {
-		fn(w, r)
-	} else {
-		http.NotFound(w, r)
-	}
-}
-
-func hasSegment(path, seg string) bool {
-	for _, s := range strings.Split(path, "/") {
-		if s == seg {
-			return true
+// withTenantPathNormalization trims trailing slashes from tenant-subtree
+// paths before pattern matching, preserving the legacy tolerance for forms
+// real callers send (POST /v1/tenants/t/tasks/, GET /v1/tenants/t/). The
+// bare "/v1/tenants/" root is left alone and stays 404.
+func withTenantPathNormalization(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.URL.Path; strings.HasPrefix(p, "/v1/tenants/") && p != "/v1/tenants/" {
+			if trimmed := strings.TrimRight(p, "/"); trimmed != "" && trimmed != "/v1/tenants" {
+				r.URL.Path = trimmed
+			}
 		}
-	}
-	return false
-}
-
-func hasLastSegment(path, seg string) bool {
-	parts := strings.Split(strings.TrimRight(path, "/"), "/")
-	return len(parts) > 0 && parts[len(parts)-1] == seg
-}
-
-func hasSuffix(path, suffix string) bool {
-	return strings.HasSuffix(strings.TrimRight(path, "/"), suffix)
-}
-
-// tenantResourcePart strips "/v1/tenants/<id>" so routing matches only
-// the resource part of the path; "/v1/tenants/<id>" yields "" (the mux
-// re-adds the leading slash; the switch default still serves the
-// tenant-get contract on GET).
-func tenantResourcePart(path string) string {
-	const prefix = "/v1/tenants/"
-	if !strings.HasPrefix(path, prefix) {
-		return path
-	}
-	rest := path[len(prefix):]
-	if i := strings.Index(rest, "/"); i >= 0 {
-		return rest[i+1:]
-	}
-	return ""
+		next.ServeHTTP(w, r)
+	})
 }
 
 func extractTenantFromPath(path string) string {

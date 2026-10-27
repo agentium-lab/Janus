@@ -299,13 +299,16 @@ func TestRequiredScope_TenantManagementAndExemptPaths(t *testing.T) {
 	_, ok = RequiredScope(http.MethodGet, "/metrics")
 	assert.False(t, ok)
 
-	scope, ok = RequiredScope(http.MethodHead, "/v1/tenants/acme/tasks")
-	assert.True(t, ok)
-	assert.Equal(t, ScopeTaskRead, scope)
+	// HEAD /tasks is not a route in the tenant route table (there is no task
+	// list), so the method-default read scope no longer applies to it; the
+	// router 404s the shape.
+	_, ok = RequiredScope(http.MethodHead, "/v1/tenants/acme/tasks")
+	assert.False(t, ok)
 
-	scope, ok = RequiredScope(http.MethodPost, "/v1/tenants/acme/approvals/a1")
-	assert.True(t, ok)
-	assert.Equal(t, ScopeTaskWrite, scope, "no /approve|/reject suffix → plain write")
+	// POST /approvals/{id} is likewise undefined (only GET /approvals/{id}
+	// and POST /approvals/{id}/approve|/reject exist); the router 404s it.
+	_, ok = RequiredScope(http.MethodPost, "/v1/tenants/acme/approvals/a1")
+	assert.False(t, ok)
 
 	scope, ok = RequiredScope(http.MethodPost, "/v1/tenants/acme/dlq/e1/discard")
 	assert.True(t, ok)
