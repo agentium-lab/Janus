@@ -515,7 +515,7 @@ jobs:
           PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
           kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc \
             "INSERT INTO api_keys (tenant_id, key_hash, name, prefix) VALUES ('t0', '$KEY_HASH', 'nightly-tls-probe', '${PROBE_KEY:0:8}') ON CONFLICT DO NOTHING"
-          helm upgrade "$RELEASE" deployments/helm/janus-core \
+          helm upgrade "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
             --namespace "$NS" \
             --set image.repository=janus-core \
             --set image.tag=e2e \
@@ -564,7 +564,7 @@ jobs:
             -addext "keyUsage=critical,keyCertSign,cRLSign"
           kubectl -n "$NS" create secret generic janus-tls-wrong-ca \
             --from-file=ca.crt=wrong-ca.crt
-          helm upgrade "$RELEASE" deployments/helm/janus-core \
+          helm upgrade "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
             --namespace "$NS" \
             --set image.repository=janus-core \
             --set image.tag=e2e \
