@@ -21,13 +21,13 @@ spec:
         summary: "Janus high dead-letter rate"
         description: "Dead-letter rate is high ({{`{{ $value | humanize }}`}}/s); inspect failing agents for tenant {{`{{ $labels.tenant_id }}`}}."
     - alert: JanusNoOnlineAgents
-      expr: janus_agent_online < 1
+      expr: (sum by (tenant_id) (janus_agent_online) < 1) or absent(janus_agent_online)
       for: 5m
       labels:
         severity: critical
       annotations:
         summary: "Janus has no online agents"
-        description: "Zero agents online for tenant {{`{{ $labels.tenant_id }}`}} for 5m — tasks cannot be dispatched."
+        description: "Zero agents online for tenant {{`{{ $labels.tenant_id }}`}} for 5m — tasks cannot be dispatched. Also fires when no janus_agent_online series exists at all (cold start or scrape gap)."
     - alert: JanusQueueBacklogGrowing
       expr: janus_outbox_pending > 1000
       for: 10m

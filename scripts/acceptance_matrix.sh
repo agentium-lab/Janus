@@ -1,5 +1,5 @@
 #!/bin/bash
-# T01–T13 acceptance matrix — one-shot verification of every finding fixed
+# T01–T15 acceptance matrix — one-shot verification of every finding fixed
 # in the 2026-10-12 comprehensive baseline audit (baseline commit 82f4cea).
 #
 # Matrix (T# = audit finding, verified by its dedicated regression test):
@@ -16,6 +16,8 @@
 #   T11 C4 gate negatives             — unreachable API is FATAL, not SKIP
 #   T12 A3 policy routing real data   — trusted-record attributes + template API
 #   T13 A4 NATS naming collision      — a.b ≠ a_b after sanitize
+#   T14 W6 agent presence probe        — probe build + healthy/alert legs (PG)
+#   T15 W3 recovery keyset pages       — scanner recovers all pages (PG, REQ)
 #   A1  legacy settle admin gate       — /complete + /fail need admin scope
 #                                          (403 with a task:write-only key)
 #   A2  replay approval gate           — lookup fail-closed + expired denied
@@ -83,22 +85,26 @@ go_check() { # id name pkg run_pattern [required:1]
   local passed skipped
   passed=$(printf '%s\n' "$out" | grep -cE '^--- PASS')
   skipped=$(printf '%s\n' "$out" | grep -cE '^--- SKIP')
-  if [ "$passed" -eq 0 ] && [ "$skipped" -gt 0 ]; then
+  if [ "$skipped" -gt 0 ] && [ "$req" = "1" ]; then
     echo "---- $id output ----"; echo "$out" | tail -15
-    if [ "$req" = "1" ]; then
-      # Required scenario, environment-deprived (e.g. PG unset): record the
-      # SKIP so the exit gate fails the run unless explicitly overridden.
-      record "$id" "$name" SKIP "required; all ${skipped} SKIP" 1
-    else
-      record "$id" "$name" FAIL "all ${skipped} SKIP"
-    fi
+    # Per-case required semantics: a required group is green only when
+    # EVERY matched test passed. Any --- SKIP — even beside ordinary
+    # PASSes — records SKIP so the exit gate fails the run (REQ_SKIP);
+    # a critical skip must never be masked by its passing neighbors.
+    record "$id" "$name" SKIP "required; ${skipped} of $((passed+skipped)) SKIP" 1
+    return
+  fi
+  if [ "$passed" -eq 0 ] && [ "$skipped" -gt 0 ]; then
+    # Non-required group, environment-deprived: every matched test skipped.
+    echo "---- $id output ----"; echo "$out" | tail -15
+    record "$id" "$name" FAIL "all ${skipped} SKIP"
     return
   fi
   record "$id" "$name" PASS
 }
 
 echo "=============================================="
-echo " Janus T01–T13 + A1–A2 Acceptance Matrix (audit 2026-10-12, baseline 82f4cea)"
+echo " Janus T01–T15 + A1–A2 Acceptance Matrix (audit 2026-10-12, baseline 82f4cea)"
 echo "=============================================="
 
 # --- T01 B1: terminal-state revival ---------------------------------------
@@ -249,6 +255,14 @@ if go build -o /tmp/janus-agent-presence-probe ./server/cmd/janus-agent-presence
 else
   record T14 "W6 agent presence probe builds" FAIL
 fi
+
+# --- T15 W3: recovery scanner keyset pagination (PG, REQUIRED) -------------
+# The scanner must walk every queued page in (created_at, id) order and
+# publish each task exactly once. PG-backed and REQUIRED: with PG reachable
+# it must RUN and PASS; an all-SKIP run (PG unreachable) is REQ_SKIP and
+# fails the run — the recovery scanner regression is a must-run, not optional.
+go_check T15 "W3 recovery scanner keyset pagination (PG, required)" \
+  ./server/internal/recovery 'TestTaskScanner_ScanKeysetPagination_AllPagesRecovered_PG' 1
 
 # --- A1: legacy settle endpoints need admin scope (REQUIRED) ---------------
 # /complete and /fail settle a task's outcome; a task:write-only key must

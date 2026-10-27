@@ -21,6 +21,7 @@ GO_INTERNAL_PKGS := \
 	./server/internal/config/... \
 	./server/internal/bootstrap/... \
 	./server/internal/lease/... \
+	./server/internal/recovery/... \
 	./server/tests/simulation/... \
 	./sdk/go/... \
 	./cli/...
