@@ -136,10 +136,15 @@ type TLSConfig struct {
 // authenticates itself under mTLS.
 type GatewayTLSConfig struct {
 	// CACertFile is the CA bundle used to verify the gRPC server's
-	// certificate. When empty the gateway cannot verify the server at all
-	// and falls back to InsecureSkipVerify (warned at startup) — a
-	// dev-only posture.
+	// certificate. When empty the gateway cannot verify the server at all:
+	// startup REFUSES unless Insecure is explicitly set — TLS without
+	// verification is encryption-only and must be a deliberate choice.
 	CACertFile string `mapstructure:"ca_cert_file"`
+	// Insecure explicitly opts into skipping server certificate
+	// verification when no CA is configured (dev-only; warned at startup).
+	// Refuses to start when combined with CACertFile — requesting
+	// verification and skipping it at once is a conflicting config.
+	Insecure bool `mapstructure:"insecure"`
 	// ServerName overrides the DNS name verified against the server
 	// certificate. Defaults to the dial address host ("localhost"); set it
 	// when the server certificate carries no localhost SAN.
@@ -233,6 +238,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", true)
 	v.SetDefault("tls.enabled", false)
+	v.SetDefault("tls.gateway.insecure", false)
 	v.SetDefault("metrics.enabled", true)
 	v.SetDefault("metrics.path", "/metrics")
 	v.SetDefault("tracing.enabled", false)
@@ -282,6 +288,7 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_TLS_KEY_FILE":                   "tls.key_file",
 		"JANUS_TLS_CLIENT_CA_FILE":             "tls.client_ca_file",
 		"JANUS_TLS_GATEWAY_CA_CERT_FILE":       "tls.gateway.ca_cert_file",
+		"JANUS_TLS_GATEWAY_INSECURE":           "tls.gateway.insecure",
 		"JANUS_TLS_GATEWAY_SERVER_NAME":        "tls.gateway.server_name",
 		"JANUS_TLS_GATEWAY_CLIENT_CERT_FILE":   "tls.gateway.client_cert_file",
 		"JANUS_TLS_GATEWAY_CLIENT_KEY_FILE":    "tls.gateway.client_key_file",

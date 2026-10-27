@@ -30,6 +30,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "localhost:6379", cfg.Redis.Addr)
 	assert.True(t, cfg.Auth.Enabled)
 	assert.True(t, cfg.Migration.Auto)
+	assert.False(t, cfg.TLS.Gateway.Insecure, "gateway skip-verify must default to opt-in false")
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
@@ -45,6 +46,12 @@ func TestLoad_EnvOverride(t *testing.T) {
 	assert.Equal(t, 6543, cfg.Postgres.Port)
 	assert.Equal(t, "nats://nats:4222", cfg.NATS.URL)
 	assert.True(t, cfg.Auth.Enabled)
+}
+
+func TestLoad_GatewayTLSInsecure_EnvOverride(t *testing.T) {
+	t.Setenv("JANUS_TLS_GATEWAY_INSECURE", "true")
+	cfg := Load()
+	assert.True(t, cfg.TLS.Gateway.Insecure)
 }
 
 func TestPostgresConfig_DSN(t *testing.T) {

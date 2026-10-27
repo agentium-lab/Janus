@@ -124,6 +124,10 @@ spec:
             - name: JANUS_TLS_GATEWAY_SERVER_NAME
               value: {{ .Values.config.tls.gateway.serverName | quote }}
             {{- end }}
+            {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.insecure }}
+            - name: JANUS_TLS_GATEWAY_INSECURE
+              value: "true"
+            {{- end }}
             {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.clientCertSecret }}
             - name: JANUS_TLS_GATEWAY_CLIENT_CERT_FILE
               value: "/etc/janus/gateway-client/tls.crt"

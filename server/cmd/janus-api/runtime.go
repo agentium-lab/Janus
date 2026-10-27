@@ -116,12 +116,18 @@ func buildTLSConfig(tlsCfg config.TLSConfig) (*tls.Config, error) {
 // grpc-gateway uses to dial the local gRPC server (RegisterGateway). Unlike
 // buildTLSConfig (server side), this verifies the server's certificate
 // against Gateway.CACertFile and presents a client keypair for mTLS when
-// configured. With no CA file the gateway cannot verify the server at all:
-// it keeps InsecureSkipVerify (encryption-only) and logs one explicit
-// warning — a dev-only posture, never silent.
+// configured. With no CA file the gateway cannot verify the server, so
+// startup REFUSES unless Gateway.Insecure explicitly opts into the
+// encrypted-but-unauthenticated dev-only posture (warned at startup) —
+// never silently.
 func buildGatewayClientTLS(tlsCfg config.TLSConfig) (*tls.Config, error) {
 	cfg := &tls.Config{MinVersion: tls.VersionTLS12}
 	gw := tlsCfg.Gateway
+	if gw.CACertFile != "" && gw.Insecure {
+		return nil, fmt.Errorf("tls: gateway: insecure=true conflicts with ca_cert_file " +
+			"(JANUS_TLS_GATEWAY_INSECURE vs JANUS_TLS_GATEWAY_CA_CERT_FILE): " +
+			"verification is requested and skipped at once — configure exactly one")
+	}
 	if gw.CACertFile != "" {
 		caPEM, err := os.ReadFile(gw.CACertFile)
 		if err != nil {
@@ -132,13 +138,20 @@ func buildGatewayClientTLS(tlsCfg config.TLSConfig) (*tls.Config, error) {
 			return nil, fmt.Errorf("failed to parse gateway CA certificate")
 		}
 		cfg.RootCAs = pool
+	} else if gw.Insecure {
+		// Explicit opt-in: no CA configured, so verification is impossible,
+		// and the operator chose the encrypted-but-unauthenticated posture.
+		// Warned loudly, never silent.
+		cfg.InsecureSkipVerify = true // explicit opt-in, warned below
+		log.Println("WARNING: grpc-gateway insecure=true with no gateway CA (JANUS_TLS_GATEWAY_INSECURE); " +
+			"the gRPC server's identity is NOT verified — TLS is encryption-only. " +
+			"This is a dev-only posture; configure JANUS_TLS_GATEWAY_CA_CERT_FILE for production.")
 	} else {
-		// No CA configured: certificate verification is impossible. Keep the
-		// connection encrypted but unauthenticated and say so loudly.
-		cfg.InsecureSkipVerify = true // dev-only fallback, warned below
-		log.Println("WARNING: grpc-gateway has no gateway CA configured (JANUS_TLS_GATEWAY_CA_CERT_FILE); "+
-			"the gRPC server's identity is NOT verified — TLS is encryption-only. "+
-			"This is a dev-only posture; configure the gateway CA for production.")
+		// Fail closed: no CA configured and no explicit skip. Starting here
+		// would hand out an unauthenticated gateway connection nobody chose.
+		return nil, fmt.Errorf("tls: gateway has no CA configured to verify the gRPC server " +
+			"(JANUS_TLS_GATEWAY_CA_CERT_FILE); refusing to start. Configure the gateway CA, or set " +
+			"JANUS_TLS_GATEWAY_INSECURE=true to explicitly accept an unverified dev-only connection")
 	}
 	if gw.ServerName != "" {
 		cfg.ServerName = gw.ServerName

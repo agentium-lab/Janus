@@ -113,6 +113,11 @@ config:
     # localhost SAN (e.g. a service-DNS certificate).
     gateway:
       serverName: ""
+      # Explicit opt-in to skip gateway server-certificate verification
+      # when gatewayCaSecret is empty (dev-only; warned at startup).
+      # Default false: under tls.enabled with no CA the server REFUSES to
+      # start — fail-closed. Conflicts with gatewayCaSecret (startup error).
+      insecure: false
       # Name of a Secret containing tls.crt + tls.key that the gateway
       # presents as a CLIENT certificate. Required when clientCaSecret is
       # set, or the server rejects the gateway's own connection.
