@@ -241,7 +241,7 @@ func TestCreate_ClassificationGovernance(t *testing.T) {
 		repo2 := &mockTaskRepo{}
 		svc := NewTaskService(repo2, &mockQueueDriver{}, nil, nil).
 			WithContextRefService(NewContextRefService(repo)).
-			WithRouter(routing.NewRouter(admissionLookup(&routing.AgentCandidate{AgentID: "agent-1", MailboxID: "mb-1"}), &admitPolicy{}, nil))
+			WithRouter(routing.NewRouter(admissionLookup(&routing.AgentCandidate{AgentID: "agent-1", MailboxID: "mb-1", DataClass: "confidential"}), &admitPolicy{}, nil))
 		task := mailboxTask("t-agree")
 		task.Envelope.Policy = &core.PolicyContext{DataClassification: "confidential"}
 		task.Envelope.ContextRefs = []core.ContextRef{{TenantID: "acme", ID: "cr-1"}}

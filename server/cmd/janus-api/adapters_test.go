@@ -165,9 +165,9 @@ func TestPolicyCheckerAdapter_TaskRouteDenyFiltersCandidateThroughRouter(t *test
 	})
 	router := routing.NewRouter(
 		&routeTestLookup{candidates: []routing.AgentCandidate{
-			{AgentID: "agent-1", MailboxID: "agent-1.default", Status: "online",
+			{AgentID: "agent-1", MailboxID: "agent-1.default", Status: "online", DataClass: "confidential",
 				Capabilities: []core.AgentCapability{{Capability: "code_review"}}},
-			{AgentID: "agent-2", MailboxID: "agent-2.default", Status: "online",
+			{AgentID: "agent-2", MailboxID: "agent-2.default", Status: "online", DataClass: "confidential",
 				Capabilities: []core.AgentCapability{{Capability: "code_review"}}},
 		}},
 		policyCheckerAdapter{svc: service.NewPolicyService(repo)},
@@ -196,7 +196,7 @@ func TestPolicyCheckerAdapter_TaskRouteAllowKeepsCandidateThroughRouter(t *testi
 	})
 	router := routing.NewRouter(
 		&routeTestLookup{candidates: []routing.AgentCandidate{
-			{AgentID: "agent-1", MailboxID: "agent-1.default", Status: "online",
+			{AgentID: "agent-1", MailboxID: "agent-1.default", Status: "online", DataClass: "confidential",
 				Capabilities: []core.AgentCapability{{Capability: "code_review"}}},
 		}},
 		policyCheckerAdapter{svc: service.NewPolicyService(repo)},

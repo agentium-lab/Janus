@@ -123,6 +123,9 @@ func (r *Router) routeAgent(ctx context.Context, tenantID, agentID string, envel
 	if envelope.Policy != nil && envelope.Policy.TargetTeamID != "" && envelope.Policy.TargetTeamID != agent.TeamID {
 		return nil, fmt.Errorf("agent %s team %q does not match requested target team %q", agentID, agent.TeamID, envelope.Policy.TargetTeamID)
 	}
+	if reason, violated := r.hardConstraintViolation(envelope, *agent); violated {
+		return nil, fmt.Errorf("agent %s rejected by hard constraint: %s", agentID, reason)
+	}
 	if r.policy != nil {
 		// Policy fact is ALWAYS the agent's actual team, never the caller's claim.
 		allowed, perr := r.policy.CheckRoute(ctx, tenantID, agentID, dataClass, agent.TeamID)
@@ -176,10 +179,12 @@ func (r *Router) routeMailbox(ctx context.Context, tenantID, mailboxID string, e
 }
 
 // admitMailbox resolves a mailbox's owning agent and runs the unified
-// admission gate: TargetTeamID selection constraint plus policy CheckRoute
-// with the OWNER's team as the policy fact, fail-closed on checker errors.
-// A mailbox with no resolvable owner cannot be governed and is rejected.
-// The returned reason is the FilteredCandidate reason on failure.
+// admission gate: TargetTeamID selection constraint, built-in hard
+// constraints (data classification, model classes) on the owner, plus
+// policy CheckRoute with the OWNER's team as the policy fact, fail-closed
+// on checker errors. A mailbox with no resolvable owner cannot be
+// governed and is rejected. The returned reason is the FilteredCandidate
+// reason on failure.
 func (r *Router) admitMailbox(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) (*AgentCandidate, string, error) {
 	owner, err := r.lookup.GetMailboxOwner(ctx, tenantID, mailboxID)
 	if err != nil {
@@ -197,6 +202,9 @@ func (r *Router) admitMailbox(ctx context.Context, tenantID, mailboxID string, e
 	// TargetTeamID is a SELECTION constraint, never a policy fact override.
 	if targetTeam != "" && targetTeam != owner.TeamID {
 		return nil, "target_team_mismatch", fmt.Errorf("mailbox %s owner agent %s team %q does not match requested target team %q", mailboxID, owner.AgentID, owner.TeamID, targetTeam)
+	}
+	if reason, violated := r.hardConstraintViolation(envelope, *owner); violated {
+		return nil, reason, fmt.Errorf("mailbox %s owner agent %s rejected by hard constraint: %s", mailboxID, owner.AgentID, reason)
 	}
 	if r.policy != nil {
 		allowed, perr := r.policy.CheckRoute(ctx, tenantID, owner.AgentID, dataClass, owner.TeamID)
@@ -219,6 +227,37 @@ func (r *Router) CheckMailboxAdmission(ctx context.Context, tenantID, mailboxID 
 	}
 	_, _, err := r.admitMailbox(ctx, tenantID, mailboxID, envelope)
 	return err
+}
+
+// hardConstraintViolation is the ONE shared built-in hard-constraint check
+// (data classification, model classes) applied at every routing admission.
+// It applies regardless of r.policy: hard constraints are baseline
+// governance, not policy. Returns the FilteredCandidate-style reason when
+// the task's constraint rejects the candidate, including the
+// missing-attribute case (classified task / model-class-required task vs
+// candidate with the attribute unset).
+func (r *Router) hardConstraintViolation(envelope core.TaskEnvelope, c AgentCandidate) (string, bool) {
+	dataClass := ""
+	if envelope.Policy != nil {
+		dataClass = envelope.Policy.DataClassification
+	}
+	if dataClass != "" {
+		if c.DataClass == "" {
+			return "data_classification_required", true
+		}
+		if c.DataClass != dataClass {
+			return "data_classification_mismatch", true
+		}
+	}
+	if envelope.Budget != nil && len(envelope.Budget.ModelClasses) > 0 {
+		if len(c.ModelClasses) == 0 {
+			return "model_class_required", true
+		}
+		if !hasIntersection(envelope.Budget.ModelClasses, c.ModelClasses) {
+			return "model_class_mismatch", true
+		}
+	}
+	return "", false
 }
 
 func (r *Router) routeCapability(ctx context.Context, tenantID, capability string, envelope core.TaskEnvelope) (*RouterResult, error) {
@@ -245,8 +284,8 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 			filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "offline"})
 			continue
 		}
-		if dataClass != "" && c.DataClass != "" && c.DataClass != dataClass {
-			filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "data_classification_mismatch"})
+		if reason, violated := r.hardConstraintViolation(envelope, c); violated {
+			filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: reason})
 			continue
 		}
 		// TargetTeamID is a SELECTION constraint: filter candidates whose
@@ -278,17 +317,6 @@ func (r *Router) routeCapability(ctx context.Context, tenantID, capability strin
 			ok, err := r.budget.CheckCapacity(ctx, tenantID, c.AgentID, c.RunningCount, c.MaxConcurrency)
 			if err == nil && !ok {
 				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "budget_exceeded"})
-				continue
-			}
-		}
-		if envelope.Budget != nil && len(envelope.Budget.ModelClasses) > 0 {
-			if len(c.ModelClasses) == 0 {
-				// Task requires model classes but candidate has none - hard constraint violation
-				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "model_class_required"})
-				continue
-			}
-			if !hasIntersection(envelope.Budget.ModelClasses, c.ModelClasses) {
-				filtered = append(filtered, FilteredCandidate{AgentID: c.AgentID, Reason: "model_class_mismatch"})
 				continue
 			}
 		}
