@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
-	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/stretchr/testify/assert"
@@ -46,28 +45,22 @@ func setupTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Skipf("pg not available: %v", err)
 	}
 
-	tableName := fmt.Sprintf("api_keys_test_%d", time.Now().UnixNano())
-	ctx := context.Background()
-	_, err = db.ExecContext(ctx, fmt.Sprintf(
-		"CREATE TABLE %s (LIKE api_keys INCLUDING ALL)", tableName,
-	))
-	if err != nil {
-		_, _ = db.ExecContext(ctx, fmt.Sprintf(`CREATE TABLE %s (
-			tenant_id  text NOT NULL,
-			key_hash   text NOT NULL,
-			name       text NOT NULL,
-			prefix     text NOT NULL,
-			created_at timestamptz NOT NULL DEFAULT now(),
-			PRIMARY KEY (tenant_id, key_hash)
-		)`, tableName))
+	// The validator queries the canonical api_keys table, so a reachable
+	// database without the schema applied cannot exercise these tests.
+	var hasAPIKeys bool
+	if err := db.QueryRowContext(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'api_keys')`,
+	).Scan(&hasAPIKeys); err != nil {
+		t.Skipf("pg schema probe failed: %v", err)
+	}
+	if !hasAPIKeys {
+		t.Skipf("pg reachable but api_keys is absent (schema not applied): %s", dsn)
 	}
 
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 		db.Close()
 	}
-
-	_, _ = db.ExecContext(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", tableName))
 
 	return db, cleanup
 }
