@@ -78,6 +78,9 @@ jobs:
             docker exec pg pg_isready -h 127.0.0.1 -U janus >/dev/null 2>&1 && break
             sleep 2
           done
+          # Loop exhausted: fail here with the probe visible instead of
+          # limping on into the migrate step against a half-started PG.
+          docker exec pg pg_isready -h 127.0.0.1 -U janus
           until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
           until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
 
@@ -376,14 +379,22 @@ jobs:
           EOF
           kubectl -n "$NS" wait --for=condition=available deployment/postgres deployment/nats deployment/redis --timeout=300s
           # Deployment Available only proves the container runs; wait until
-          # postgres actually accepts connections (the pre-install migration
-          # hook needs it) by polling pg_isready with a bounded budget.
+          # postgres actually accepts TCP connections (what the pre-install
+          # migration hook uses) with a bounded budget. If the budget runs
+          # out, dump the pod state before failing so the log names the cause
+          # instead of a bare "rejecting connections".
           PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
-          for i in $(seq 1 60); do
-            kubectl -n "$NS" exec "$PG_POD" -- pg_isready -U janus -d janus >/dev/null 2>&1 && break
+          for i in $(seq 1 150); do
+            kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus >/dev/null 2>&1 && break
             sleep 2
           done
-          kubectl -n "$NS" exec "$PG_POD" -- pg_isready -U janus -d janus
+          if ! kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus >/dev/null 2>&1; then
+            kubectl -n "$NS" describe pod "$PG_POD" || true
+            kubectl -n "$NS" logs "$PG_POD" --tail=50 || true
+            echo "::error::postgres still not accepting connections after 300s"
+            exit 1
+          fi
+          kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus
 
       - name: Helm install (special-char postgres password)
         run: |
