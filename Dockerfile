@@ -17,13 +17,15 @@ COPY sdk/ sdk/
 COPY migrations/ migrations/
 
 WORKDIR /src/server
-RUN go build -ldflags="-s -w" -o /janus-api ./cmd/janus-api/
+RUN go build -ldflags="-s -w" -o /janus-api ./cmd/janus-api/ \
+    && go build -ldflags="-s -w" -o /janus-healthcheck ./cmd/janus-healthcheck/
 
 FROM alpine:3.21
 
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /janus-api /usr/local/bin/janus-api
+COPY --from=builder /janus-healthcheck /usr/local/bin/janus-healthcheck
 COPY --from=builder /src/migrations /migrations
 
 EXPOSE 8080 9090

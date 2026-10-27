@@ -124,10 +124,21 @@ config:
       clientCertSecret: ""
     # Name of a Secret containing ca.crt: CA the SERVER trusts to verify
     # client certificates (mTLS). When set, BOTH the HTTP and gRPC servers
-    # require client certificates — kubelet HTTP probes cannot present one,
-    # so such deployments must front Janus with a TLS-terminating proxy and
-    # disable the in-chart probes (probes.*.enabled=false).
+    # require client certificates — kubelet httpGet probes cannot present
+    # one, so also set probeClientCertSecret to switch the in-chart probes
+    # to exec probes that present a client pair. (Fronting Janus with a
+    # TLS-terminating proxy and probes.*.enabled=false stays a valid
+    # alternative.)
     clientCaSecret: ""
+    # Name of a Secret containing tls.crt + tls.key: the client pair the
+    # exec health probes present when clientCaSecret is set. Setting BOTH
+    # switches liveness/readiness probes from httpGet to
+    # /usr/local/bin/janus-healthcheck exec probes against
+    # https://127.0.0.1:<config.httpPort>; the server certificate is
+    # verified when the tls existingSecret carries ca.crt, otherwise the
+    # probe explicitly skips verification (loopback target). Requires an
+    # image shipping janus-healthcheck next to janus-api.
+    probeClientCertSecret: ""
   heartbeat:
     sweeperInterval: 30s
     ttl: 60s
@@ -196,3 +207,28 @@ prometheus:
 prometheusRule:
   enabled: false
   additionalLabels: {}
+
+# ServiceMonitor for prometheus-operator scraping. Metrics ride the public
+# no-auth mux (see prometheus: above), so under TLS the scrape needs scheme
+# https + tlsConfig — and under clientCaSecret it additionally needs a
+# client pair via tlsConfig.cert. Disabled by default: applying it requires
+# the monitoring.coreos.com/v1 CRD on the cluster.
+monitoring:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    additionalLabels: {}
+    # Empty falls back to prometheus.path above.
+    path: ""
+    # http for plaintext deployments; https when config.tls.enabled.
+    scheme: http
+    # Rendered verbatim into endpoints[].tlsConfig when non-empty, e.g.:
+    #   caFile: /etc/prometheus/secrets/janus-ca/ca.crt
+    #   serverName: janus-core
+    #   insecureSkipVerify: false
+    #   cert:
+    #     secret:
+    #       name: janus-metrics-client
+    #       key: tls.crt
+    tlsConfig: {}

@@ -5,6 +5,8 @@
 {{- if and .Values.artifacts.enabled (eq .Values.artifacts.accessMode "ReadWriteOnce") $rwoReplicas }}
 {{- fail "artifacts: ReadWriteOnce storage cannot serve more than one replica — replicaCount, autoscaling.minReplicas and autoscaling.maxReplicas must all be 1 (HPA scales past PVC multi-attach limits). Switch accessMode to ReadWriteMany (shared FS), use object storage for result refs, or disable autoscaling." }}
 {{- end }}
+{{- /* mTLS probes: under clientCaSecret the server requires client certificates, which kubelet httpGet cannot present; with a probe client pair the probes switch to exec janus-healthcheck. */}}
+{{- $mtlsProbes := and .Values.config.tls.enabled .Values.config.tls.clientCaSecret .Values.config.tls.probeClientCertSecret }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -145,12 +147,27 @@ spec:
           {{- end }}
           livenessProbe:
             {{- if .Values.probes.liveness.enabled }}
+            {{- if $mtlsProbes }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  CA_ARGS="-insecure-skip-verify";
+                  [ -f /etc/janus/tls/ca.crt ] && CA_ARGS="-ca-file /etc/janus/tls/ca.crt";
+                  exec /usr/local/bin/janus-healthcheck
+                  -url https://127.0.0.1:{{ .Values.config.httpPort }}{{ .Values.probes.liveness.path }}
+                  -client-cert /etc/janus/probe-cert/tls.crt
+                  -client-key /etc/janus/probe-cert/tls.key
+                  $CA_ARGS
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
               {{- if .Values.config.tls.enabled }}
               scheme: HTTPS
               {{- end }}
+            {{- end }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
@@ -158,12 +175,27 @@ spec:
             {{- end }}
           readinessProbe:
             {{- if .Values.probes.readiness.enabled }}
+            {{- if $mtlsProbes }}
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  CA_ARGS="-insecure-skip-verify";
+                  [ -f /etc/janus/tls/ca.crt ] && CA_ARGS="-ca-file /etc/janus/tls/ca.crt";
+                  exec /usr/local/bin/janus-healthcheck
+                  -url https://127.0.0.1:{{ .Values.config.httpPort }}{{ .Values.probes.readiness.path }}
+                  -client-cert /etc/janus/probe-cert/tls.crt
+                  -client-key /etc/janus/probe-cert/tls.key
+                  $CA_ARGS
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.readiness.path }}
               port: http
               {{- if .Values.config.tls.enabled }}
               scheme: HTTPS
               {{- end }}
+            {{- end }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
             timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
@@ -192,6 +224,11 @@ spec:
             {{- if and .Values.config.tls.enabled .Values.config.tls.gateway.clientCertSecret }}
             - name: gateway-client
               mountPath: /etc/janus/gateway-client
+              readOnly: true
+            {{- end }}
+            {{- if $mtlsProbes }}
+            - name: probe-cert
+              mountPath: /etc/janus/probe-cert
               readOnly: true
             {{- end }}
             {{- if .Values.artifacts.enabled }}
@@ -224,6 +261,11 @@ spec:
         - name: gateway-client
           secret:
             secretName: {{ .Values.config.tls.gateway.clientCertSecret }}
+        {{- end }}
+        {{- if $mtlsProbes }}
+        - name: probe-cert
+          secret:
+            secretName: {{ .Values.config.tls.probeClientCertSecret }}
         {{- end }}
         {{- if .Values.artifacts.enabled }}
         - name: artifacts
