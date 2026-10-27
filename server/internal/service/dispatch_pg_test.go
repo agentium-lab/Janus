@@ -1234,32 +1234,39 @@ func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
 	ctx := context.Background()
 	createTestTask(t, env, "race-task")
 
-	drv := &cancelWinningDriver{}
+	drv := &mockDispatchQueueDriver{}
 	drv.deliveries = []core.TaskDelivery{{
 		TaskID: "race-task", DeliveryRef: core.DeliveryRef("race-ref"),
 		Payload: []byte(`{"task_id":"race-task"}`),
 	}}
-	drv.onFetch = func() {
-		// Cancel commits while the pull is between its status read and the
-		// claim transaction: task goes queued -> cancelled with no attempt.
-		_, cerr := env.pool.Exec(ctx,
-			`UPDATE tasks SET status='cancelled', updated_at=now() WHERE tenant_id='acme' AND id='race-task'`)
-		require.NoError(t, cerr)
-	}
 	env.dispatch = env.dispatch.WithQueueDriver(drv)
 
-	// Two legal outcomes of this interleaving, both correctly converged:
-	//  a) the second task read (after FetchTasks) sees 'cancelled' and the
-	//     redelivery-reconciliation branch ACKs the delivery (nil, nil);
-	//  b) the claim transaction runs and its CAS fails (nil, err).
-	// Either way NO lease may be handed out and NO attempt may survive.
-	result, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
-	require.Nil(t, result, "no lease may be handed out for a cancelled task")
-	if err != nil {
-		t.Logf("converged via claim-race rollback: %v", err)
-	} else {
-		t.Log("converged via redelivery reconciliation")
+	// GA-04 (a): the barrier sits at the actual race point — after the pull's
+	// task read ('queued') and attempt insert, immediately before the claim
+	// CAS. Cancel is released exactly inside that window, so the CAS
+	// deterministically misses and the claim rolls back.
+	gate := &claimGate{entered: make(chan struct{}), release: make(chan struct{})}
+	gate.TaskAttemptRepository = env.attemptRepo
+	env.dispatch.attemptTx = gate
+
+	type pullOutcome struct {
+		res *PullResult
+		err error
 	}
+	done := make(chan pullOutcome, 1)
+	go func() {
+		r, perr := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+		done <- pullOutcome{res: r, err: perr}
+	}()
+
+	<-gate.entered
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", "race-task"))
+	close(gate.release)
+
+	out := <-done
+	require.Nil(t, out.res, "no lease may be handed out for a cancelled task")
+	require.EqualError(t, out.err,
+		"claim race: task race-task status changed concurrently, expected queued")
 
 	task, gerr := env.taskRepo.Get(ctx, "acme", "race-task")
 	require.NoError(t, gerr)
@@ -1269,6 +1276,8 @@ func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
 	require.NoError(t, env.pool.QueryRow(ctx,
 		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id='race-task'`).Scan(&attempts))
 	require.Zero(t, attempts, "the racing claim's attempt must roll back with the transaction")
+	require.Zero(t, countOutboxEvents(t, env, "race-task", core.EventTaskClaimed),
+		"no task.claimed event may be published by the losing claim")
 }
 
 // The single-connection proof must cover PullTask too: the claim
