@@ -757,9 +757,15 @@ jobs:
     env:
       NS: janus-e2e
       RELEASE: janus-core
-      # Same URI-delimiter soup as chart-install-upgrade: this job must
-      # keep proving the chart's DSN escaping end to end.
-      PG_PASSWORD: "p@ss#w?rd/x"
+      # Plain password ON PURPOSE: this job boots the v1.9.0 binary,
+      # whose PostgresConfig.DSN() predates the userinfo-escaping fix
+      # (f606056) — a delimiter-soup password (the "p@ss#w?rd/x" the
+      # chart-install-upgrade job proves nightly) makes the URL-form DSN
+      # unparseable, pgxpool.ParseConfig log.Fatalfs in mustOpenPool and
+      # the old image CrashLoops before its first readiness probe. The
+      # end-to-end DSN-escaping proof stays in chart-install-upgrade,
+      # which runs the fixed candidate image.
+      PG_PASSWORD: "ga09_v190_plain_pw"
       TENANT: ga09
       AGENT: ga09-agent
       MAILBOX: ga09-mb
