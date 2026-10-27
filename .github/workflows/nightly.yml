@@ -730,3 +730,542 @@ jobs:
         run: |
           set -euo pipefail
           kind delete cluster --name janus
+
+  chart-upgrade-rollback:
+    # GA-09: real cross-version upgrade/rollback on a kind cluster. The
+    # PREVIOUS release (v1.9.0 image, built from the tag in a throwaway
+    # worktree so $GITHUB_WORKSPACE stays on the commit under test) runs
+    # under the CURRENT chart, gets in-flight business state seeded
+    # through its own API (a lease held and NOT acked, one completed
+    # task, projected audit rows), is upgraded to the candidate image
+    # built from this commit, then helm-rolled-back to the old image.
+    # Every leg asserts the durable rows survived in postgres; the held
+    # lease is finally ACKed through the NEW binary (cross-version lease
+    # compatibility) and a fresh pull works through the rolled-back OLD
+    # binary. Migrations since v1.9.0 are additive or schema-neutral
+    # (000019 ADD COLUMN IF NOT EXISTS; 000020 is a SELECT 1 whose
+    # comment documents that the five-column ledger PK exists precisely
+    # so v1.9.0 binaries survive the migrate-then-restart window), and
+    # smoke_mixed_version_locks.sh boots a v1.9.0 binary on the
+    # schema-at-HEAD nightly — so rolling the app back while the schema
+    # stays forward is the repo's tested posture, and this job does the
+    # true old-image rollback. helm rollback runs no migration hook
+    # (the chart annotates pre-install,pre-upgrade only): the schema is
+    # never down-migrated.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      NS: janus-e2e
+      RELEASE: janus-core
+      # Same URI-delimiter soup as chart-install-upgrade: this job must
+      # keep proving the chart's DSN escaping end to end.
+      PG_PASSWORD: "p@ss#w?rd/x"
+      TENANT: ga09
+      AGENT: ga09-agent
+      MAILBOX: ga09-mb
+      API_KEY: janus_ga09_upgrade_probe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The v1.9.0 release tag must be present to build the OLD image.
+          fetch-depth: 0
+
+      - name: Create kind cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.26.0
+          # Node image digest from the kind v0.26.0 release notes.
+          node_image: kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30
+          kubectl_version: v1.31.4
+          cluster_name: janus-ga09
+          wait: 120s
+
+      - name: Install tooling (helm)
+        run: |
+          set -euo pipefail
+          # Pinned download with checksum verification (no curl | bash).
+          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
+          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/helm.tar.gz -C /tmp
+          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          helm version
+
+      - name: Build OLD (v1.9.0) + candidate images, load into kind
+        run: |
+          set -euo pipefail
+          # The OLD release image is built from the tag in a separate
+          # worktree: the checkout itself must NEVER move off the commit
+          # under test, so every chart path below stays valid.
+          git worktree add --detach /tmp/janus-v190 v1.9.0
+          docker build -t janus-core:old /tmp/janus-v190
+          git worktree remove /tmp/janus-v190
+          docker build -t janus-core:candidate "$GITHUB_WORKSPACE"
+          # Locally built images carry an image ID, not a registry digest;
+          # record the tag commit + both IDs so a failing leg can be
+          # tied back to the exact build.
+          {
+            echo "v1.9.0 tag commit      = $(git -C "$GITHUB_WORKSPACE" rev-parse 'v1.9.0^{commit}')"
+            echo "janus-core:old         = $(docker image inspect janus-core:old --format '{{.Id}}')"
+            echo "janus-core:candidate   = $(docker image inspect janus-core:candidate --format '{{.Id}}')"
+          } | tee /tmp/ga09-images.txt
+          # Dependency images are pulled here (docker.io with an ECR mirror
+          # fallback, same as the other nightly jobs) and side-loaded into
+          # the node so kubelet never hits Docker Hub rate limits mid-run.
+          pull() {
+            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
+              for attempt in 1 2 3; do
+                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                sleep $((attempt * 10))
+              done
+            done
+            echo "::error::unable to pull $1"; return 1
+          }
+          pull postgres:16-alpine
+          pull nats:2-alpine
+          pull redis:7-alpine
+          # The migration hook Job image is pinned by the chart itself.
+          pull migrate/migrate:v4.19.1
+          for img in janus-core:old janus-core:candidate postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
+            kind load docker-image "$img" --name janus-ga09
+          done
+
+      - name: Start in-cluster dependencies (postgres / nats / redis)
+        run: |
+          set -euo pipefail
+          kubectl create namespace "$NS"
+          # Chart defaults point at host names postgres / nats / redis, so
+          # plain Services with those names satisfy the release without any
+          # external dependencies. Flat heredoc: kubectl reads column-0 YAML.
+          kubectl -n "$NS" apply -f - <<EOF
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: postgres
+            labels:
+              app: postgres
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: postgres
+            template:
+              metadata:
+                labels:
+                  app: postgres
+              spec:
+                containers:
+                  - name: postgres
+                    image: postgres:16-alpine
+                    imagePullPolicy: IfNotPresent
+                    env:
+                      - name: POSTGRES_USER
+                        value: janus
+                      - name: POSTGRES_PASSWORD
+                        value: "$PG_PASSWORD"
+                      - name: POSTGRES_DB
+                        value: janus
+                    ports:
+                      - containerPort: 5432
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: postgres
+          spec:
+            selector:
+              app: postgres
+            ports:
+              - port: 5432
+                targetPort: 5432
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nats
+            labels:
+              app: nats
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: nats
+            template:
+              metadata:
+                labels:
+                  app: nats
+              spec:
+                containers:
+                  - name: nats
+                    image: nats:2-alpine
+                    imagePullPolicy: IfNotPresent
+                    args:
+                      - -js
+                    ports:
+                      - containerPort: 4222
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: nats
+          spec:
+            selector:
+              app: nats
+            ports:
+              - port: 4222
+                targetPort: 4222
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: redis
+            labels:
+              app: redis
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: redis
+            template:
+              metadata:
+                labels:
+                  app: redis
+              spec:
+                containers:
+                  - name: redis
+                    image: redis:7-alpine
+                    imagePullPolicy: IfNotPresent
+                    ports:
+                      - containerPort: 6379
+          ---
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: redis
+          spec:
+            selector:
+              app: redis
+            ports:
+              - port: 6379
+                targetPort: 6379
+          EOF
+          kubectl -n "$NS" wait --for=condition=available deployment/postgres deployment/nats deployment/redis --timeout=300s
+          # Deployment Available only proves the container runs; wait until
+          # postgres actually accepts TCP connections (what the pre-install
+          # migration hook uses) with a bounded budget. If the budget runs
+          # out, dump the pod state before failing so the log names the cause
+          # instead of a bare "rejecting connections".
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          for i in $(seq 1 150); do
+            kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus >/dev/null 2>&1 && break
+            sleep 2
+          done
+          if ! kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus >/dev/null 2>&1; then
+            kubectl -n "$NS" describe pod "$PG_POD" || true
+            kubectl -n "$NS" logs "$PG_POD" --tail=50 || true
+            echo "::error::postgres still not accepting connections after 300s"
+            exit 1
+          fi
+          kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus
+
+      - name: Helm install with the OLD (v1.9.0) image
+        run: |
+          set -euo pipefail
+          helm install "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=old \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --wait --timeout 5m
+          # The pre-install migration hook applied the CURRENT chart schema
+          # (schema.sql through 000020) and the v1.9.0 binary booted on it —
+          # exactly the migrate-then-restart posture the repo commits to
+          # (000020's ledger-PK comment + smoke_mixed_version_locks.sh).
+          # --wait already gates on pods Ready; assert them explicitly too.
+          kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "image after install: $IMAGE"
+          [ "$IMAGE" = "janus-core:old" ] || { echo "::error::install did not land the OLD image ($IMAGE)"; exit 1; }
+
+      - name: Seed in-flight business state through the OLD API
+        run: |
+          set -euo pipefail
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          psqlq() { kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc "$1"; }
+          # Seed the API key exactly like the mTLS leg (key_hash = sha256
+          # hex, mirroring auth.hashKey; the validator matches
+          # prefix = key[:8] AND key_hash on EVERY request, so a row
+          # inserted against the running old pod authenticates it).
+          # platform:admin is mandatory here, not decoration: POST
+          # /v1/tenants demands ScopePlatformAdmin on v1.9.0 AND HEAD,
+          # and an empty-scope key is deliberately refused platform
+          # authority by Principal.HasScope on both versions.
+          KEY_HASH=$(printf '%s' "$API_KEY" | sha256sum | cut -d' ' -f1)
+          psqlq "INSERT INTO api_keys (tenant_id, key_hash, name, prefix, scopes) VALUES ('$TENANT', '$KEY_HASH', 'ga09-upgrade-lane', '${API_KEY:0:8}', '{platform:admin,task:read,task:write}') ON CONFLICT DO NOTHING"
+          kubectl -n "$NS" port-forward svc/janus-core 18081:8080 >/tmp/ga09-pf-seed.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --max-time 5 http://127.0.0.1:18081/readyz && break
+            sleep 1
+          done
+          curl -sf -o /dev/null --max-time 5 http://127.0.0.1:18081/readyz || { echo "::error::old release never became ready on 18081"; exit 1; }
+          AUTH=(-H "x-api-key: $API_KEY" -H 'Content-Type: application/json')
+          code() { curl -s -o /tmp/ga09-body.json -w '%{http_code}' --max-time 10 "$@"; }
+          CODE=$(code -X POST http://127.0.0.1:18081/v1/tenants "${AUTH[@]}" -d "{\"id\":\"$TENANT\",\"name\":\"GA-09\"}")
+          echo "POST /v1/tenants -> $CODE $(cat /tmp/ga09-body.json)"
+          [ "$CODE" = "201" ] || { echo "::error::tenant create through OLD binary -> $CODE"; exit 1; }
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/agents" "${AUTH[@]}" -d "{\"id\":\"$AGENT\",\"display_name\":\"GA-09 upgrade lane\",\"protocol\":\"a2a\"}")
+          echo "POST agents -> $CODE $(cat /tmp/ga09-body.json)"
+          [ "$CODE" = "201" ] || { echo "::error::agent create through OLD binary -> $CODE"; exit 1; }
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/mailboxes" "${AUTH[@]}" -d "{\"id\":\"$MAILBOX\",\"agent_id\":\"$AGENT\"}")
+          echo "POST mailboxes -> $CODE $(cat /tmp/ga09-body.json)"
+          [ "$CODE" = "201" ] || { echo "::error::mailbox create through OLD binary -> $CODE"; exit 1; }
+          task_body() { # $1 = task id; same envelope shape the mixed-version smoke publishes
+            printf '{"id":"%s","source_agent":"%s","target_type":"mailbox","target_value":"%s","envelope":{"janus_version":"0.3","task_id":"%s","tenant_id":"%s","source_agent":"%s","target":{"type":"mailbox","value":"%s"},"payload":{"type":"smoke","content":"ga09"},"trace":{"trace_id":"ga09-%s"}}}' \
+              "$1" "$AGENT" "$MAILBOX" "$1" "$TENANT" "$AGENT" "$MAILBOX" "$1"
+          }
+          pull_until() { # $1 = local port, $2 = task id; prints the lease id on stdout
+            local lease="" got="" resp=""
+            for i in $(seq 1 90); do
+              resp=$(curl -sf --max-time 5 -X POST "http://127.0.0.1:$1/v1/tenants/$TENANT/mailboxes/$MAILBOX/pull" \
+                -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' -d "{\"agent_id\":\"$AGENT\"}" 2>/dev/null || echo "")
+              got=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
+              if [ "$got" = "$2" ]; then
+                lease=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))")
+                break
+              fi
+              sleep 1
+            done
+            if [ -z "$lease" ]; then
+              echo "::error::pull through the OLD binary never delivered task $2 (last response: $resp)" >&2
+              return 1
+            fi
+            printf '%s' "$lease"
+          }
+          # Completed task: full create -> pull -> ack round trip on the OLD
+          # binary, so a terminal row exists to re-verify on both sides.
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/tasks" "${AUTH[@]}" -d "$(task_body ga09-done-1)")
+          echo "POST tasks(ga09-done-1) -> $CODE"
+          [ "$CODE" = "201" ] || { echo "::error::done-task create through OLD binary -> $CODE $(cat /tmp/ga09-body.json)"; exit 1; }
+          DONE_LEASE=$(pull_until 18081 ga09-done-1)
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/tasks/ga09-done-1/ack" "${AUTH[@]}" -d "{\"lease_id\":\"$DONE_LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga09://done\"}")
+          echo "ack ga09-done-1 -> $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::ack of ga09-done-1 through OLD binary -> $CODE $(cat /tmp/ga09-body.json)"; exit 1; }
+          # In-flight task: pull + start, lease held and NOT acked.
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/tasks" "${AUTH[@]}" -d "$(task_body ga09-held-1)")
+          echo "POST tasks(ga09-held-1) -> $CODE"
+          [ "$CODE" = "201" ] || { echo "::error::held-task create through OLD binary -> $CODE $(cat /tmp/ga09-body.json)"; exit 1; }
+          HELD_LEASE=$(pull_until 18081 ga09-held-1)
+          CODE=$(code -X POST "http://127.0.0.1:18081/v1/tenants/$TENANT/tasks/ga09-held-1/start" "${AUTH[@]}" -d "{\"lease_id\":\"$HELD_LEASE\",\"agent_id\":\"$AGENT\"}")
+          echo "start ga09-held-1 -> $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::start of ga09-held-1 through OLD binary -> $CODE $(cat /tmp/ga09-body.json)"; exit 1; }
+          HELD_STATUS=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-held-1'")
+          echo "held task status after pull+start via OLD binary: $HELD_STATUS"
+          OPEN=$(psqlq "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND lease_id='$HELD_LEASE' AND finished_at IS NULL")
+          [ "$OPEN" = "1" ] || { echo "::error::held lease has $OPEN open attempt rows (want 1)"; exit 1; }
+          # Wait for the audit projector to drain the outbox, then snapshot
+          # the row count as the survival baseline.
+          AUDIT_COUNT=0
+          for i in $(seq 1 60); do
+            AUDIT_COUNT=$(psqlq "SELECT count(*) FROM audit_event_projection WHERE tenant_id='$TENANT'")
+            [ "$AUDIT_COUNT" -ge 1 ] && break
+            sleep 2
+          done
+          echo "audit_event_projection rows for $TENANT: $AUDIT_COUNT"
+          [ "$AUDIT_COUNT" -ge 1 ] || { echo "::error::no audit events projected for $TENANT"; exit 1; }
+          SCHEMA_AT_INSTALL=$(psqlq "SELECT version FROM schema_migrations")
+          echo "schema_migrations version at install: $SCHEMA_AT_INSTALL (dirty=$(psqlq "SELECT dirty FROM schema_migrations"))"
+          {
+            echo "GA09_HELD_LEASE=$HELD_LEASE"
+            echo "GA09_HELD_STATUS=$HELD_STATUS"
+            echo "GA09_AUDIT_COUNT=$AUDIT_COUNT"
+            echo "GA09_SCHEMA_AT_INSTALL=$SCHEMA_AT_INSTALL"
+          } >> "$GITHUB_ENV"
+          # Lease keeper: Pull gives the lease the mailbox ack_wait clock
+          # (default 300s), but keep heartbeat_at fresh every 15s across
+          # the upgrade window so the lease-expiry sweeper never reclaims
+          # the task mid-proof. The port-forward re-establishes itself when
+          # the pod it was pinned to is replaced by the upgrade — the same
+          # heartbeat endpoint must keep working through the NEW binary.
+          rm -f /tmp/ga09-hb.stop
+          (
+            while [ ! -f /tmp/ga09-hb.stop ]; do
+              kubectl -n "$NS" port-forward svc/janus-core 18084:8080 >>/tmp/ga09-hb.log 2>&1 &
+              HB_PF=$!
+              sleep 2
+              while kill -0 "$HB_PF" 2>/dev/null && [ ! -f /tmp/ga09-hb.stop ]; do
+                curl -sf --max-time 5 -X POST "http://127.0.0.1:18084/v1/tenants/$TENANT/tasks/ga09-held-1/heartbeat" \
+                  -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+                  -d "{\"lease_id\":\"$HELD_LEASE\",\"agent_id\":\"$AGENT\"}" >>/tmp/ga09-hb.log 2>&1 || true
+                sleep 15
+              done
+              kill "$HB_PF" 2>/dev/null || true
+              sleep 3
+            done
+          ) >>/tmp/ga09-hb.log 2>&1 &
+          echo $! > /tmp/ga09-hb.pid
+          echo "lease keeper started: pid $(cat /tmp/ga09-hb.pid)"
+
+      - name: Helm upgrade to the candidate image
+        run: |
+          set -euo pipefail
+          helm upgrade "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=candidate \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --timeout 5m >/tmp/ga09-helm-upgrade.log 2>&1 &
+          UPGRADE_PID=$!
+          # The chart deletes the hook Job once it succeeds
+          # (helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded),
+          # so the Job can only be observed while the upgrade is in flight.
+          for i in $(seq 1 60); do
+            kubectl -n "$NS" get job janus-core-migration >/dev/null 2>&1 && break
+            sleep 1
+          done
+          kubectl -n "$NS" get job janus-core-migration >/dev/null
+          kubectl -n "$NS" wait --for=condition=complete job/janus-core-migration --timeout=300s
+          wait "$UPGRADE_PID"
+          cat /tmp/ga09-helm-upgrade.log
+          kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "image after upgrade: $IMAGE"
+          [ "$IMAGE" = "janus-core:candidate" ] || { echo "::error::upgrade did not land the candidate image ($IMAGE)"; exit 1; }
+
+      - name: Assert in-flight state survived the upgrade
+        run: |
+          set -euo pipefail
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          psqlq() { kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc "$1"; }
+          SCHEMA_NOW=$(psqlq "SELECT version FROM schema_migrations")
+          DIRTY=$(psqlq "SELECT dirty FROM schema_migrations")
+          echo "schema_migrations after upgrade: version=$SCHEMA_NOW dirty=$DIRTY (at install: $GA09_SCHEMA_AT_INSTALL)"
+          [ "$DIRTY" = "f" ] || { echo "::error::schema_migrations is DIRTY after the upgrade hook"; exit 1; }
+          [ "$SCHEMA_NOW" -ge "$GA09_SCHEMA_AT_INSTALL" ] || { echo "::error::schema version regressed across upgrade ($GA09_SCHEMA_AT_INSTALL -> $SCHEMA_NOW)"; exit 1; }
+          # The held task and its lease survived the old -> candidate hop.
+          HELD=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-held-1'")
+          echo "held task status after upgrade: $HELD (was $GA09_HELD_STATUS)"
+          [ "$HELD" = "$GA09_HELD_STATUS" ] || { echo "::error::held task status changed across upgrade: $GA09_HELD_STATUS -> $HELD"; exit 1; }
+          OPEN=$(psqlq "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND lease_id='$GA09_HELD_LEASE' AND finished_at IS NULL")
+          [ "$OPEN" = "1" ] || { echo "::error::held lease lost its open attempt row across upgrade (open=$OPEN)"; exit 1; }
+          DONE=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-done-1'")
+          [ "$DONE" = "completed" ] || { echo "::error::completed task mutated across upgrade: $DONE"; exit 1; }
+          AUDIT_NOW=$(psqlq "SELECT count(*) FROM audit_event_projection WHERE tenant_id='$TENANT'")
+          echo "audit_event_projection rows: $AUDIT_NOW (baseline $GA09_AUDIT_COUNT)"
+          [ "$AUDIT_NOW" -ge "$GA09_AUDIT_COUNT" ] || { echo "::error::audit rows LOST across upgrade ($GA09_AUDIT_COUNT -> $AUDIT_NOW)"; exit 1; }
+          kubectl -n "$NS" port-forward svc/janus-core 18082:8080 >/tmp/ga09-pf-candidate.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --max-time 5 http://127.0.0.1:18082/readyz && break
+            sleep 1
+          done
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18082/healthz)
+          echo "candidate /healthz -> $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::candidate /healthz -> $CODE"; exit 1; }
+          # Cross-version lease compatibility: the lease was minted by the
+          # v1.9.0 binary and must settle cleanly through the candidate.
+          CODE=$(curl -s -o /tmp/ga09-ack.json -w '%{http_code}' --max-time 10 -X POST "http://127.0.0.1:18082/v1/tenants/$TENANT/tasks/ga09-held-1/ack" \
+            -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
+            -d "{\"lease_id\":\"$GA09_HELD_LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga09://settled-by-candidate\"}")
+          echo "ack held lease via candidate -> $CODE $(cat /tmp/ga09-ack.json)"
+          [ "$CODE" = "200" ] || { echo "::error::candidate could not ACK the lease minted by v1.9.0 -> $CODE"; exit 1; }
+          HELD=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-held-1'")
+          [ "$HELD" = "completed" ] || { echo "::error::held task not completed after cross-version ack: $HELD"; exit 1; }
+          OPEN=$(psqlq "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND lease_id='$GA09_HELD_LEASE' AND finished_at IS NULL")
+          [ "$OPEN" = "0" ] || { echo "::error::ack left the attempt row open (finished_at set required)"; exit 1; }
+          touch /tmp/ga09-hb.stop
+
+      - name: Helm rollback to the previous revision (OLD image) + re-assert
+        run: |
+          set -euo pipefail
+          # Roll back to revision 0 == the previous release (the v1.9.0
+          # install). No migration hook fires on rollback (the chart
+          # annotates pre-install,pre-upgrade only), so the app steps back
+          # onto the FORWARD schema — the posture this job exists to prove.
+          helm -n "$NS" rollback "$RELEASE" 0 --wait --timeout 5m
+          kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
+          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "image after rollback: $IMAGE"
+          [ "$IMAGE" = "janus-core:old" ] || { echo "::error::rollback did not restore the OLD image ($IMAGE)"; exit 1; }
+          echo "=== helm history ==="
+          helm -n "$NS" history "$RELEASE" | tee /tmp/ga09-helm-history.txt
+          REVS=$(helm -n "$NS" history "$RELEASE" -o json | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+          echo "revisions recorded: $REVS (install -> upgrade -> rollback = 3)"
+          [ "$REVS" = "3" ] || { echo "::error::helm history shows $REVS revisions (want 3)"; exit 1; }
+          PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
+          psqlq() { kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc "$1"; }
+          SCHEMA_NOW=$(psqlq "SELECT version FROM schema_migrations")
+          DIRTY=$(psqlq "SELECT dirty FROM schema_migrations")
+          echo "schema_migrations after rollback: version=$SCHEMA_NOW dirty=$DIRTY"
+          [ "$DIRTY" = "f" ] && [ "$SCHEMA_NOW" -ge "$GA09_SCHEMA_AT_INSTALL" ]
+          # All durable business state intact on the rolled-back binary.
+          DONE=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-done-1'")
+          SETTLED=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-held-1'")
+          echo "post-rollback rows: ga09-done-1=$DONE ga09-held-1=$SETTLED"
+          [ "$DONE" = "completed" ] || { echo "::error::completed task mutated across rollback: $DONE"; exit 1; }
+          [ "$SETTLED" = "completed" ] || { echo "::error::settled task mutated across rollback: $SETTLED"; exit 1; }
+          AUDIT_NOW=$(psqlq "SELECT count(*) FROM audit_event_projection WHERE tenant_id='$TENANT'")
+          [ "$AUDIT_NOW" -ge "$GA09_AUDIT_COUNT" ] || { echo "::error::audit rows lost across rollback ($GA09_AUDIT_COUNT -> $AUDIT_NOW)"; exit 1; }
+          kubectl -n "$NS" port-forward svc/janus-core 18083:8080 >/tmp/ga09-pf-rollback.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --max-time 5 http://127.0.0.1:18083/readyz && break
+            sleep 1
+          done
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18083/healthz)
+          echo "rolled-back /healthz -> $CODE"
+          [ "$CODE" = "200" ] || { echo "::error::rolled-back OLD binary /healthz -> $CODE"; exit 1; }
+          # A fresh pull must work through the rolled-back v1.9.0 binary:
+          # publish a task on it and consume it end to end.
+          AUTH=(-H "x-api-key: $API_KEY" -H 'Content-Type: application/json')
+          CODE=$(curl -s -o /tmp/ga09-body.json -w '%{http_code}' --max-time 10 -X POST "http://127.0.0.1:18083/v1/tenants/$TENANT/tasks" "${AUTH[@]}" -d '{"id":"ga09-post-rollback-1","source_agent":"ga09-agent","target_type":"mailbox","target_value":"ga09-mb","envelope":{"janus_version":"0.3","task_id":"ga09-post-rollback-1","tenant_id":"ga09","source_agent":"ga09-agent","target":{"type":"mailbox","value":"ga09-mb"},"payload":{"type":"smoke","content":"ga09"},"trace":{"trace_id":"ga09-post-rollback-1"}}}')
+          echo "POST tasks(ga09-post-rollback-1) via rolled-back OLD -> $CODE"
+          [ "$CODE" = "201" ] || { echo "::error::task create through rolled-back OLD binary -> $CODE $(cat /tmp/ga09-body.json)"; exit 1; }
+          GOT=""
+          for i in $(seq 1 90); do
+            RESP=$(curl -sf --max-time 5 -X POST "http://127.0.0.1:18083/v1/tenants/$TENANT/mailboxes/$MAILBOX/pull" "${AUTH[@]}" -d "{\"agent_id\":\"$AGENT\"}" 2>/dev/null || echo "")
+            GOT=$(printf '%s' "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); t=d.get('task') or {}; print(t.get('id',''))" 2>/dev/null || echo "")
+            [ "$GOT" = "ga09-post-rollback-1" ] && break
+            sleep 1
+          done
+          [ "$GOT" = "ga09-post-rollback-1" ] || { echo "::error::rolled-back OLD binary never delivered the new task via pull"; exit 1; }
+          echo "post-rollback pull delivered ga09-post-rollback-1"
+
+      - name: Stop the lease keeper
+        if: always()
+        run: |
+          touch /tmp/ga09-hb.stop 2>/dev/null || true
+          if [ -f /tmp/ga09-hb.pid ]; then
+            kill "$(cat /tmp/ga09-hb.pid)" 2>/dev/null || true
+          fi
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          kubectl -n "$NS" get all 2>/dev/null || true
+          for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
+            echo "::group::$p"
+            kubectl -n "$NS" describe "$p" 2>/dev/null | tail -n 40 || true
+            kubectl -n "$NS" logs "$p" --all-containers --tail=80 2>/dev/null || true
+            echo "::endgroup::"
+          done
+          helm -n "$NS" status "$RELEASE" 2>/dev/null || true
+          helm -n "$NS" history "$RELEASE" 2>/dev/null || true
+          cat /tmp/ga09-images.txt /tmp/ga09-helm-history.txt 2>/dev/null || true
+          tail -n 30 /tmp/ga09-hb.log /tmp/ga09-pf-seed.log /tmp/ga09-pf-candidate.log /tmp/ga09-pf-rollback.log /tmp/ga09-body.json 2>/dev/null || true
+
+      - name: Delete kind cluster
+        if: always()
+        run: |
+          set -euo pipefail
+          kind delete cluster --name janus-ga09
