@@ -24,6 +24,7 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	natsdriver "github.com/agentium-lab/Janus/server/internal/driver/nats"
 	"github.com/agentium-lab/Janus/server/internal/driver/postgres"
+	"github.com/agentium-lab/Janus/server/internal/service/routing"
 )
 
 // --- PG test harness for the service package ---
@@ -1924,4 +1925,93 @@ func TestMailboxService_UpdateConfigSingleConnPoolNoSelfStarvation(t *testing.T)
 	mb, err := repo.Get(ctx, "sc", "mb-sc")
 	require.NoError(t, err)
 	assert.Equal(t, 1, mb.ConfigVersion, "config version bumped")
+}
+
+// eval-6 claim 2: Unblock republished without re-running the CURRENT
+// task.publish policy — a deny rule added after Block sailed through on the
+// strength of the earlier create-time allowance. The gate must fire BEFORE
+// the lifecycle tx: refusal leaves the task blocked, no task_publish outbox
+// row, no attempt side effects.
+func TestTaskService_Unblock_PublishPolicyDeny_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	task := core.Task{
+		ID: "unblock-policy-deny", TenantID: "acme", MailboxID: "mb-1", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "mb-1",
+		Status: core.TaskStatusQueued, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{JanusVersion: "1", TaskID: "unblock-policy-deny", TenantID: "acme",
+			SourceAgent: "agent-1", Target: core.Target{Type: "mailbox", Value: "mb-1"},
+			Payload: core.Payload{Type: "text", Content: "deny"}},
+	}
+	require.NoError(t, env.taskRepo.Create(ctx, task))
+	require.NoError(t, env.taskSvc.Block(ctx, "acme", task.ID, "policy review"))
+
+	// The deny rule for the task's target lands AFTER the block.
+	require.NoError(t, postgres.NewPolicyRuleRepository(env.pool).Create(ctx, core.PolicyRule{
+		TenantID:  "acme",
+		ID:        "rule-unblock-deny",
+		Name:      "deny publish to mb-1",
+		Status:    "active",
+		Priority:  10,
+		Condition: json.RawMessage(`{"resource.value":"mb-1"}`),
+		Action:    json.RawMessage(`{"decision":"deny"}`),
+	}))
+
+	err := env.taskSvc.Unblock(ctx, "acme", task.ID)
+	require.Error(t, err, "unblock must re-run the current task.publish policy")
+	require.Contains(t, err.Error(), "unblock denied")
+	require.Contains(t, err.Error(), "deny publish to mb-1", "refusal must name the matched policy rule")
+
+	got, gerr := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, gerr)
+	assert.Equal(t, core.TaskStatusBlocked, got.Status, "refused unblock must leave the task blocked")
+
+	var publishes int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM outbox_events WHERE tenant_id='acme' AND kind='task_publish'`).Scan(&publishes))
+	assert.Zero(t, publishes, "refused unblock must not enqueue a delivery")
+
+	var attempts int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id=$1`, task.ID).Scan(&attempts))
+	assert.Zero(t, attempts, "refused unblock must leave no attempt side effects")
+}
+
+// eval-6 claim 2 (admission side): Unblock must also re-pass the final-target
+// mailbox admission — a mailbox owner that became policy-denied after Block
+// must not receive the republish. Uses the same fake-router harness
+// TestReplay_MailboxAdmissionGate uses (service package), over real PG state.
+func TestTaskService_Unblock_MailboxAdmissionDeny_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+
+	owner := &routing.AgentCandidate{AgentID: "agent-1", MailboxID: "mb-1", TeamID: "team-a"}
+	env.taskSvc.WithRouter(routing.NewRouter(admissionLookup(owner), &admitPolicy{denied: map[string]bool{"agent-1": true}}, nil))
+
+	task := core.Task{
+		ID: "unblock-admit-deny", TenantID: "acme", MailboxID: "mb-1", SourceAgent: "agent-1",
+		TargetType: core.TargetTypeMailbox, TargetValue: "mb-1",
+		Status: core.TaskStatusQueued, Priority: core.PriorityNormal,
+		Envelope: core.TaskEnvelope{JanusVersion: "1", TaskID: "unblock-admit-deny", TenantID: "acme",
+			SourceAgent: "agent-1", Target: core.Target{Type: "mailbox", Value: "mb-1"},
+			Payload: core.Payload{Type: "text", Content: "admit"}},
+	}
+	require.NoError(t, env.taskRepo.Create(ctx, task))
+	require.NoError(t, env.taskSvc.Block(ctx, "acme", task.ID, "admission review"))
+
+	// No policy rules exist: the refusal can only come from admission.
+	err := env.taskSvc.Unblock(ctx, "acme", task.ID)
+	require.Error(t, err, "unblock must re-pass final-target mailbox admission")
+	require.Contains(t, err.Error(), "unblock admission")
+	require.Contains(t, err.Error(), "denied by policy")
+
+	got, gerr := env.taskRepo.Get(ctx, "acme", task.ID)
+	require.NoError(t, gerr)
+	assert.Equal(t, core.TaskStatusBlocked, got.Status, "refused unblock must leave the task blocked")
+
+	var publishes int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM outbox_events WHERE tenant_id='acme' AND kind='task_publish'`).Scan(&publishes))
+	assert.Zero(t, publishes, "refused unblock must not enqueue a delivery")
 }

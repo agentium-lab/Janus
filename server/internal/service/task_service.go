@@ -653,6 +653,14 @@ func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) erro
 		}
 	}
 
+	// Unblock is a re-publish: the CURRENT publish policy and the
+	// final-target admission must re-clear BEFORE the lifecycle tx starts,
+	// so a refusal leaves the task blocked with no outbox row and no lease
+	// (the tx never opens). Same gates Replay runs (readmissionCheck).
+	if rerr := s.readmissionCheck(ctx, current); rerr != nil {
+		return fmt.Errorf("unblock %w", rerr)
+	}
+
 	// Unblock re-queues the task (blocked → queued) and publishes it to the
 	// queue so agents can pick it up with a fresh lease/attempt.
 	if err := s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
@@ -699,6 +707,42 @@ func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) erro
 	return nil
 }
 
+// readmissionCheck re-runs the publish gates a re-publish path must clear
+// (Replay, Unblock): the CURRENT task.publish policy — a deny rule added
+// after the task first entered the system must stop the re-publish exactly
+// as it stops a first publish — and the final-target mailbox admission
+// (owner resolution + route policy; a mailbox owner that became
+// policy-denied must not receive the re-publish). Fail-closed on policy
+// evaluation error; permissive when policySvc is nil; admission is skipped
+// when no router is wired or the task carries no mailbox. Errors carry no
+// entry-point prefix — callers wrap ("replay %w" / "unblock %w").
+func (s *TaskService) readmissionCheck(ctx context.Context, task *core.Task) error {
+	if s.policySvc != nil {
+		decision, perr := s.policySvc.Evaluate(ctx, core.PolicyInput{
+			TenantID: task.TenantID,
+			Actor:    core.PolicyActor{Type: "agent", ID: task.SourceAgent},
+			Action:   "task.publish",
+			Resource: core.PolicyResource{Type: string(task.TargetType), Value: task.TargetValue},
+		})
+		if perr != nil {
+			return fmt.Errorf("policy check: %w", perr)
+		}
+		if decision.Decision == core.PolicyDecisionDeny {
+			return fmt.Errorf("denied: %s", decision.Reason)
+		}
+		if decision.Decision == core.PolicyDecisionApprovalRequired {
+			return errors.New("requires approval; approve through the approval workflow before replaying")
+		}
+	}
+
+	if s.router != nil && task.MailboxID != "" {
+		if aerr := s.router.CheckMailboxAdmission(ctx, task.TenantID, task.MailboxID, task.Envelope); aerr != nil {
+			return fmt.Errorf("admission: %w", aerr)
+		}
+	}
+	return nil
+}
+
 func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*core.Task, error) {
 	if tenantID == "" || taskID == "" {
 		return nil, fmt.Errorf("tenant id and task id are required")
@@ -711,13 +755,14 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 	if !task.Status.IsTerminal() {
 		return nil, fmt.Errorf("only terminal tasks can be replayed, current status: %s", task.Status)
 	}
-	// Replay must not bypass the original gate. Two checks:
+	// Replay must not bypass the original gate. Two checks before the tx:
 	//  1. the approval verdict: a pending or rejected approval keeps the
 	//     task out of the queue (pending -> Cancel -> Replay and
 	//     Reject -> Replay were both re-queueing);
-	//  2. the ORIGINAL publish policy (action=task.publish, the same rule
-	//     set that gated first publication — a dedicated task.replay
-	//     action matched nothing and defaulted to Allow).
+	//  2. re-admission (readmissionCheck, shared with Unblock): the CURRENT
+	//     publish policy (action=task.publish, the same rule set that gates
+	//     first publication — a dedicated task.replay action matched nothing
+	//     and defaulted to Allow) plus the final-target mailbox admission.
 	if s.approvalSvc != nil {
 		latest, aerr := s.approvalSvc.repo.GetLatestByTask(ctx, task.TenantID, task.ID)
 		if aerr != nil {
@@ -737,31 +782,8 @@ func (s *TaskService) Replay(ctx context.Context, tenantID, taskID string) (*cor
 			}
 		}
 	}
-	if s.policySvc != nil {
-		decision, perr := s.policySvc.Evaluate(ctx, core.PolicyInput{
-			TenantID: task.TenantID,
-			Actor:    core.PolicyActor{Type: "agent", ID: task.SourceAgent},
-			Action:   "task.publish",
-			Resource: core.PolicyResource{Type: string(task.TargetType), Value: task.TargetValue},
-		})
-		if perr != nil {
-			return nil, fmt.Errorf("replay policy check: %w", perr)
-		}
-		if decision.Decision == core.PolicyDecisionDeny {
-			return nil, fmt.Errorf("replay denied: %s", decision.Reason)
-		}
-		if decision.Decision == core.PolicyDecisionApprovalRequired {
-			return nil, fmt.Errorf("replay requires approval; approve through the approval workflow before replaying")
-		}
-	}
-
-	// Replay must re-pass the routing admission gate: a task whose mailbox
-	// owner is now policy-denied (or whose mailbox lost its owner) must not
-	// re-enter the queue through Replay. Skipped when no router is wired.
-	if s.router != nil && task.MailboxID != "" {
-		if aerr := s.router.CheckMailboxAdmission(ctx, task.TenantID, task.MailboxID, task.Envelope); aerr != nil {
-			return nil, fmt.Errorf("replay admission: %w", aerr)
-		}
+	if rerr := s.readmissionCheck(ctx, task); rerr != nil {
+		return nil, fmt.Errorf("replay %w", rerr)
 	}
 
 	// Atomic replay: reset + republish + status transition + created event
