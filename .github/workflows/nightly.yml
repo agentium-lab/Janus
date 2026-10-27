@@ -594,6 +594,123 @@ jobs:
           echo "wrong-CA /healthz -> $CODE (health must stay up)"
           [ "$CODE" = "200" ]
 
+      - name: mTLS-mode upgrade (client CA + exec probes + client-cert round trip)
+        run: |
+          set -euo pipefail
+          # eval-6 4B: a clientCaSecret deployment must stay operable. The
+          # server now requires client certificates on HTTP and gRPC, so:
+          # (a) kubelet probes switch to exec janus-healthcheck presenting
+          #     the probeClientCertSecret pair — Ready is only reachable if
+          #     those exec probes pass under mTLS,
+          # (b) the gateway presents its own client pair
+          #     (gateway.clientCertSecret) signed by the client CA, and
+          # (c) external clients WITHOUT a client certificate are rejected
+          #     at the TLS handshake, not with an HTTP status.
+          cd /tmp/tls
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+            -keyout client-ca.key -out client-ca.crt -days 2 -subj "/CN=janus-nightly-client-ca" \
+            -addext "basicConstraints=critical,CA:TRUE" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign"
+          cat > client.ext <<'EOF'
+          basicConstraints=CA:FALSE
+          keyUsage=critical,digitalSignature,keyEncipherment
+          extendedKeyUsage=clientAuth
+          EOF
+          for name in probe gw-client curl-client; do
+            openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+              -keyout $name.key -out $name.csr -subj "/CN=janus-nightly-$name"
+            openssl x509 -req -in $name.csr -CA client-ca.crt -CAkey client-ca.key -CAcreateserial \
+              -out $name.crt -days 2 -sha256 -extfile client.ext
+          done
+          openssl verify -CAfile client-ca.crt probe.crt gw-client.crt curl-client.crt
+          kubectl -n "$NS" create secret generic janus-tls-client-ca \
+            --from-file=ca.crt=client-ca.crt
+          kubectl -n "$NS" create secret generic janus-tls-probe \
+            --from-file=tls.crt=probe.crt --from-file=tls.key=probe.key
+          kubectl -n "$NS" create secret generic janus-tls-gw-client \
+            --from-file=tls.crt=gw-client.crt --from-file=tls.key=gw-client.key
+          # Recreate the server secret WITH ca.crt so the exec probes take
+          # the verify branch (-ca-file /etc/janus/tls/ca.crt).
+          kubectl -n "$NS" delete secret janus-tls-server
+          kubectl -n "$NS" create secret generic janus-tls-server \
+            --from-file=tls.crt=tls.crt --from-file=tls.key=tls.key --from-file=ca.crt=ca.crt
+          helm upgrade "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
+            --namespace "$NS" \
+            --set image.repository=janus-core \
+            --set image.tag=e2e \
+            --set autoscaling.enabled=false \
+            --set replicaCount=1 \
+            --set postgres.password="$PG_PASSWORD" \
+            --set config.tls.enabled=true \
+            --set config.tls.existingSecret=janus-tls-server \
+            --set config.tls.gatewayCaSecret=janus-tls-gateway-ca \
+            --set config.tls.clientCaSecret=janus-tls-client-ca \
+            --set config.tls.gateway.clientCertSecret=janus-tls-gw-client \
+            --set config.tls.probeClientCertSecret=janus-tls-probe \
+            --wait --timeout 5m
+          # Ready under mTLS is only reachable through passing exec probes;
+          # assert the live Deployment really carries them (guards against
+          # the probes silently staying httpGet and never failing).
+          kubectl -n "$NS" get deployment janus-core \
+            -o jsonpath='{.spec.template.spec.containers[0].readinessProbe.exec.command}' \
+            | grep -q janus-healthcheck
+          kubectl -n "$NS" rollout status deployment/janus-core --timeout=300s
+          POD=$(kubectl -n "$NS" get pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' -o jsonpath='{.items[0].metadata.name}')
+          # The probe binary itself, in-pod, loopback: verifies the server
+          # cert against the mounted CA and presents the probe pair.
+          kubectl -n "$NS" exec "$POD" -- /usr/local/bin/janus-healthcheck \
+            -url https://127.0.0.1:8080/healthz \
+            -ca-file /etc/janus/tls/ca.crt \
+            -client-cert /etc/janus/probe-cert/tls.crt \
+            -client-key /etc/janus/probe-cert/tls.key
+          # Without a client certificate the same probe must fail (fail-closed).
+          if kubectl -n "$NS" exec "$POD" -- /usr/local/bin/janus-healthcheck \
+            -url https://127.0.0.1:8080/healthz -ca-file /etc/janus/tls/ca.crt \
+            >/dev/null 2>&1; then
+            echo "::error::healthcheck without client cert unexpectedly succeeded"
+            exit 1
+          fi
+          kubectl -n "$NS" port-forward svc/janus-core 18543:8080 >/tmp/port-forward-mtls.log 2>&1 &
+          PF_PID=$!
+          trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null --cacert /tmp/tls/ca.crt \
+              --cert /tmp/tls/curl-client.crt --key /tmp/tls/curl-client.key \
+              https://127.0.0.1:18543/readyz && break
+            sleep 1
+          done
+          # /healthz via the probe pair.
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/tls/ca.crt \
+            --cert /tmp/tls/probe.crt --key /tmp/tls/probe.key \
+            https://127.0.0.1:18543/healthz)
+          echo "mTLS /healthz (probe pair) -> $CODE"
+          [ "$CODE" = "200" ]
+          # Secure metrics scraping: /metrics reachable with a client cert.
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/tls/ca.crt \
+            --cert /tmp/tls/curl-client.crt --key /tmp/tls/curl-client.key \
+            https://127.0.0.1:18543/metrics)
+          echo "mTLS /metrics -> $CODE"
+          [ "$CODE" = "200" ]
+          # Full gateway round trip WITH a client cert: HTTPS -> auth ->
+          # gateway mux -> gateway's own mTLS dial -> gRPC ListAgents.
+          PROBE_KEY="janus_nightly_tls_probe"
+          CODE=$(curl -s -o /tmp/grpc-mtls.json -w '%{http_code}' \
+            --cacert /tmp/tls/ca.crt \
+            --cert /tmp/tls/curl-client.crt --key /tmp/tls/curl-client.key \
+            -H "x-api-key: $PROBE_KEY" \
+            "https://127.0.0.1:18543/grpc/v1/tenants/t0/agents")
+          echo "mTLS /grpc/v1/tenants/t0/agents -> $CODE $(cat /tmp/grpc-mtls.json)"
+          [ "$CODE" = "200" ]
+          # WITHOUT a client certificate: TLS handshake rejection (non-zero
+          # curl exit), never an HTTP status.
+          if curl -s -o /dev/null --cacert /tmp/tls/ca.crt \
+            https://127.0.0.1:18543/healthz; then
+            echo "::error::connection without client cert unexpectedly succeeded"
+            exit 1
+          else
+            echo "no-client-cert rejected at TLS handshake (curl exit $?)"
+          fi
+
       - name: Dump cluster state on failure
         if: failure()
         run: |
