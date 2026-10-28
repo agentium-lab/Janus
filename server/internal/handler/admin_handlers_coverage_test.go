@@ -62,8 +62,7 @@ func TestAPIKeyHandler_Create(t *testing.T) {
 
 	body := `{"name":"ci-key","scopes":["tasks:read","tasks:write"]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/api-keys", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/api-keys", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	var resp struct {
@@ -131,8 +130,7 @@ func TestAPIKeyHandler_Revoke(t *testing.T) {
 	h := NewAPIKeyHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/api-keys/key-1/revoke", nil)
-	w := httptest.NewRecorder()
-	h.Revoke(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/api-keys/{keyID}/revoke", h.Revoke, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got core.APIKey
@@ -158,8 +156,7 @@ func TestAPIKeyHandler_Revoke_ServiceError(t *testing.T) {
 	h := NewAPIKeyHandler(&fakeAPIKeySvc{revokeErr: fmt.Errorf("db error")})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/api-keys/key-1/revoke", nil)
-	w := httptest.NewRecorder()
-	h.Revoke(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/api-keys/{keyID}/revoke", h.Revoke, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -168,8 +165,7 @@ func TestAPIKeyHandler_Revoke_NotFound(t *testing.T) {
 	h := NewAPIKeyHandler(&fakeAPIKeySvc{revoked: nil})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/api-keys/key-1/revoke", nil)
-	w := httptest.NewRecorder()
-	h.Revoke(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/api-keys/{keyID}/revoke", h.Revoke, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 	var env errorEnvelope
@@ -230,9 +226,8 @@ func TestBudgetHandler_Upsert(t *testing.T) {
 	h := NewBudgetHandler(svc)
 
 	body := `{"scope_type":"tenant","rpm":100,"tpm":1000,"max_concurrency":5,"daily_cost_usd":1.5,"monthly_cost_usd":30}`
-	req := httptest.NewRequest(http.MethodPut, "/v1/tenants/acme/budgets", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Upsert(w, req)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/budgets", strings.NewReader(body))
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/budgets", h.Upsert, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got core.BudgetSpec
@@ -271,8 +266,7 @@ func TestBudgetHandler_Get_TenantScope(t *testing.T) {
 	h := NewBudgetHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/budgets/tenant", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/budgets/{scopeType}", h.Get, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "tenant", svc.gotGetType)
@@ -284,8 +278,7 @@ func TestBudgetHandler_Get_WithScopeID(t *testing.T) {
 	h := NewBudgetHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/budgets/mailbox/mb-1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/budgets/{scopeType}/{scopeID}", h.Get, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "mailbox", svc.gotGetType)
@@ -319,8 +312,7 @@ func TestBudgetHandler_Get_NotFound(t *testing.T) {
 	h := NewBudgetHandler(&fakeBudgetSvc{spec: nil})
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/budgets/tenant", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/budgets/{scopeType}", h.Get, req)
 
 	require.Equal(t, http.StatusNotFound, w.Code)
 }
@@ -349,24 +341,49 @@ func TestBudgetHandler_List_Error(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+// budgetScopeFromPath is gone: scope_type/scope_id come from the router's
+// wildcards. The shapes are pinned by dispatching BudgetHandler.Get through
+// a ServeMux registered with the two real budget Get patterns.
 func TestBudgetScopeFromPath(t *testing.T) {
-	cases := []struct {
-		path      string
-		scopeType string
-		scopeID   string
-	}{
+	twoSeg := []struct{ path, scopeType, scopeID string }{
 		{"/v1/tenants/acme/budgets/mailbox/mb-1", "mailbox", "mb-1"},
-		{"/v1/tenants/acme/budgets/tenant", "tenant", ""},
 		{"/v1/tenants/acme/budgets/agent/ag-1", "agent", "ag-1"},
-		{"/v1/tenants/acme/budgets/", "", ""},
-		{"/v1/tenants/acme/budgets", "", ""},
-		{"/v1/tenants/acme/nothing", "", ""},
-		{"/budgets/a/b/c", "a", "b"},
 	}
-	for _, tc := range cases {
-		st, sid := budgetScopeFromPath(tc.path)
-		assert.Equal(t, tc.scopeType, st, "scope_type for %q", tc.path)
-		assert.Equal(t, tc.scopeID, sid, "scope_id for %q", tc.path)
+	for _, tc := range twoSeg {
+		svc := &fakeBudgetSvc{spec: &core.BudgetSpec{}}
+		h := NewBudgetHandler(svc)
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}/budgets/{scopeType}/{scopeID}", h.Get,
+			httptest.NewRequest(http.MethodGet, tc.path, nil))
+		require.Equal(t, http.StatusOK, w.Code, tc.path)
+		assert.Equal(t, tc.scopeType, svc.gotGetType, tc.path)
+		assert.Equal(t, tc.scopeID, svc.gotGetID, tc.path)
+	}
+
+	// One-segment shape: tenant-level scope, no {scopeID} wildcard.
+	svc := &fakeBudgetSvc{spec: &core.BudgetSpec{}}
+	h := NewBudgetHandler(svc)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/budgets/{scopeType}", h.Get,
+		httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/budgets/tenant", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "tenant", svc.gotGetType)
+	assert.Equal(t, "", svc.gotGetID)
+
+	// Shapes outside the route table never reach the handler.
+	for _, path := range []string{
+		"/v1/tenants/acme/budgets",
+		"/v1/tenants/acme/budgets/",
+		"/v1/tenants/acme/nothing",
+		"/budgets/a/b/c",
+	} {
+		svc := &fakeBudgetSvc{}
+		h := NewBudgetHandler(svc)
+		mux := http.NewServeMux()
+		mux.Handle("GET /v1/tenants/{tenantID}/budgets/{scopeType}/{scopeID}", http.HandlerFunc(h.Get))
+		mux.Handle("GET /v1/tenants/{tenantID}/budgets/{scopeType}", http.HandlerFunc(h.Get))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusNotFound, rec.Code, path)
+		assert.Empty(t, svc.gotGetType, path)
 	}
 }
 
@@ -393,8 +410,7 @@ func TestCatalogHandler_List(t *testing.T) {
 	h := NewCatalogHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/catalog", nil)
-	w := httptest.NewRecorder()
-	h.List(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/catalog", h.List, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var resp struct {
@@ -453,8 +469,7 @@ func TestPolicyRuleHandler_Create(t *testing.T) {
 
 	body := `{"id":"rule-1","name":"deny-pii","status":"active","priority":10,"condition":{"field":"classification","op":"eq","value":"pii"},"action":{"effect":"deny"}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/policy-rules", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/policy-rules", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	var got core.PolicyRule

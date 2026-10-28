@@ -80,29 +80,14 @@ func newIdentityStack(t *testing.T) *identityStack {
 	})
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		rest := strings.TrimPrefix(r.URL.Path, "/v1/tenants/"+scopeTenant)
-		switch {
-		case strings.HasSuffix(rest, "/approve"):
-			postOnly(w, r, approvalH.Approve)
-		case strings.HasSuffix(rest, "/revoke"):
-			postOnly(w, r, apiKeyH.Revoke)
-		case strings.HasSuffix(rest, "/acting-user"):
-			getOnly(w, r, echoActingUser.ServeHTTP)
-		case strings.Contains(rest, "api-keys") && r.Method == http.MethodGet:
-			getOnly(w, r, apiKeyH.List)
-		case strings.Contains(rest, "api-keys"):
-			postOnly(w, r, apiKeyH.Create)
-		case strings.HasSuffix(rest, "/agents") && r.Method == http.MethodPost:
-			postOnly(w, r, agentH.Register)
-		case strings.HasSuffix(rest, "/agents"):
-			getOnly(w, r, agentH.List)
-		case strings.Contains(rest, "/tasks"):
-			postOnly(w, r, taskH.Create)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/approvals/{approvalID}/approve", approvalH.Approve)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/api-keys/{keyID}/revoke", apiKeyH.Revoke)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/acting-user", echoActingUser.ServeHTTP)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/api-keys", apiKeyH.List)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/api-keys", apiKeyH.Create)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/agents", agentH.Register)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/agents", agentH.List)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks", taskH.Create)
 
 	extract := func(path string) string {
 		parts := strings.Split(strings.TrimPrefix(path, "/v1/tenants/"), "/")

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -48,9 +47,9 @@ type progressReq struct {
 }
 
 func (h *ProgressHandler) Report(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	taskID := lastSegment(strings.TrimSuffix(r.URL.Path, "/progress"))
-	if taskID == "" || taskID == "tasks" {
+	tenantID := r.PathValue("tenantID")
+	taskID := r.PathValue("taskID")
+	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "missing task id")
 		return
 	}

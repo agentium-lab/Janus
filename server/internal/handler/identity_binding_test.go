@@ -27,8 +27,7 @@ func TestProgressHandler_BoundKeyImpersonationRejected(t *testing.T) {
 	body := `{"message":"forging progress","agent_id":"victim-agent"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/t1/progress", strings.NewReader(body))
 	req = principalCtx(req, auth.Principal{TenantID: "acme", BoundAgentID: "real-agent"})
-	w := httptest.NewRecorder()
-	h.Report(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", h.Report, req)
 
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "real-agent")
@@ -42,8 +41,7 @@ func TestProgressHandler_BoundKeyOwnIdentityAllowed(t *testing.T) {
 	body := `{"message":"legit","agent_id":"real-agent"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/t1/progress", strings.NewReader(body))
 	req = principalCtx(req, auth.Principal{TenantID: "acme", BoundAgentID: "real-agent"})
-	w := httptest.NewRecorder()
-	h.Report(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", h.Report, req)
 
 	assert.Equal(t, http.StatusAccepted, w.Code)
 	assert.Equal(t, 1, svc.calls)
@@ -56,8 +54,7 @@ func TestProgressHandler_UnboundKeyBackwardCompatible(t *testing.T) {
 	body := `{"message":"legacy","agent_id":"any-agent"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/t1/progress", strings.NewReader(body))
 	req = principalCtx(req, auth.Principal{TenantID: "acme"})
-	w := httptest.NewRecorder()
-	h.Report(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", h.Report, req)
 
 	assert.Equal(t, http.StatusAccepted, w.Code)
 }
@@ -104,8 +101,7 @@ func TestAgentHandler_Heartbeat_ImpersonationRejected(t *testing.T) {
 	h := NewAgentHandler(&stubAgentSvcIdentity{})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/agents/victim-agent/heartbeat", nil)
 	req = principalCtx(req, auth.Principal{TenantID: "acme", BoundAgentID: "real-agent"})
-	w := httptest.NewRecorder()
-	h.Heartbeat(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/agents/{agentID}/heartbeat", h.Heartbeat, req)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 }
 

@@ -42,12 +42,12 @@ func (h *SSEHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	taskID := lastSegment(strings.TrimSuffix(r.URL.Path, "/stream"))
-	if taskID == "" || taskID == "tasks" {
+	taskID := r.PathValue("taskID")
+	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "missing task id")
 		return
 	}
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 
 	// Subscribe BEFORE reading status: if the task transitions to terminal
 	// between our status read and the subscribe, the terminal event would be

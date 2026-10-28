@@ -941,12 +941,10 @@ func TestMultiAgentConcurrentPublish(t *testing.T) {
 	taskH := handler.NewTaskHandler(taskSvc)
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/acme/tasks", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			taskH.Create(w, r)
-		}
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks", func(w http.ResponseWriter, r *http.Request) {
+		taskH.Create(w, r)
 	})
-	mux.HandleFunc("/v1/tenants/acme/tasks/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/tasks/{taskID}", func(w http.ResponseWriter, r *http.Request) {
 		taskH.Get(w, r)
 	})
 

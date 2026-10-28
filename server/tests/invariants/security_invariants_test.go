@@ -144,13 +144,7 @@ func newSecurityServer(t *testing.T) *httptest.Server {
 	delete(validator.keys, "key-revoked")
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost {
-			taskH.Create(w, r)
-			return
-		}
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks", taskH.Create)
 
 	// Production chain from main.go: Middleware -> ScopeGuard -> TenantGuard
 	// -> handler, with the only difference being the injected key validator.
@@ -379,13 +373,7 @@ func TestSecurity_APIKeyLifecycle_ScopedKeyEndToEnd(t *testing.T) {
 	taskSvc := service.NewTaskService(taskRepo, &securityQueue{}, nil, nil)
 	taskH := handler.NewTaskHandler(taskSvc)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/tasks") && r.Method == http.MethodPost {
-			taskH.Create(w, r)
-			return
-		}
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks", taskH.Create)
 	core := auth.Middleware(validator)(auth.ScopeGuard(auth.TenantGuard(extractTenantFromPath)(mux)))
 	ts := httptest.NewServer(core)
 	defer ts.Close()

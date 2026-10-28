@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -34,7 +33,7 @@ type createdAPIKeyResp struct {
 }
 
 func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req createAPIKeyReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -49,7 +48,7 @@ func (h *APIKeyHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	keys, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -59,8 +58,8 @@ func (h *APIKeyHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIKeyHandler) Revoke(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	keyID := lastSegment(strings.TrimSuffix(r.URL.Path, "/revoke"))
+	tenantID := r.PathValue("tenantID")
+	keyID := r.PathValue("keyID")
 	if keyID == "" {
 		writeError(w, http.StatusBadRequest, "missing key id")
 		return

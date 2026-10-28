@@ -6,7 +6,6 @@ import (
 	"github.com/agentium-lab/Janus/server/internal/outbox"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"time"
@@ -39,7 +38,7 @@ func (h *AuditHandler) WithReplayer(r AuditReplayer) *AuditHandler {
 }
 
 func (h *AuditHandler) QueryByTask(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	limit := intQuery(r, "limit", 50)
 	events, err := h.svc.QueryByTask(r.Context(), tenantID, taskID, limit)
 	if err != nil {
@@ -50,19 +49,11 @@ func (h *AuditHandler) QueryByTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuditHandler) QueryByTrace(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	traceID := lastSegment(r.URL.Path)
-	if strings.HasPrefix(traceID, "traces") {
-		traceID = ""
-	}
-	if traceID == "" {
-		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
-		for i, p := range parts {
-			if p == "traces" && i+1 < len(parts) {
-				traceID = parts[i+1]
-			}
-		}
-	}
+	tenantID := r.PathValue("tenantID")
+	// Two route patterns reach this handler: /traces/{traceID} (the trace
+	// query shape) and /tasks/{taskID}/traces (the task-scoped shape, where
+	// no trace wildcard exists and PathValue returns "").
+	traceID := r.PathValue("traceID")
 	limit := intQuery(r, "limit", 50)
 	events, err := h.svc.QueryByTrace(r.Context(), tenantID, traceID, limit)
 	if err != nil {
@@ -73,7 +64,7 @@ func (h *AuditHandler) QueryByTrace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuditHandler) QueryByTenant(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	limit := intQuery(r, "limit", 50)
 	events, err := h.svc.QueryByTenant(r.Context(), tenantID, limit)
 	if err != nil {
@@ -96,7 +87,7 @@ func intQuery(r *http.Request, key string, def int) int {
 // ReplayAudit re-projects audit events from the outbox table for a
 // tenant/time range. Safe to call repeatedly (idempotent writes).
 func (h *AuditHandler) ReplayAudit(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	fromStr := r.URL.Query().Get("from")
 	toStr := r.URL.Query().Get("to")
 	if fromStr == "" || toStr == "" {
@@ -164,7 +155,7 @@ func (h *AuditHandler) RetryOutboxDead(w http.ResponseWriter, r *http.Request) {
 	}
 	tenantID := auth.TenantFromContext(r.Context())
 	if tenantID == "" {
-		tenantID = tenantIDFromPath(r.URL.Path)
+		tenantID = r.PathValue("tenantID")
 	}
 	if tenantID == "" {
 		writeError(w, http.StatusBadRequest, "tenant id required")

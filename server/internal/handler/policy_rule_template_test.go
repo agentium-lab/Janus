@@ -53,8 +53,7 @@ func TestPolicyRuleHandler_CreateFromTemplate_TaskPublishTemplateStillCreated(t 
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/policy-rules/templates",
 		strings.NewReader(`{"template":"require_approval_capability","capability":"delete_db"}`))
-	w := httptest.NewRecorder()
-	h.CreateFromTemplate(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/policy-rules/templates", h.CreateFromTemplate, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	assert.Equal(t, "acme", svc.gotTenant)
@@ -67,8 +66,7 @@ func TestPolicyRuleHandler_CreateFromTemplate_TaskRouteTemplateStillCreated(t *t
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/policy-rules/templates",
 		strings.NewReader(`{"template":"deny_agent_data_classification","agent_id":"agent-1","data_classification":"confidential"}`))
-	w := httptest.NewRecorder()
-	h.CreateFromTemplate(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/policy-rules/templates", h.CreateFromTemplate, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	assert.Equal(t, "acme", svc.gotTenant)

@@ -5,7 +5,6 @@ import (
 
 	"context"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
@@ -35,7 +34,7 @@ func NewTaskHandler(svc TaskService) *TaskHandler {
 }
 
 func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req struct {
 		ID             string               `json:"id"`
 		SourceAgent    string               `json:"source_agent"`
@@ -78,6 +77,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 				DataClassification    string   `json:"data_classification"`
 				RequiresHumanApproval bool     `json:"requires_human_approval"`
 				AllowedTools          []string `json:"allowed_tools"`
+				TargetTeamID          string   `json:"target_team_id"`
 			} `json:"policy"`
 			ContextRefs []struct {
 				Type           string   `json:"type"`
@@ -162,6 +162,7 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 			DataClassification:    req.Envelope.Policy.DataClassification,
 			RequiresHumanApproval: req.Envelope.Policy.RequiresHumanApproval,
 			AllowedTools:          req.Envelope.Policy.AllowedTools,
+			TargetTeamID:          req.Envelope.Policy.TargetTeamID,
 		}
 	}
 
@@ -247,8 +248,8 @@ func (h *TaskHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	taskID := lastSegment(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	taskID := r.PathValue("taskID")
 
 	task, err := h.svc.Get(r.Context(), tenantID, taskID)
 	if err != nil {
@@ -260,7 +261,7 @@ func (h *TaskHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Start(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	if err := h.svc.Start(r.Context(), tenantID, taskID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -269,7 +270,7 @@ func (h *TaskHandler) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	if err := h.svc.Complete(r.Context(), tenantID, taskID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -278,7 +279,7 @@ func (h *TaskHandler) Complete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Fail(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
@@ -294,7 +295,7 @@ func (h *TaskHandler) Fail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	if err := h.svc.Cancel(r.Context(), tenantID, taskID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -303,7 +304,7 @@ func (h *TaskHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Replay(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	result, err := h.svc.Replay(r.Context(), tenantID, taskID)
 	if err != nil {
 		var conflict *service.ReplayConflictError
@@ -318,7 +319,7 @@ func (h *TaskHandler) Replay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Block(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		Reason string `json:"reason"`
 	}
@@ -331,27 +332,12 @@ func (h *TaskHandler) Block(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TaskHandler) Unblock(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	if err := h.svc.Unblock(r.Context(), tenantID, taskID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "queued"})
-}
-
-func tenantAndTaskFromPath(path string) (string, string) {
-	parts := strings.Split(path, "/")
-	tenantID := ""
-	taskID := ""
-	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
-			tenantID = parts[i+1]
-		}
-		if p == "tasks" && i+1 < len(parts) && taskID == "" {
-			taskID = parts[i+1]
-		}
-	}
-	return tenantID, taskID
 }
 
 func firstNonNil(a, b *core.ToolInvocation) *core.ToolInvocation {

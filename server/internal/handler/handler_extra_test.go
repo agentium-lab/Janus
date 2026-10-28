@@ -24,10 +24,22 @@ func TestHelpers_IsDuplicateKeyError(t *testing.T) {
 	assert.False(t, isDuplicateKeyError(nil))
 }
 
-func TestHelpers_TenantIDFromPath_Edges(t *testing.T) {
-	assert.Equal(t, "", tenantIDFromPath("/v1/agents"))
-	assert.Equal(t, "", tenantIDFromPath("/tenants"))
-	assert.Equal(t, "x", tenantIDFromPath("/v1/tenants/x"))
+// Tenant IDs come from the router's wildcards (r.PathValue), so the
+// parsing edges are pinned by dispatching through a ServeMux registered
+// with the real pattern — including a tenant literally named "tasks".
+func TestPathValue_TenantID_ThroughRealPattern(t *testing.T) {
+	svc := &mockTenantService{tenants: map[string]*core.Tenant{
+		"x":     {ID: "x"},
+		"tasks": {ID: "tasks"},
+	}}
+	h := NewTenantHandler(svc)
+	for _, path := range []string{"/v1/tenants/x", "/v1/tenants/tasks"} {
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}", h.Get, httptest.NewRequest(http.MethodGet, path, nil))
+		assert.Equal(t, http.StatusOK, w.Code, path)
+	}
+	// No tenant wildcard shape: the real router 404s before any handler runs.
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}", h.Get, httptest.NewRequest(http.MethodGet, "/v1/agents", nil))
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 func TestHelpers_ReadJSON_NilBody(t *testing.T) {
@@ -36,40 +48,49 @@ func TestHelpers_ReadJSON_NilBody(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestPathSegmentByMarker(t *testing.T) {
-	assert.Equal(t, "acme", pathSegmentByMarker("/v1/tenants/acme/tasks", "tenants"))
-	assert.Equal(t, "", pathSegmentByMarker("/v1/foo/bar", "tenants"))
-	assert.Equal(t, "", pathSegmentByMarker("", "tenants"))
-}
-
-func TestPathSegmentBefore(t *testing.T) {
-	assert.Equal(t, "task-1", pathSegmentBefore("/v1/tenants/acme/tasks/task-1/context-refs", "context-refs"))
-	assert.Equal(t, "v1", pathSegmentBefore("/v1/context-refs", "context-refs"))
-}
-
-func TestLastPathSegment(t *testing.T) {
-	assert.Equal(t, "ref-1", lastPathSegment("/v1/tenants/acme/context-refs/ref-1"))
-	assert.Equal(t, "", lastPathSegment(""))
-}
-
-func TestAgentIDFromHeartbeatPath(t *testing.T) {
-	assert.Equal(t, "a1", agentIDFromHeartbeatPath("/v1/tenants/acme/agents/a1/heartbeat"))
-	assert.Equal(t, "", agentIDFromHeartbeatPath("/v1/tenants/acme"))
-}
-
-func TestExtractTenantAndApproval(t *testing.T) {
-	tid, aid := extractTenantAndApproval("/v1/tenants/acme/approvals/appr-1/approve")
-	assert.Equal(t, "acme", tid)
-	assert.Equal(t, "appr-1", aid)
-
-	tid, aid = extractTenantAndApproval("/v1/tenants")
-	assert.Equal(t, "", tid)
-	assert.Equal(t, "", aid)
-}
-
-func TestStringsSplit(t *testing.T) {
-	assert.Nil(t, stringsSplit("", "/"))
-	assert.Equal(t, []string{"", "v1", "tenants"}, stringsSplit("/v1/tenants", "/"))
+// Resource IDs (agent, approval, task, ref) likewise come from the
+// router's wildcards; each subtest pins the handler receiving the IDs the
+// pattern captured — a wrong capture misses the seeded key and fails.
+func TestPathValue_ResourceIDs_ThroughRealPatterns(t *testing.T) {
+	t.Run("agent get", func(t *testing.T) {
+		svc := &mockAgentService{agents: map[string]*core.Agent{"acme:a1": {ID: "a1"}}}
+		h := NewAgentHandler(svc)
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}/agents/{agentID}", h.Get,
+			httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/agents/a1", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "a1")
+	})
+	t.Run("agent heartbeat", func(t *testing.T) {
+		h := NewAgentHandler(&mockAgentService{})
+		w := dispatchViaMux("POST /v1/tenants/{tenantID}/agents/{agentID}/heartbeat", h.Heartbeat,
+			httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/agents/a1/heartbeat", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+	t.Run("approval get", func(t *testing.T) {
+		svc := &mockApprovalSvcExtra{approvals: map[string]*core.Approval{
+			"acme:appr-1": {ID: "appr-1"},
+		}}
+		h := NewApprovalHandler(svc)
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}/approvals/{approvalID}", h.Get,
+			httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/approvals/appr-1", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "appr-1")
+	})
+	t.Run("context refs by task", func(t *testing.T) {
+		h := NewContextRefHandler(service.NewContextRefService(&mockContextRefRepo{}))
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}/tasks/{taskID}/context-refs", h.ListByTask,
+			httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-1/context-refs", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+	})
+	t.Run("context ref get", func(t *testing.T) {
+		h := NewContextRefHandler(service.NewContextRefService(&mockContextRefRepo{refs: map[string]*core.ContextRef{
+			"ref-1": {ID: "ref-1"},
+		}}))
+		w := dispatchViaMux("GET /v1/tenants/{tenantID}/context-refs/{refID}", h.Get,
+			httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/context-refs/ref-1", nil))
+		assert.Equal(t, http.StatusOK, w.Code)
+		assert.Contains(t, w.Body.String(), "ref-1")
+	})
 }
 
 // --- Approval Handler ---
@@ -253,8 +274,7 @@ func TestContextRefHandler_Attach(t *testing.T) {
 		"type": "file", "uri": "s3://bucket/f.txt", "access_scope": []string{"agent-1"},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/context-refs", strings.NewReader(string(body)))
-	w := httptest.NewRecorder()
-	h.Attach(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/context-refs", h.Attach, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -282,8 +302,7 @@ func TestContextRefHandler_Attach_Error(t *testing.T) {
 	h := NewContextRefHandler(svc)
 	body, _ := json.Marshal(map[string]string{"type": "file", "uri": "s3://b/f"})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/context-refs", strings.NewReader(string(body)))
-	w := httptest.NewRecorder()
-	h.Attach(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/context-refs", h.Attach, req)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
@@ -293,8 +312,7 @@ func TestContextRefHandler_Get(t *testing.T) {
 	}})
 	h := NewContextRefHandler(svc)
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/context-refs/ref-1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/context-refs/{refID}", h.Get, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -174,6 +175,29 @@ func (fakeTaskSvc) Unblock(context.Context, string, string) error       { return
 func (fakeTaskSvc) Replay(context.Context, string, string) (*core.Task, error) {
 	return &core.Task{ID: "MARKER-TASK-REPLAY"}, nil
 }
+
+// recordingTaskSvc records the arguments its methods are called with so
+// tests can assert on what actually reached the service layer.
+type recordingTaskSvc struct {
+	fakeTaskSvc
+	mu      sync.Mutex
+	created []core.Task
+	cancels [][2]string
+}
+
+func (r *recordingTaskSvc) Create(_ context.Context, task core.Task) (*core.Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.created = append(r.created, task)
+	return &core.Task{ID: task.ID, Status: core.TaskStatusCreated}, nil
+}
+
+func (r *recordingTaskSvc) Cancel(_ context.Context, tenantID, taskID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancels = append(r.cancels, [2]string{tenantID, taskID})
+	return nil
+}
 func (fakeTaskSvc) Complete(context.Context, string, string) error { return nil }
 func (fakeTaskSvc) Fail(context.Context, string, string, *core.TaskError) error {
 	return nil
@@ -265,11 +289,17 @@ func (c *countingDispatchSvc) PullTask(context.Context, string, string, string) 
 }
 
 func newParityRouter(dispatchSvc handler.DispatchService) http.Handler {
+	return newParityRouterWith(dispatchSvc, fakeTaskSvc{})
+}
+
+// newParityRouterWith substitutes the task service (e.g. a recording
+// fake) while keeping every other binding identical to the parity router.
+func newParityRouterWith(dispatchSvc handler.DispatchService, taskSvc handler.TaskService) http.Handler {
 	stub := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	return newRouter(
 		handler.NewTenantHandler(fakeTenantSvc{}),
 		handler.NewAgentHandler(fakeAgentSvc{}),
-		handler.NewTaskHandler(fakeTaskSvc{}),
+		handler.NewTaskHandler(taskSvc),
 		handler.NewMailboxHandler(fakeMailboxSvc{}),
 		handler.NewDispatchHandler(dispatchSvc),
 		handler.NewAuditHandler(fakeAuditSvc{}),
@@ -550,5 +580,54 @@ func TestRouteTable_UndefinedShapes_404(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&svc.pulls); n != 0 {
 		t.Fatalf("undefined shapes must never claim: dispatch service called %d times", n)
+	}
+}
+
+// R1: a tenant literally named "tasks" must not corrupt task-ID parsing.
+// POST /v1/tenants/tasks/tasks/t1/cancel must reach the task service with
+// tenantID="tasks" and taskID="t1" — asserted on recorded arguments, never
+// on response markers.
+func TestRouteTable_TenantNamedTasks_CancelUsesPathValues(t *testing.T) {
+	svc := &recordingTaskSvc{}
+	rt := newParityRouterWith(fakeDispatchSvc{}, svc)
+	rec := parityDo(t, rt, parityRoute{method: http.MethodPost, path: "/v1/tenants/tasks/tasks/t1/cancel"}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel under tenant %q: want 200, got %d body=%s", "tasks", rec.Code, rec.Body.String())
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.cancels) != 1 {
+		t.Fatalf("cancel: service called %d times, want exactly 1", len(svc.cancels))
+	}
+	if gotTenant, gotTask := svc.cancels[0][0], svc.cancels[0][1]; gotTenant != "tasks" || gotTask != "t1" {
+		t.Fatalf("cancel reached service with tenantID=%q taskID=%q, want tenantID=%q taskID=%q", gotTenant, gotTask, "tasks", "t1")
+	}
+}
+
+// R2: envelope policy.target_team_id must survive into the built
+// core.PolicyContext (routing consumes it as a selection constraint) —
+// asserted on the recorded task, never on response markers.
+func TestRouteTable_TaskCreate_EnvelopePolicyTargetTeamID(t *testing.T) {
+	svc := &recordingTaskSvc{}
+	rt := newParityRouterWith(fakeDispatchSvc{}, svc)
+	rec := parityDo(t, rt, parityRoute{
+		method: http.MethodPost,
+		path:   "/v1/tenants/acme/tasks",
+		body:   `{"id":"tt-1","envelope":{"policy":{"target_team_id":"team-x"}}}`,
+	}, nil)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("task create: want 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	svc.mu.Lock()
+	defer svc.mu.Unlock()
+	if len(svc.created) != 1 {
+		t.Fatalf("task create: service called %d times, want exactly 1", len(svc.created))
+	}
+	policy := svc.created[0].Envelope.Policy
+	if policy == nil {
+		t.Fatal("task create reached service with nil envelope policy")
+	}
+	if policy.TargetTeamID != "team-x" {
+		t.Fatalf("task create reached service with policy.TargetTeamID=%q, want %q", policy.TargetTeamID, "team-x")
 	}
 }

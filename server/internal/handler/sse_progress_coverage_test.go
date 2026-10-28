@@ -77,7 +77,10 @@ func TestSSEHandler_TerminalPreCheckClosesImmediately(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-9/stream", nil)
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
-	go func() { h.ServeHTTP(w, req); close(done) }()
+	go func() {
+		muxFor("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP).ServeHTTP(w, req)
+		close(done)
+	}()
 
 	select {
 	case <-done:
@@ -107,7 +110,10 @@ func TestSSEHandler_StatusCheckerError_FallsThroughToStream(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-9/stream", nil)
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
-	go func() { h.ServeHTTP(w, req); close(done) }()
+	go func() {
+		muxFor("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP).ServeHTTP(w, req)
+		close(done)
+	}()
 
 	select {
 	case <-done:
@@ -132,7 +138,10 @@ func TestSSEHandler_StatusCheckerNonTerminal_StreamsUntilTerminal(t *testing.T) 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-9/stream", nil)
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
-	go func() { h.ServeHTTP(w, req); close(done) }()
+	go func() {
+		muxFor("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP).ServeHTTP(w, req)
+		close(done)
+	}()
 
 	select {
 	case <-done:
@@ -160,7 +169,10 @@ func TestSSEHandler_ClosedSubscriberChannelReturns(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-1/stream", nil)
 	w := httptest.NewRecorder()
 	done := make(chan struct{})
-	go func() { h.ServeHTTP(w, req); close(done) }()
+	go func() {
+		muxFor("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP).ServeHTTP(w, req)
+		close(done)
+	}()
 
 	select {
 	case <-done:
@@ -225,8 +237,7 @@ func TestProgressHandler_Report_Success(t *testing.T) {
 
 	body := `{"message":"working","percent":42,"agent_id":"agent-1","data":{"step":2}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 	require.Equal(t, http.StatusAccepted, w.Code)
 	assert.Equal(t, 1, svc.calls)
@@ -259,8 +270,7 @@ func TestProgressHandler_Report_BadJSON(t *testing.T) {
 	handlerFunc := newProgressTestServer(&fakeProgressSvc{}, &recordingPublisher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader("not-json"))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "invalid json")
@@ -270,8 +280,7 @@ func TestProgressHandler_Report_MissingMessage(t *testing.T) {
 	handlerFunc := newProgressTestServer(&fakeProgressSvc{}, &recordingPublisher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(`{"agent_id":"a"}`))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "message is required")
@@ -283,8 +292,7 @@ func TestProgressHandler_Report_PercentOutOfRange(t *testing.T) {
 	for _, pct := range []int{-1, 101} {
 		body := strings.NewReader(`{"message":"m","agent_id":"a","percent":` + strconv.Itoa(pct) + `}`)
 		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", body)
-		w := httptest.NewRecorder()
-		handlerFunc(w, req)
+		w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 		assert.Equal(t, http.StatusBadRequest, w.Code, "percent=%d", pct)
 		assert.Contains(t, w.Body.String(), "percent must be 0-100")
@@ -295,8 +303,7 @@ func TestProgressHandler_Report_MissingAgentID(t *testing.T) {
 	handlerFunc := newProgressTestServer(&fakeProgressSvc{}, &recordingPublisher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(`{"message":"m"}`))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 	assert.Contains(t, w.Body.String(), "agent_id is required")
@@ -307,13 +314,11 @@ func TestProgressHandler_Report_RateLimited(t *testing.T) {
 
 	body := `{"message":"m","agent_id":"a"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 	require.Equal(t, http.StatusAccepted, w.Code)
 
 	req2 := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(body))
-	w2 := httptest.NewRecorder()
-	handlerFunc(w2, req2)
+	w2 := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req2)
 
 	require.Equal(t, http.StatusTooManyRequests, w2.Code)
 	assert.Contains(t, w2.Body.String(), "rate limit")
@@ -325,8 +330,7 @@ func TestProgressHandler_Report_DistinctTasksNotRateLimited(t *testing.T) {
 	for _, taskID := range []string{"task-1", "task-2"} {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/"+taskID+"/progress",
 			strings.NewReader(`{"message":"m","agent_id":"a"}`))
-		w := httptest.NewRecorder()
-		handlerFunc(w, req)
+		w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 		assert.Equal(t, http.StatusAccepted, w.Code, taskID)
 	}
 }
@@ -335,8 +339,7 @@ func TestProgressHandler_Report_ServiceError(t *testing.T) {
 	handlerFunc := newProgressTestServer(&fakeProgressSvc{err: context.DeadlineExceeded}, &recordingPublisher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks/task-1/progress", strings.NewReader(`{"message":"m","agent_id":"a"}`))
-	w := httptest.NewRecorder()
-	handlerFunc(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", handlerFunc, req)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }

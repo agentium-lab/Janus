@@ -28,9 +28,7 @@ func TestContextRefHandler_Attach_ReturnsRef(t *testing.T) {
 
 	body := `{"type":"document","uri":"s3://bucket/file.txt","hash":"abc","classification":"internal"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/context-refs", strings.NewReader(body))
-	w := httptest.NewRecorder()
-
-	h.Attach(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/context-refs", h.Attach, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var ref core.ContextRef
@@ -79,9 +77,7 @@ func TestContextRefHandler_Attach_ServiceError_JSONEnvelope(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/context-refs",
 		strings.NewReader(`{"type":"document","uri":"s3://b/f"}`))
-	w := httptest.NewRecorder()
-
-	h.Attach(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/context-refs", h.Attach, req)
 
 	require.Equal(t, http.StatusInternalServerError, w.Code)
 	var env errorEnvelope
@@ -96,9 +92,7 @@ func TestContextRefHandler_Get_ReturnsRef(t *testing.T) {
 	h := NewContextRefHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/context-refs/ref-1", nil)
-	w := httptest.NewRecorder()
-
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/context-refs/{refID}", h.Get, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var ref core.ContextRef

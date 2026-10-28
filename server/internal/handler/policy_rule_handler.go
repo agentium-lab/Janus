@@ -31,7 +31,7 @@ type createPolicyRuleReq struct {
 }
 
 func (h *PolicyRuleHandler) Create(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req createPolicyRuleReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -63,7 +63,7 @@ func (h *PolicyRuleHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PolicyRuleHandler) List(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	rules, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -81,7 +81,7 @@ func (h *PolicyRuleHandler) List(w http.ResponseWriter, r *http.Request) {
 // enforced at task.publish via data classification/allowed_tools), so
 // storing them would only pretend to govern.
 func (h *PolicyRuleHandler) CreateFromTemplate(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req core.PolicyRuleTemplateRequest
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

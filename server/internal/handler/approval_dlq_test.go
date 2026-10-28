@@ -87,8 +87,7 @@ func TestApprovalHandler_Get(t *testing.T) {
 	h := NewApprovalHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/approvals/ap-1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/approvals/{approvalID}", h.Get, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var approval core.Approval

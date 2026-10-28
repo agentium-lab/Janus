@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -26,7 +25,7 @@ func NewMailboxHandler(svc MailboxService) *MailboxHandler {
 }
 
 func (h *MailboxHandler) Create(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req struct {
 		ID               string `json:"id"`
 		AgentID          string `json:"agent_id"`
@@ -60,8 +59,8 @@ func (h *MailboxHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MailboxHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	mailboxID := lastSegment(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	mailboxID := r.PathValue("mailboxID")
 
 	mailbox, err := h.svc.Get(r.Context(), tenantID, mailboxID)
 	if err != nil {
@@ -73,8 +72,8 @@ func (h *MailboxHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MailboxHandler) Update(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	mailboxID := lastSegment(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	mailboxID := r.PathValue("mailboxID")
 
 	var req struct {
 		MaxConcurrency   *int `json:"max_concurrency"`
@@ -126,13 +125,9 @@ func (h *MailboxHandler) Resume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MailboxHandler) toggleLifecycle(w http.ResponseWriter, r *http.Request, resume bool) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	suffix := "/pause"
-	if resume {
-		suffix = "/resume"
-	}
-	mailboxID := lastSegment(strings.TrimSuffix(r.URL.Path, suffix))
-	if mailboxID == "" || mailboxID == "mailboxes" {
+	tenantID := r.PathValue("tenantID")
+	mailboxID := r.PathValue("mailboxID")
+	if mailboxID == "" {
 		writeError(w, http.StatusBadRequest, "missing mailbox id")
 		return
 	}

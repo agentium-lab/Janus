@@ -92,16 +92,14 @@ func TestTenantHandler_Get(t *testing.T) {
 	h := NewTenantHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}", h.Get, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestTenantHandler_GetNotFound(t *testing.T) {
 	h := NewTenantHandler(&mockTenantService{})
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/nonexistent", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}", h.Get, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -203,8 +201,7 @@ func TestAgentHandler_Get(t *testing.T) {
 	h := NewAgentHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/agents/agent-1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/agents/{agentID}", h.Get, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -319,8 +316,7 @@ func TestTaskHandler_Create(t *testing.T) {
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
 }
 
@@ -354,8 +350,7 @@ func TestTaskHandler_CreateWithFullEnvelope(t *testing.T) {
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", bytes.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 	assert.Equal(t, http.StatusCreated, w.Code)
 
 	created := svc.tasks["acme:task-full"]
@@ -395,8 +390,7 @@ func TestTaskHandler_Get(t *testing.T) {
 	h := NewTaskHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/tasks/{taskID}", h.Get, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -545,8 +539,7 @@ func TestMailboxHandler_Get(t *testing.T) {
 	h := NewMailboxHandler(svc)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/mailboxes/mb1", nil)
-	w := httptest.NewRecorder()
-	h.Get(w, req)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/mailboxes/{mailboxID}", h.Get, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 }
 
@@ -556,11 +549,4 @@ func TestMailboxHandler_GetNotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.Get(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
-}
-
-func TestHelpers(t *testing.T) {
-	assert.Equal(t, "acme", tenantIDFromPath("/v1/tenants/acme/agents"))
-	assert.Equal(t, "", tenantIDFromPath("/v1/agents"))
-	assert.Equal(t, "agent-1", lastSegment("/v1/tenants/acme/agents/agent-1"))
-	assert.Equal(t, "agent-1", agentIDFromHeartbeatPath("/v1/tenants/acme/agents/agent-1/heartbeat"))
 }

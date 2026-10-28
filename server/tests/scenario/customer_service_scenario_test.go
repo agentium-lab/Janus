@@ -475,47 +475,18 @@ func newHarness(t *testing.T) *harness {
 
 	mux := http.NewServeMux()
 	mux.Handle("/a2a/", a2aGw)
-	mux.HandleFunc("/v1/tenants/acme/tasks/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		switch {
-		case strings.HasSuffix(p, "/progress") && r.Method == http.MethodPost:
-			progressH.Report(w, r)
-		case strings.HasSuffix(p, "/stream"):
-			sseH.ServeHTTP(w, r)
-		case strings.HasSuffix(p, "/events"):
-			auditQuery(w, r)
-		case strings.HasSuffix(p, "/start") && r.Method == http.MethodPost:
-			dispatchH.Start(w, r)
-		case strings.HasSuffix(p, "/ack") && r.Method == http.MethodPost:
-			dispatchH.Ack(w, r)
-		case strings.HasSuffix(p, "/complete") && r.Method == http.MethodPost:
-			taskH.Complete(w, r)
-		case strings.HasSuffix(p, "/fail") && r.Method == http.MethodPost:
-			taskH.Fail(w, r)
-		case strings.HasSuffix(p, "/nack") && r.Method == http.MethodPost:
-			dispatchH.Nack(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	mux.HandleFunc("/v1/tenants/acme/mailboxes/", func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/pull") || r.Method != http.MethodPost {
-			http.NotFound(w, r)
-			return
-		}
-		dispatchH.Pull(w, r)
-	})
-	mux.HandleFunc("/v1/tenants/acme/approvals/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
-		switch {
-		case strings.HasSuffix(p, "/approve") && r.Method == http.MethodPost:
-			approvalH.Approve(w, r)
-		case strings.HasSuffix(p, "/reject") && r.Method == http.MethodPost:
-			approvalH.Reject(w, r)
-		default:
-			approvalH.ListPending(w, r)
-		}
-	})
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/progress", progressH.Report)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", sseH.ServeHTTP)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/tasks/{taskID}/events", auditQuery)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/start", dispatchH.Start)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/ack", dispatchH.Ack)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/complete", taskH.Complete)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/fail", taskH.Fail)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/nack", dispatchH.Nack)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", dispatchH.Pull)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/approvals", approvalH.ListPending)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/approvals/{approvalID}/approve", approvalH.Approve)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/approvals/{approvalID}/reject", approvalH.Reject)
 
 	authMw := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/service"
@@ -25,7 +24,7 @@ type attachContextRefReq struct {
 }
 
 func (h *ContextRefHandler) Attach(w http.ResponseWriter, r *http.Request) {
-	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
+	tenantID := r.PathValue("tenantID")
 	if tenantID == "" {
 		writeError(w, http.StatusBadRequest, "tenant_id required")
 		return
@@ -44,8 +43,8 @@ func (h *ContextRefHandler) Attach(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ContextRefHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
-	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
+	tenantID := r.PathValue("tenantID")
+	refID := r.PathValue("refID")
 	ref, err := h.svc.Get(r.Context(), tenantID, refID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
@@ -55,8 +54,8 @@ func (h *ContextRefHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ContextRefHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
-	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
-	taskID := pathSegmentBefore(r.URL.Path, "context-refs")
+	tenantID := r.PathValue("tenantID")
+	taskID := r.PathValue("taskID")
 	refs, err := h.svc.ListByTask(r.Context(), tenantID, taskID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -69,39 +68,11 @@ func (h *ContextRefHandler) ListByTask(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ContextRefHandler) Detach(w http.ResponseWriter, r *http.Request) {
-	tenantID := pathSegmentByMarker(r.URL.Path, "tenants")
-	refID := pathSegmentByMarker(r.URL.Path, "context-refs")
+	tenantID := r.PathValue("tenantID")
+	refID := r.PathValue("refID")
 	if err := h.svc.Detach(r.Context(), tenantID, refID); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func pathSegmentByMarker(path, marker string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, p := range parts {
-		if p == marker && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return ""
-}
-
-func pathSegmentBefore(path, marker string) string {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, p := range parts {
-		if p == marker && i > 0 {
-			return parts[i-1]
-		}
-	}
-	return ""
-}
-
-func lastPathSegment(path string) string {
-	parts := strings.Split(strings.TrimRight(path, "/"), "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
 }

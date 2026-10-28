@@ -73,9 +73,8 @@ func TestAuditHandler_RetryOutboxDead_WithReviver(t *testing.T) {
 		assert.Equal(t, "acme", tenantID)
 		return 7, nil
 	}))
-	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/outbox/retry-dead?limit=50", nil)
-	h.RetryOutboxDead(w, r)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/outbox/retry-dead", h.RetryOutboxDead, r)
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.True(t, called)
 }

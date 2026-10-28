@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 )
@@ -33,7 +32,7 @@ type upsertBudgetReq struct {
 }
 
 func (h *BudgetHandler) Upsert(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req upsertBudgetReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -49,8 +48,10 @@ func (h *BudgetHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *BudgetHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	scopeType, scopeID := budgetScopeFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	// Both budget Get patterns reach this handler; the one-segment shape
+	// carries no {scopeID} wildcard, so PathValue returns "" there.
+	scopeType, scopeID := r.PathValue("scopeType"), r.PathValue("scopeID")
 	if scopeType == "" {
 		writeError(w, http.StatusBadRequest, "missing scope_type")
 		return
@@ -68,30 +69,11 @@ func (h *BudgetHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *BudgetHandler) List(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	specs, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{"budgets": specs})
-}
-
-// budgetScopeFromPath extracts scope_type and scope_id following the
-// ".../budgets/" segment, tolerating missing scope_id for tenant-level paths.
-func budgetScopeFromPath(path string) (string, string) {
-	parts := strings.Split(strings.Trim(path, "/"), "/")
-	for i, seg := range parts {
-		if seg != "budgets" {
-			continue
-		}
-		rest := parts[i+1:]
-		if len(rest) >= 2 {
-			return rest[0], rest[1]
-		}
-		if len(rest) == 1 {
-			return rest[0], ""
-		}
-	}
-	return "", ""
 }

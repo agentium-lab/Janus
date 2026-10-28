@@ -25,8 +25,7 @@ func TestMailboxHandler_Update(t *testing.T) {
 	h := NewMailboxHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPatch, "/v1/tenants/acme/mailboxes/mb-1", bytes.NewBufferString(`{"max_concurrency": 10, "ack_wait_seconds": 60}`))
-	w := httptest.NewRecorder()
-	h.Update(w, req)
+	w := dispatchViaMux("PATCH /v1/tenants/{tenantID}/mailboxes/{mailboxID}", h.Update, req)
 
 	assert.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]string
@@ -339,16 +338,22 @@ func TestDLQHandler_Discard_Error(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestTenantAndTaskFromDLQPath(t *testing.T) {
-	tenant, task := tenantAndTaskFromDLQPath("/v1/tenants/acme/dlq/task-123/replay")
-	assert.Equal(t, "acme", tenant)
-	assert.Equal(t, "task-123", task)
-}
+// DLQ IDs come from the router's wildcards; pinned by dispatching
+// DLHandler.Replay through the real pattern. A malformed shape never
+// reaches the handler (router 404).
+func TestDLQPathIDs_ThroughRealPattern(t *testing.T) {
+	svc := &mockDLQService{}
+	h := NewDLQHandler(svc)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/dlq/{taskID}/replay", h.Replay,
+		httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/dlq/task-123/replay", nil))
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "task-123")
 
-func TestTenantAndTaskFromDLQPath_Malformed(t *testing.T) {
-	tenant, task := tenantAndTaskFromDLQPath("/v1/dlq")
-	assert.Equal(t, "", tenant)
-	assert.Equal(t, "", task)
+	mux := http.NewServeMux()
+	mux.Handle("POST /v1/tenants/{tenantID}/dlq/{taskID}/replay", http.HandlerFunc(h.Replay))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/dlq", nil))
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 func TestApprovalHandler_ListPending_Error(t *testing.T) {

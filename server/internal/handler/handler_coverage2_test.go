@@ -99,8 +99,7 @@ func TestMailboxHandler_Pause(t *testing.T) {
 	h := NewMailboxHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/pause", nil)
-	w := httptest.NewRecorder()
-	h.Pause(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pause", h.Pause, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var mb core.Mailbox
@@ -116,8 +115,7 @@ func TestMailboxHandler_Resume(t *testing.T) {
 	h := NewMailboxHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/resume", nil)
-	w := httptest.NewRecorder()
-	h.Resume(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/resume", h.Resume, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, []string{"mb-1"}, svc.resumed)
@@ -173,8 +171,7 @@ func TestMailboxHandler_Pause_GetAfterToggleFails(t *testing.T) {
 	h := NewMailboxHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/pause", nil)
-	w := httptest.NewRecorder()
-	h.Pause(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pause", h.Pause, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
@@ -250,8 +247,7 @@ func TestTaskHandler_Create_EnvelopeDeadlineUsed(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
 	body := fmt.Sprintf(`{"id":"t1","envelope":{"deadline":%q}}`, deadline)
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	created := svc.tasks["acme:t1"]
@@ -280,8 +276,7 @@ func TestTaskHandler_Create_MailboxTargetFallback(t *testing.T) {
 
 	body := `{"id":"t1","target_type":"mailbox","target_value":"mb-7"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	created := svc.tasks["acme:t1"]
@@ -296,8 +291,7 @@ func TestTaskHandler_Create_ToolInvocation_TopLevelWins(t *testing.T) {
 
 	body := `{"id":"t1","tool_invocation":{"name":"search"},"envelope":{"tool_invocation":{"name":"calc"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	created := svc.tasks["acme:t1"]
@@ -312,8 +306,7 @@ func TestTaskHandler_Create_ToolInvocation_EnvelopeFallback(t *testing.T) {
 
 	body := `{"id":"t1","envelope":{"tool_invocation":{"name":"calc"}}}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/tasks", strings.NewReader(body))
-	w := httptest.NewRecorder()
-	h.Create(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/tasks", h.Create, req)
 
 	require.Equal(t, http.StatusCreated, w.Code)
 	created := svc.tasks["acme:t1"]
@@ -426,9 +419,11 @@ func TestAuditHandler_QueryByTrace_TrailingSlash(t *testing.T) {
 	svc := &limitCaptureAuditSvc{}
 	h := NewAuditHandler(svc)
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/audit/traces/trace-9/", nil)
-	w := httptest.NewRecorder()
-	h.QueryByTrace(w, req)
+	// The real route-table shape is /traces/{traceID}; the trailing-slash
+	// tolerance comes from the router's normalization, mirrored by the
+	// dispatch helper.
+	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/traces/trace-9/", nil)
+	w := dispatchViaMux("GET /v1/tenants/{tenantID}/traces/{traceID}", h.QueryByTrace, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "trace-9", svc.gotTraceID)

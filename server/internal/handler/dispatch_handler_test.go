@@ -71,9 +71,8 @@ func TestDispatchHandler_Pull_Success(t *testing.T) {
 	body := `{"agent_id":"agent-1"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/pull", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", h.Pull, req)
 
-	h.Pull(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]interface{}
@@ -90,9 +89,7 @@ func TestDispatchHandler_Pull_NoMessages(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/pull", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	h.Pull(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", h.Pull, req)
 	assert.Equal(t, http.StatusNoContent, w.Code)
 }
 
@@ -102,9 +99,7 @@ func TestDispatchHandler_Pull_Error(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/mailboxes/mb-1/pull", bytes.NewBufferString(`{}`))
 	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
-
-	h.Pull(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", h.Pull, req)
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 }
 

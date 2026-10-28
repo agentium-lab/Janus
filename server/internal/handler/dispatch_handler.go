@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
@@ -37,7 +36,7 @@ func NewDispatchHandler(svc DispatchService) *DispatchHandler {
 }
 
 func (h *DispatchHandler) Pull(w http.ResponseWriter, r *http.Request) {
-	tenantID, mailboxID := tenantAndMailboxFromPath(r.URL.Path)
+	tenantID, mailboxID := r.PathValue("tenantID"), r.PathValue("mailboxID")
 	if tenantID == "" || mailboxID == "" {
 		writeError(w, http.StatusBadRequest, "tenant id and mailbox id are required")
 		return
@@ -76,7 +75,7 @@ func (h *DispatchHandler) Pull(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DispatchHandler) Start(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		LeaseID string `json:"lease_id"`
 		AgentID string `json:"agent_id"`
@@ -93,7 +92,7 @@ func (h *DispatchHandler) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DispatchHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		LeaseID string `json:"lease_id"`
 		AgentID string `json:"agent_id"`
@@ -110,7 +109,7 @@ func (h *DispatchHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DispatchHandler) Ack(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		LeaseID    string `json:"lease_id"`
 		AgentID    string `json:"agent_id"`
@@ -141,7 +140,7 @@ func (h *DispatchHandler) Ack(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DispatchHandler) Nack(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 	var req struct {
 		LeaseID   string `json:"lease_id"`
 		AgentID   string `json:"agent_id"`
@@ -164,18 +163,4 @@ func (h *DispatchHandler) Nack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "nacked"})
-}
-
-func tenantAndMailboxFromPath(path string) (string, string) {
-	parts := strings.Split(path, "/")
-	tenantID, mailboxID := "", ""
-	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
-			tenantID = parts[i+1]
-		}
-		if p == "mailboxes" && i+1 < len(parts) && mailboxID == "" {
-			mailboxID = parts[i+1]
-		}
-	}
-	return tenantID, mailboxID
 }

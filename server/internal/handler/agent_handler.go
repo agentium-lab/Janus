@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"strings"
 
 	"github.com/agentium-lab/Janus/core"
 	"github.com/agentium-lab/Janus/server/internal/auth"
@@ -27,7 +26,7 @@ func NewAgentHandler(svc AgentService) *AgentHandler {
 }
 
 func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req struct {
 		ID             string         `json:"id"`
 		TeamID         string         `json:"team_id"`
@@ -85,8 +84,8 @@ func (h *AgentHandler) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	agentID := lastSegment(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	agentID := r.PathValue("agentID")
 
 	agent, err := h.svc.Get(r.Context(), tenantID, agentID)
 	if err != nil {
@@ -98,8 +97,8 @@ func (h *AgentHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
-	agentID := agentIDFromHeartbeatPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
+	agentID := r.PathValue("agentID")
 	if err := auth.GuardAgentIdentity(r.Context(), agentID); err != nil {
 		writeError(w, http.StatusForbidden, err.Error())
 		return
@@ -114,7 +113,7 @@ func (h *AgentHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 
 	agents, err := h.svc.List(r.Context(), tenantID)
 	if err != nil {
@@ -123,23 +122,4 @@ func (h *AgentHandler) List(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"agents": agents})
-}
-
-func agentIDFromHeartbeatPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, p := range parts {
-		if p == "agents" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return ""
-}
-
-func lastSegment(path string) string {
-	path = strings.TrimRight(path, "/")
-	parts := strings.Split(path, "/")
-	if len(parts) > 0 {
-		return parts[len(parts)-1]
-	}
-	return ""
 }

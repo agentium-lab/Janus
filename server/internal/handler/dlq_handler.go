@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -33,7 +32,7 @@ func NewDLQHandler(svc DLQService) *DLQHandler {
 }
 
 func (h *DLQHandler) Query(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	mailboxID := r.URL.Query().Get("mailbox")
 	limit := intQuery(r, "limit", 50)
 
@@ -49,7 +48,7 @@ func (h *DLQHandler) Query(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DLQHandler) Replay(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromDLQPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 
 	result, err := h.svc.ReplayDLQ(r.Context(), tenantID, taskID)
 	if err != nil {
@@ -64,27 +63,13 @@ func (h *DLQHandler) Replay(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *DLQHandler) Discard(w http.ResponseWriter, r *http.Request) {
-	tenantID, taskID := tenantAndTaskFromDLQPath(r.URL.Path)
+	tenantID, taskID := r.PathValue("tenantID"), r.PathValue("taskID")
 
 	if err := h.svc.DiscardDLQ(r.Context(), tenantID, taskID); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "discarded"})
-}
-
-func tenantAndTaskFromDLQPath(path string) (string, string) {
-	parts := strings.Split(path, "/")
-	tenantID, taskID := "", ""
-	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) && tenantID == "" {
-			tenantID = parts[i+1]
-		}
-		if p == "dlq" && i+1 < len(parts) && taskID == "" {
-			taskID = parts[i+1]
-		}
-	}
-	return tenantID, taskID
 }
 
 // dlqServiceAdapter adapts task service to DLQService

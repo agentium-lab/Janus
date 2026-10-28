@@ -53,7 +53,7 @@ func (h *TenantHandler) Create(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TenantHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	if tenantID == "" {
 		writeError(w, http.StatusBadRequest, "tenant id is required")
 		return
@@ -135,16 +135,6 @@ func readJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 	// body simply produces a JSON decode error which the caller maps to a 400.
 	r.Body = io.NopCloser(io.LimitReader(r.Body, maxBytes))
 	return json.NewDecoder(r.Body).Decode(v)
-}
-
-func tenantIDFromPath(path string) string {
-	parts := strings.Split(path, "/")
-	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) {
-			return parts[i+1]
-		}
-	}
-	return ""
 }
 
 func isDuplicateKeyError(err error) bool {

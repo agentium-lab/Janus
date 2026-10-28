@@ -46,7 +46,7 @@ func TestSSEHandler_StreamsProgressAndClosesOnTerminal(t *testing.T) {
 	// Use a timeout to avoid hanging if close doesn't work.
 	done := make(chan struct{})
 	go func() {
-		h.ServeHTTP(rec, req)
+		muxFor("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP).ServeHTTP(rec, req)
 		close(done)
 	}()
 
@@ -85,8 +85,7 @@ func TestSSEHandler_FiltersOtherTasks(t *testing.T) {
 	}()
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/tenants/acme/tasks/task-1/stream", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	rec := dispatchViaMux("GET /v1/tenants/{tenantID}/tasks/{taskID}/stream", h.ServeHTTP, req)
 
 	if strings.Contains(rec.Body.String(), "other task") {
 		t.Fatal("event from different task leaked into stream")

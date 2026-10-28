@@ -20,7 +20,7 @@ func NewCatalogHandler(store CatalogStore) *CatalogHandler {
 }
 
 func (h *CatalogHandler) List(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	agents, err := h.store.ListOnlineWithCapabilities(r.Context(), tenantID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog query failed"})

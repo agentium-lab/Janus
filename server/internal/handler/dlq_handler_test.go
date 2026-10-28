@@ -122,9 +122,7 @@ func TestDLQHandler_Replay_HappyPath(t *testing.T) {
 	h := NewDLQHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/dlq/t1/replay", nil)
-	w := httptest.NewRecorder()
-
-	h.Replay(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/dlq/{taskID}/replay", h.Replay, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var got core.Task
@@ -153,9 +151,7 @@ func TestDLQHandler_Discard_HappyPath(t *testing.T) {
 	h := NewDLQHandler(svc)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/dlq/t1/discard", nil)
-	w := httptest.NewRecorder()
-
-	h.Discard(w, req)
+	w := dispatchViaMux("POST /v1/tenants/{tenantID}/dlq/{taskID}/discard", h.Discard, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
 	var resp map[string]string

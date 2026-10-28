@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -498,66 +497,32 @@ func newTestRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler,
 	mux.Handle("/ws", withTenantCtx(wsH))
 	mux.Handle("/mcp/", withTenantCtx(mcpGw))
 
-	mux.HandleFunc("/v1/tenants", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost {
-			tenantH.Create(w, r)
-			return
-		}
-		http.NotFound(w, r)
-	})
+	mux.HandleFunc("POST /v1/tenants", tenantH.Create)
 
-	mux.HandleFunc("/v1/tenants/", func(w http.ResponseWriter, r *http.Request) {
-		p := r.URL.Path
+	mux.HandleFunc("GET /v1/tenants/{tenantID}", tenantH.Get)
 
-		switch {
-		case hasSeg(p, "pull"):
-			postOnly(w, r, dispatchH.Pull)
-		case hasSeg(p, "mailboxes") && lastIs(p, "mailboxes"):
-			postOnly(w, r, mailboxH.Create)
-		case hasSeg(p, "mailboxes"):
-			getOnly(w, r, mailboxH.Get)
-		case hasSeg(p, "heartbeat"):
-			postOnly(w, r, agentH.Heartbeat)
-		case hasSeg(p, "agents") && !lastIs(p, "agents"):
-			getOnly(w, r, agentH.Get)
-		case lastIs(p, "agents"):
-			if r.Method == http.MethodPost {
-				agentH.Register(w, r)
-			} else {
-				agentH.List(w, r)
-			}
-		case hasSfx(p, "/catalog"):
-			getOnly(w, r, catalogH.List)
-		case hasSfx(p, "/complete"):
-			postOnly(w, r, taskH.Complete)
-		case hasSfx(p, "/fail"):
-			postOnly(w, r, taskH.Fail)
-		case hasSfx(p, "/cancel"):
-			postOnly(w, r, taskH.Cancel)
-		case hasSfx(p, "/replay"):
-			postOnly(w, r, taskH.Replay)
-		case hasSfx(p, "/start"):
-			postOnly(w, r, dispatchH.Start)
-		case hasSfx(p, "/heartbeat"):
-			postOnly(w, r, dispatchH.Heartbeat)
-		case hasSfx(p, "/ack"):
-			postOnly(w, r, dispatchH.Ack)
-		case hasSfx(p, "/nack"):
-			postOnly(w, r, dispatchH.Nack)
-		case hasSeg(p, "tasks") && hasSfx(p, "/events"):
-			getOnly(w, r, auditH.QueryByTask)
-		case hasSeg(p, "tasks") && !lastIs(p, "tasks") && !hasSeg(p, "events"):
-			getOnly(w, r, taskH.Get)
-		case lastIs(p, "tasks"):
-			postOnly(w, r, taskH.Create)
-		default:
-			if r.Method == http.MethodGet {
-				tenantH.Get(w, r)
-			} else {
-				http.NotFound(w, r)
-			}
-		}
-	})
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/agents", agentH.Register)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/agents", agentH.List)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/agents/{agentID}", agentH.Get)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/agents/{agentID}/heartbeat", agentH.Heartbeat)
+
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/mailboxes", mailboxH.Create)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/mailboxes/{mailboxID}", mailboxH.Get)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/mailboxes/{mailboxID}/pull", dispatchH.Pull)
+
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/catalog", catalogH.List)
+
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks", taskH.Create)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/tasks/{taskID}", taskH.Get)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/complete", taskH.Complete)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/fail", taskH.Fail)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/cancel", taskH.Cancel)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/replay", taskH.Replay)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/start", dispatchH.Start)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/heartbeat", dispatchH.Heartbeat)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/ack", dispatchH.Ack)
+	mux.HandleFunc("POST /v1/tenants/{tenantID}/tasks/{taskID}/nack", dispatchH.Nack)
+	mux.HandleFunc("GET /v1/tenants/{tenantID}/tasks/{taskID}/events", auditH.QueryByTask)
 
 	return mux
 }
@@ -576,24 +541,6 @@ func getOnly(w http.ResponseWriter, r *http.Request, fn http.HandlerFunc) {
 	} else {
 		http.NotFound(w, r)
 	}
-}
-
-func hasSeg(path, seg string) bool {
-	for _, s := range strings.Split(path, "/") {
-		if s == seg {
-			return true
-		}
-	}
-	return false
-}
-
-func lastIs(path, seg string) bool {
-	parts := strings.Split(strings.TrimRight(path, "/"), "/")
-	return len(parts) > 0 && parts[len(parts)-1] == seg
-}
-
-func hasSfx(path, s string) bool {
-	return strings.HasSuffix(strings.TrimRight(path, "/"), s)
 }
 
 func envOr(key, fallback string) string {

@@ -29,7 +29,7 @@ type approvalRequestReq struct {
 }
 
 func (h *ApprovalHandler) Request(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	var req approvalRequestReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -53,7 +53,7 @@ type approvalDecisionReq struct {
 }
 
 func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
-	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
+	tenantID, approvalID := r.PathValue("tenantID"), r.PathValue("approvalID")
 	var req approvalDecisionReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -67,7 +67,7 @@ func (h *ApprovalHandler) Approve(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
-	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
+	tenantID, approvalID := r.PathValue("tenantID"), r.PathValue("approvalID")
 	var req approvalDecisionReq
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
@@ -81,7 +81,7 @@ func (h *ApprovalHandler) Reject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
-	tenantID := tenantIDFromPath(r.URL.Path)
+	tenantID := r.PathValue("tenantID")
 	approvals, err := h.svc.ListPending(r.Context(), tenantID, 50)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -94,46 +94,11 @@ func (h *ApprovalHandler) ListPending(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *ApprovalHandler) Get(w http.ResponseWriter, r *http.Request) {
-	tenantID, approvalID := extractTenantAndApproval(r.URL.Path)
+	tenantID, approvalID := r.PathValue("tenantID"), r.PathValue("approvalID")
 	approval, err := h.svc.Get(r.Context(), tenantID, approvalID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, approval)
-}
-
-func extractTenantAndApproval(path string) (string, string) {
-	parts := stringsSplit(path, "/")
-	for i, p := range parts {
-		if p == "tenants" && i+1 < len(parts) {
-			tenantID := parts[i+1]
-			for j := i + 2; j < len(parts)-1; j++ {
-				if parts[j] == "approvals" {
-					return tenantID, parts[j+1]
-				}
-			}
-		}
-	}
-	return "", ""
-}
-
-func stringsSplit(s, sep string) []string {
-	if s == "" {
-		return nil
-	}
-	return append([]string{}, splitString(s, sep)...)
-}
-
-func splitString(s, sep string) []string {
-	var result []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if string(s[i]) == sep {
-			result = append(result, s[start:i])
-			start = i + 1
-		}
-	}
-	result = append(result, s[start:])
-	return result
 }
