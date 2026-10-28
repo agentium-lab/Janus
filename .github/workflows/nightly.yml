@@ -409,7 +409,7 @@ jobs:
             --wait --timeout 5m
           # --wait already gates on pods Ready; assert them explicitly too.
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
 
       - name: Capture schema_migrations state after install
         run: |
@@ -448,7 +448,7 @@ jobs:
         run: |
           set -euo pipefail
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
           REPLICAS=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.replicas}')
           echo "spec.replicas=$REPLICAS"
           [ "$REPLICAS" = "2" ]
@@ -526,7 +526,7 @@ jobs:
             --set config.tls.existingSecret=janus-tls-server \
             --set config.tls.gatewayCaSecret=janus-tls-gateway-ca \
             --wait --timeout 5m
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=300s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 300s
           kubectl -n "$NS" port-forward svc/janus-core 18443:8080 >/tmp/port-forward-tls.log 2>&1 &
           PF_PID=$!
           trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
@@ -575,7 +575,7 @@ jobs:
             --set config.tls.existingSecret=janus-tls-server \
             --set config.tls.gatewayCaSecret=janus-tls-wrong-ca \
             --wait --timeout 5m
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=300s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 300s
           kubectl -n "$NS" port-forward svc/janus-core 18443:8080 >/tmp/port-forward-tls2.log 2>&1 &
           PF_PID=$!
           trap 'kill "$PF_PID" 2>/dev/null || true' EXIT
@@ -990,7 +990,7 @@ jobs:
           # (000020's ledger-PK comment + smoke_mixed_version_locks.sh).
           # --wait already gates on pods Ready; assert them explicitly too.
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
           IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "image after install: $IMAGE"
           [ "$IMAGE" = "janus-core:old" ] || { echo "::error::install did not land the OLD image ($IMAGE)"; exit 1; }
@@ -1139,7 +1139,7 @@ jobs:
           wait "$UPGRADE_PID"
           cat /tmp/ga09-helm-upgrade.log
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
           IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "image after upgrade: $IMAGE"
           [ "$IMAGE" = "janus-core:candidate" ] || { echo "::error::upgrade did not land the candidate image ($IMAGE)"; exit 1; }
@@ -1197,7 +1197,7 @@ jobs:
           # onto the FORWARD schema — the posture this job exists to prove.
           helm -n "$NS" rollback "$RELEASE" 0 --wait --timeout 5m
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
-          kubectl -n "$NS" wait --for=condition=ready pod -l 'app.kubernetes.io/instance=janus-core,!app.kubernetes.io/component' --timeout=180s
+          "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
           IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "image after rollback: $IMAGE"
           [ "$IMAGE" = "janus-core:old" ] || { echo "::error::rollback did not restore the OLD image ($IMAGE)"; exit 1; }
