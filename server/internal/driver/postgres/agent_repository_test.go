@@ -83,6 +83,28 @@ func TestAgentRepo_UpdateStatus(t *testing.T) {
 	assert.Equal(t, core.AgentStatusOffline, got.Status)
 }
 
+func TestAgentRepo_CountOnlineByTenant_EmitsZeroSeriesForAgentlessTenant(t *testing.T) {
+	pool := openTestDB(t)
+	runMigration(t, pool)
+	insertTestTenant(t, pool, "tenant-a")
+	insertTestTenant(t, pool, "tenant-b")
+	repo := NewAgentRepository(pool)
+	ctx := context.Background()
+
+	// Only tenant A ever gets an online agent; tenant B stays agent-less.
+	require.NoError(t, repo.Register(ctx, core.Agent{
+		ID: "only-agent", TenantID: "tenant-a", DisplayName: "Only Agent",
+		Protocol: core.ProtocolA2A, Status: core.AgentStatusOnline,
+	}))
+
+	counts, err := repo.CountOnlineByTenant(ctx)
+	require.NoError(t, err)
+	// Tenant B must still get a series (value 0): a GROUP BY over online
+	// agents only would omit it entirely, so the JanusNoOnlineAgents
+	// alert could never fire for a never-online tenant.
+	assert.Equal(t, map[string]int64{"tenant-a": 1, "tenant-b": 0}, counts)
+}
+
 func TestAgentRepo_UpdateHeartbeat(t *testing.T) {
 	pool := openTestDB(t)
 	runMigration(t, pool)

@@ -180,10 +180,18 @@ func (r *AgentRepository) ListByStatus(ctx context.Context, tenantID string, sta
 // are atomic, so a heartbeat landing between a list and an update can no
 // longer get a live agent marked offline (the old list-then-update TOCTOU).
 // CountOnlineByTenant returns the number of online agents per tenant for
-// the janus_agent_online gauge.
+// the janus_agent_online gauge. It LEFT JOINs from tenants so EVERY tenant
+// gets a series — including count 0 for tenants with no online agent:
+// a GROUP BY over online agents alone would omit never-online tenants, and
+// the JanusNoOnlineAgents alert (sum by (tenant_id) < 1) can never fire for
+// a series that does not exist (absent() is global-only, so it cannot
+// rescue a per-tenant gap while any other tenant is online).
 func (r *AgentRepository) CountOnlineByTenant(ctx context.Context) (map[string]int64, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT tenant_id, count(*) FROM agents WHERE status = 'online' GROUP BY tenant_id`)
+		`SELECT t.id, count(a.id)
+		   FROM tenants t
+		   LEFT JOIN agents a ON a.tenant_id = t.id AND a.status = 'online'
+		  GROUP BY t.id`)
 	if err != nil {
 		return nil, err
 	}
