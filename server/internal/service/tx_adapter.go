@@ -35,6 +35,17 @@ func (a *TaskRepoTxAdapter) UpdateStatusWithCheckTx(ctx context.Context, _ pgx.T
 	return a.UpdateStatusWithCheck(ctx, tenantID, taskID, expected, next, attempt)
 }
 
+func (a *TaskRepoTxAdapter) ClaimWithCountCheckTx(ctx context.Context, _ pgx.Tx, tenantID, taskID string, expected core.TaskStatus, expectedCount int) (bool, error) {
+	t, err := a.Get(ctx, tenantID, taskID)
+	if err != nil {
+		return false, err
+	}
+	if t == nil || t.Status != expected || t.AttemptCount != expectedCount {
+		return false, nil
+	}
+	return a.UpdateStatusWithCheck(ctx, tenantID, taskID, expected, core.TaskStatusClaimed, 1)
+}
+
 func (a *TaskRepoTxAdapter) SetResultRefTx(ctx context.Context, _ pgx.Tx, tenantID, taskID, ref string) error {
 	return a.SetResultRef(ctx, tenantID, taskID, ref)
 }

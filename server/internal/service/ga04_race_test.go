@@ -385,3 +385,72 @@ func TestGA04_StalePullReplay_StaleHeartbeatDoesNotRefreshNewRound_PG(t *testing
 	require.Nil(t, heartbeat, "the new round's heartbeat clock must not be refreshed by the stale lease")
 	require.Equal(t, newLease, lease)
 }
+
+// TestGA04_StalePullAcrossReplay_RejectedByAttemptCountCAS_PG pins the
+// stale-pull corruption the report's counterexample names: a pull that read
+// queued/count=1, held across Cancel -> Replay (count reset to 0, attempts
+// cleared), must NOT commit on the replayed round — the pre-fix status-only
+// CAS matched, inserted attempt=2 while the counter restarted at 1, and the
+// NEXT pull recomputed attempt=2 into a duplicate PK that blocked every
+// later claim. The claim CAS must also predicate on attempt_count.
+func TestGA04_StalePullAcrossReplay_RejectedByAttemptCountCAS_PG(t *testing.T) {
+	env := setupServiceTestEnv(t)
+	ctx := context.Background()
+	taskID := fmt.Sprintf("ga04-stale-pull-replay-%d", time.Now().UnixNano())
+	createTestTask(t, env, taskID)
+
+	drv := &perCallDriver{}
+	drv.queue = []core.TaskDelivery{
+		{TaskID: taskID, DeliveryRef: core.DeliveryRef(taskID + ":1"), Payload: []byte(fmt.Sprintf(`{"task_id":%q}`, taskID))},
+		{TaskID: taskID, DeliveryRef: core.DeliveryRef(taskID + ":2"), Payload: []byte(fmt.Sprintf(`{"task_id":%q}`, taskID))},
+		{TaskID: taskID, DeliveryRef: core.DeliveryRef(taskID + ":3"), Payload: []byte(fmt.Sprintf(`{"task_id":%q}`, taskID))},
+	}
+	env.dispatch = env.dispatch.WithQueueDriver(drv)
+
+	first, err := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, err)
+	require.Equal(t, 1, first.Attempt)
+	require.NoError(t, env.dispatch.NackTaskAs(ctx, "acme", taskID, first.LeaseID, "agent-1", true,
+		&core.TaskError{Code: "seed", Message: "seed first retry"}))
+	_, uerr := env.pool.Exec(ctx,
+		`UPDATE tasks SET status='queued', retry_at=NULL WHERE tenant_id='acme' AND id=$1`, taskID)
+	require.NoError(t, uerr)
+
+	gate := &staleTaskReadGate{entered: make(chan struct{}), release: make(chan struct{})}
+	gate.TaskRepository = env.taskRepo
+	env.dispatch.taskRepo = gate
+
+	type pullOutcome struct {
+		res *PullResult
+		err error
+	}
+	done := make(chan pullOutcome, 1)
+	go func() {
+		r, perr := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+		done <- pullOutcome{res: r, err: perr}
+	}()
+
+	<-gate.entered
+	require.NoError(t, env.taskSvc.Cancel(ctx, "acme", taskID))
+	_, rerr := env.taskSvc.Replay(ctx, "acme", taskID)
+	require.NoError(t, rerr)
+	close(gate.release)
+
+	out := <-done
+	require.Error(t, out.err, "stale pull snapshot (attempt_count=1) must be rejected on the replayed round (count=0)")
+	require.Contains(t, out.err.Error(), "claim race")
+
+	task, gerr := env.taskRepo.Get(ctx, "acme", taskID)
+	require.NoError(t, gerr)
+	require.Equal(t, core.TaskStatusQueued, task.Status, "the replayed round stays queued")
+	require.Equal(t, 0, task.AttemptCount)
+
+	var attempts int
+	require.NoError(t, env.pool.QueryRow(ctx,
+		`SELECT count(*) FROM task_attempts WHERE tenant_id='acme' AND task_id=$1`, taskID).Scan(&attempts))
+	require.Equal(t, 0, attempts, "the rejected claim's attempt insert rolled back")
+
+	next, nerr := env.dispatch.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, nerr, "the next pull must not hit a duplicate attempt PK")
+	require.Equal(t, 1, next.Attempt)
+}

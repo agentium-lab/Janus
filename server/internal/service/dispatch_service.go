@@ -381,15 +381,17 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		if cerr := s.attemptTx.CreateTx(ctx, tx, attempt); cerr != nil {
 			return fmt.Errorf("create attempt: %w", cerr)
 		}
-		claimed, uerr := s.taskTx.UpdateStatusWithCheckTx(ctx, tx, tenantID, task.ID, task.Status, core.TaskStatusClaimed, 1)
+		claimed, uerr := s.taskTx.ClaimWithCountCheckTx(ctx, tx, tenantID, task.ID, task.Status, task.AttemptCount)
 		if uerr != nil {
 			return fmt.Errorf("update task claimed: %w", uerr)
 		}
 		if !claimed {
 			// The task moved between the pre-lock read and this CAS (e.g.
-			// Cancel committed first). Committing anyway would leave a live
-			// attempt+lease on a terminal task — roll back the claim.
-			return fmt.Errorf("claim race: task %s status changed concurrently, expected %s", task.ID, task.Status)
+			// Cancel, or a full Replay round that restored 'queued' while
+			// resetting the attempt counter). Committing anyway would leave
+			// a live attempt+lease on the new round whose derived attempt
+			// number collides with the next pull — roll back the claim.
+			return fmt.Errorf("claim race: task %s advanced concurrently (status or attempt counter moved), expected %s/%d", task.ID, task.Status, task.AttemptCount)
 		}
 		claimedPayload := MarshalEvent(&core.JanusEvent{
 			EventType: core.EventTaskClaimed, TenantID: tenantID, TaskID: task.ID,

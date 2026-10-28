@@ -244,6 +244,21 @@ func (r *TaskRepository) UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx,
 	return tag.RowsAffected() > 0, nil
 }
 
+// ClaimWithCountCheckTx CASes on status AND attempt_count: a stale pull
+// held across a Replay (same 'queued' status, reset counter) must not
+// claim — its derived attempt number belongs to the dead round.
+func (r *TaskRepository) ClaimWithCountCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus core.TaskStatus, expectedAttemptCount int) (bool, error) {
+	tag, err := tx.Exec(ctx,
+		`UPDATE tasks SET status = 'claimed', attempt_count = attempt_count + 1, updated_at = now()
+		 WHERE tenant_id = $1 AND id = $2 AND status = $3 AND attempt_count = $4`,
+		tenantID, taskID, string(expectedStatus), expectedAttemptCount,
+	)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 // SetResultRefTx is the transactional variant of SetResultRef.
 func (r *TaskRepository) SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error {
 	_, err := tx.Exec(ctx,

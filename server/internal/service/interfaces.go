@@ -103,6 +103,7 @@ type TaskTxRepo interface {
 	CountRunningByAgentTx(ctx context.Context, tx pgx.Tx, tenantID, agentID string) (int, error)
 	UpdateStatusTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, status core.TaskStatus, attemptIncrement int) error
 	UpdateStatusWithCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus, newStatus core.TaskStatus, attemptIncrement int) (bool, error)
+	ClaimWithCountCheckTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, expectedStatus core.TaskStatus, expectedAttemptCount int) (bool, error)
 	SetResultRefTx(ctx context.Context, tx pgx.Tx, tenantID, taskID, resultRef string) error
 	UpdateRetryAtTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string, retryAt time.Time) error
 	ResetForReplayTx(ctx context.Context, tx pgx.Tx, tenantID, taskID string) (int, error)

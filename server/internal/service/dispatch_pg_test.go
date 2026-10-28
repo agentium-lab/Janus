@@ -1266,7 +1266,7 @@ func TestPull_ClaimRace_CancelWins_RollsBackAttempt_PG(t *testing.T) {
 	out := <-done
 	require.Nil(t, out.res, "no lease may be handed out for a cancelled task")
 	require.EqualError(t, out.err,
-		"claim race: task race-task status changed concurrently, expected queued")
+		"claim race: task race-task advanced concurrently (status or attempt counter moved), expected queued/0")
 
 	task, gerr := env.taskRepo.Get(ctx, "acme", "race-task")
 	require.NoError(t, gerr)
