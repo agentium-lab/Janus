@@ -76,15 +76,18 @@ go_check() { # id name pkg run_pattern [required:1]
     return
   fi
   local ran
-  ran=$(printf '%s\n' "$out" | grep -cE '^(=== RUN|--- PASS|--- FAIL)')
+  # Sub-case result lines are INDENTED by `go test -v` ("    --- SKIP:
+  # TestX/sub"), so the match anchors tolerate leading whitespace — a
+  # required sub-case SKIP must never be missed by its parent's PASS.
+  ran=$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*(=== RUN|--- PASS|--- FAIL)')
   if [ "$ran" -eq 0 ] || printf '%s\n' "$out" | grep -q "no tests to run"; then
     echo "---- $id output ----"; echo "$out" | tail -15
     record "$id" "$name" FAIL "0 tests matched"
     return
   fi
   local passed skipped
-  passed=$(printf '%s\n' "$out" | grep -cE '^--- PASS')
-  skipped=$(printf '%s\n' "$out" | grep -cE '^--- SKIP')
+  passed=$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*--- PASS')
+  skipped=$(printf '%s\n' "$out" | grep -cE '^[[:space:]]*--- SKIP')
   if [ "$skipped" -gt 0 ] && [ "$req" = "1" ]; then
     echo "---- $id output ----"; echo "$out" | tail -15
     # Per-case required semantics: a required group is green only when

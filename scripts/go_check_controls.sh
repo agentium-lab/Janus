@@ -10,6 +10,10 @@
 #       (the masking defect: before the fix this recorded PASS=1 FAIL=0
 #        REQ_SKIP=0 — an ordinary PASS hid the critical SKIP)
 #   C4  required (req=1) all-PASS group         -> PASS, green
+#   C5  required (req=1) parent PASS + INDENTED sub-case SKIP
+#       -> SKIP / REQ_SKIP, red (go test -v indents sub-case result
+#       lines by 4 spaces, so column-anchored regexes never saw them:
+#       PASS=1 SKIP=0 masked the required sub-case SKIP)
 #
 # Technique (same as the external audit): the REAL record()/go_check()
 # function bodies are extracted from acceptance_matrix.sh at runtime and
@@ -48,6 +52,17 @@ MIXED_V="=== RUN   TestOrdinary
 PASS
 ok  	${OK_PKG}	0.012s"
 
+# `go test -v` prints sub-case result lines INDENTED (4 spaces): a parent
+# PASS + indented sub-SKIP must still record SKIP/REQ_SKIP for a required
+# group — a required critical sub-case SKIP may never be masked by its
+# passing parent.
+INDENT_SUB_SKIP_V="=== RUN   TestGA02
+=== RUN   TestGA02/required_pg_subcase
+    --- SKIP: TestGA02/required_pg_subcase (0.00s)
+--- PASS: TestGA02 (0.00s)
+PASS
+ok  	${OK_PKG}	0.012s"
+
 control() { # id desc req canned_out
   local id="$1" desc="$2" req="$3" canned="$4"
   PASS=0; FAIL=0; SKIP=0; REQ_SKIP=0; RESULTS=(); REQ_SKIPPED_IDS=()
@@ -60,3 +75,4 @@ control C1 "ordinary-pass group (req=0)"                     0 "$ALL_PASS_V"
 control C2 "all-critical-skip group (req=1)"                 1 "$ALL_SKIP_V"
 control C3 "mixed ordinary-PASS + critical-SKIP (req=1)"     1 "$MIXED_V"
 control C4 "all-pass required group (req=1)"                 1 "$ALL_PASS_V"
+control C5 "parent-PASS masks indented sub-SKIP (req=1)"      1 "$INDENT_SUB_SKIP_V"
