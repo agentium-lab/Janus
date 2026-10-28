@@ -568,6 +568,13 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 
 	committed := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		// Lock the task row FIRST — Cancel/Block lock task -> attempts, so
+		// an attempt-first ACK is the opposite order and can deadlock-roll
+		// both transactions back.
+		task, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
+		if gerr != nil {
+			return fmt.Errorf("get task: %w", gerr)
+		}
 		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, leaseID, "completed", nil, usageJSON)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)
@@ -577,10 +584,6 @@ func (s *DispatchService) AckTaskAs(ctx context.Context, tenantID, taskID, lease
 			return nil
 		}
 
-		task, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID)
-		if gerr != nil {
-			return fmt.Errorf("get task: %w", gerr)
-		}
 		if !core.CanTransition(task.Status, core.TaskStatusCompleted) {
 			return fmt.Errorf("%w: %s -> completed for task %s", core.ErrInvalidTransition, task.Status, taskID)
 		}
@@ -722,6 +725,12 @@ func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leas
 	committed := false
 	attemptFinished := false
 	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		// Task row first (lock-order parity with Cancel/Block and ACK);
+		// the CAS below still expects the pre-tx snapshot, so a status
+		// moved in between fails the nack exactly as before.
+		if _, gerr := s.taskTx.GetTxForUpdate(ctx, tx, tenantID, taskID); gerr != nil {
+			return fmt.Errorf("get task: %w", gerr)
+		}
 		ok, ferr := s.attemptTx.UpdateFinishedWithCheckTx(ctx, tx, tenantID, taskID, attempt.Attempt, leaseID, "failed", errJSON, nil)
 		if err := ferr; err != nil {
 			return fmt.Errorf("finish attempt: %w", err)

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -134,33 +135,39 @@ func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byt
 // AckTask finalizes the attempt row; authoritative task completion still runs
 // through DispatchService.AckTask's own guarded transaction.
 func (d *Driver) AckTask(ctx context.Context, tenantID string, r core.DeliveryRef) error {
-	taskID, _, err := splitRef(r)
+	taskID, attempt, err := splitRef(r)
 	if err != nil {
 		return err
 	}
+	// Receipt guard: the ref carries the attempt_count seen at fetch; the
+	// claim that handed this delivery out incremented it by one. A ref from
+	// a pre-Replay round no longer matches after the counter reset.
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
+		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
+		taskID, tenantID, attempt+1)
 	return err
 }
 
 func (d *Driver) NackTask(ctx context.Context, tenantID string, r core.DeliveryRef, reason core.NackReason) error {
-	taskID, _, err := splitRef(r)
+	taskID, attempt, err := splitRef(r)
 	if err != nil {
 		return err
 	}
-	d.clearLease(ctx, tenantID, taskID)
+	d.clearLease(ctx, tenantID, taskID, attempt)
 	// Task status transitions (dead_lettered etc.) belong to the service
 	// lifecycle transaction, NOT the queue driver — the driver previously
 	// wrote status='dead_letter' (a value the state machine/DLQ queries
 	// don't recognize) and corrupted the core state. The driver now only
 	// manages DELIVERY state: retry scheduling via retry_at.
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
+		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
+		taskID, tenantID, attempt+1)
 	return err
 }
 
-func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string) {
-	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1 AND tenant_id=$2`, taskID, tenantID)
+func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string, attempt int) {
+	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
+		taskID, tenantID, attempt+1)
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
@@ -170,6 +177,15 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 	// failed the JSONB cast).
 	if len(errPayload) == 0 || string(errPayload) == "" {
 		errPayload = []byte(`{"reason":"unspecified"}`)
+	}
+	// Receipt guard: the delivery ref's attempt_count must still match the
+	// task row — a DLQ drained after a Replay reset must not overwrite the
+	// live round's error with the dead round's payload.
+	if attempt, perr := strconv.Atoi(msg.Headers["attempt_count"]); perr == nil {
+		_, err := d.pool.Exec(ctx,
+			`UPDATE tasks SET error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2 AND attempt_count=$4`,
+			msg.TaskID, msg.TenantID, string(errPayload), attempt)
+		return err
 	}
 	_, err := d.pool.Exec(ctx,
 		`UPDATE tasks SET error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
