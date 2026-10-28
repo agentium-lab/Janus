@@ -335,3 +335,31 @@ func TestApprovalService_Approve_UpdateDecisionError(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "update approval")
 }
+
+func TestApprovalService_Approve_DenyAddedWhilePending_StopsQueueAndPublish(t *testing.T) {
+	repo := &mockApprovalRepo{approvals: map[string]*core.Approval{
+		"acme:appr-1": {TenantID: "acme", ID: "appr-1", TaskID: "task-1", Status: "pending", RequestedBy: "agent-1"},
+	}}
+	tRepo := &mockTaskRepo{tasks: map[string]*core.Task{
+		"acme:task-1": {
+			TenantID: "acme", ID: "task-1", SourceAgent: "agent-1",
+			MailboxID: "mb-1", Status: core.TaskStatusApprovalPending,
+			TargetType: core.TargetTypeMailbox, TargetValue: "mb-1",
+		},
+	}}
+	taskSvc := NewTaskService(tRepo, &mockQueueDriver{}, nil, nil).WithPolicy(NewPolicyService(&mockPolicyRuleRepo{rules: []*core.PolicyRule{{
+		TenantID: "acme", ID: "deny-publish", Name: "deny", Status: "active", Priority: 50,
+		Condition: json.RawMessage(`{"action":"task.publish"}`),
+		Action:    json.RawMessage(`{"decision":"deny"}`),
+	}}}))
+	svc := NewApprovalService(repo, taskSvc, nil)
+
+	err := svc.Approve(context.Background(), "acme", "appr-1", "boss", "ok")
+
+	require.Error(t, err, "a task.publish deny added while the approval was pending must stop queue+publish")
+	assert.Contains(t, err.Error(), "denied")
+	still := repo.approvals["acme:appr-1"]
+	require.NotNil(t, still)
+	assert.Equal(t, "pending", still.Status, "the failed admission must not consume the approval")
+	assert.Equal(t, core.TaskStatusApprovalPending, tRepo.tasks["acme:task-1"].Status, "task must stay pending approval")
+}

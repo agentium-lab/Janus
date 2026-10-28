@@ -717,6 +717,16 @@ func (s *TaskService) Unblock(ctx context.Context, tenantID, taskID string) erro
 // when no router is wired or the task carries no mailbox. Errors carry no
 // entry-point prefix — callers wrap ("replay %w" / "unblock %w").
 func (s *TaskService) readmissionCheck(ctx context.Context, task *core.Task) error {
+	return s.publishAdmission(ctx, task, false)
+}
+
+// publishAdmission is the staged-admission gate every re-publish path must
+// clear against CURRENT state: the task.publish policy plus the final-target
+// mailbox admission. A path already holding a valid approval (Approve
+// consuming one) passes an approval_required verdict instead of failing —
+// the pending verdict is satisfied, and re-failing it would trap the task
+// in endless approval.
+func (s *TaskService) publishAdmission(ctx context.Context, task *core.Task, holdsApproval bool) error {
 	if s.policySvc != nil {
 		decision, perr := s.policySvc.Evaluate(ctx, core.PolicyInput{
 			TenantID: task.TenantID,
@@ -730,7 +740,7 @@ func (s *TaskService) readmissionCheck(ctx context.Context, task *core.Task) err
 		if decision.Decision == core.PolicyDecisionDeny {
 			return fmt.Errorf("denied: %s", decision.Reason)
 		}
-		if decision.Decision == core.PolicyDecisionApprovalRequired {
+		if decision.Decision == core.PolicyDecisionApprovalRequired && !holdsApproval {
 			return errors.New("requires approval; approve through the approval workflow before replaying")
 		}
 	}

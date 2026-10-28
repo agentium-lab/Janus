@@ -106,6 +106,17 @@ func (s *ApprovalService) approveAtomic(ctx context.Context, tenantID, approvalI
 		return fmt.Errorf("get task: %w", err)
 	}
 
+	// An approval handed out hours earlier must clear the CURRENT admission
+	// (task.publish policy + final target) — the same gate Replay/Unblock
+	// re-run. A deny added while the approval was pending stops here:
+	// nothing is queued or published and the approval stays pending (the
+	// decision transaction below never opens).
+	if decision == "approved" {
+		if aerr := s.taskSvc.publishAdmission(ctx, task, true); aerr != nil {
+			return fmt.Errorf("approval %s denied at admission: %w", approvalID, aerr)
+		}
+	}
+
 	var terminalStatus core.TaskStatus
 	var terminalEvent core.EventType
 	switch decision {
