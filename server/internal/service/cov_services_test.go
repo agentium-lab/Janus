@@ -647,7 +647,7 @@ func TestMailboxService_StalePendingDoesNotResurrectAfterSuccess(t *testing.T) {
 	}
 	drv.mu.Unlock()
 	assert.Equal(t, 222, last.ACKWaitSeconds, "newest revision must win")
-	assert.Equal(t, 16, last.MaxACKPending, "maxConcurrency*2 parity on updates")
+	assert.Equal(t, v190ColdPullAckPending, last.MaxACKPending, "flat 100 parity on updates — the one value v1.9.0 cold pulls re-ensure")
 }
 
 type reconcileRecorder struct {
@@ -698,7 +698,7 @@ func TestMailboxService_ReconcileAllConsumers(t *testing.T) {
 	defer drv.mu.Unlock()
 	require.Len(t, drv.specs, 2, "every durable mailbox config replays onto the broker")
 	assert.Equal(t, 60, drv.specs[0].ACKWaitSeconds)
-	assert.Equal(t, 8, drv.specs[0].MaxACKPending, "maxConcurrency*2 parity")
+	assert.Equal(t, v190ColdPullAckPending, drv.specs[0].MaxACKPending, "flat 100 parity — the one value v1.9.0 cold pulls re-ensure")
 	assert.Equal(t, 120, drv.specs[1].ACKWaitSeconds)
 }
 
@@ -766,7 +766,7 @@ func TestMailboxService_ReconcileAllUsesFullConfig(t *testing.T) {
 	require.Len(t, drv.specs, 1)
 	assert.Equal(t, 45, drv.specs[0].ACKWaitSeconds, "custom ack_wait must survive the replay")
 	assert.Equal(t, 7, drv.specs[0].MaxDeliver)
-	assert.Equal(t, 6, drv.specs[0].MaxACKPending)
+	assert.Equal(t, v190ColdPullAckPending, drv.specs[0].MaxACKPending)
 }
 
 // versionMailboxRepo records UpdateConfig versions and lets tests move the
@@ -1125,10 +1125,13 @@ func TestMailboxService_StartReconcileRetryLoop_TicksAndStops(t *testing.T) {
 }
 
 // Cross-replica cold-cache pull: replica A creates the mailbox+consumer
-// with the CREATE-path spec (MaxACKPending = MaxConcurrency*2); a FRESH
-// driver (replica B, empty cache, same NATS) builds the spec exactly like
+// with the CREATE-path spec; a FRESH driver (replica B, empty cache,
+// same NATS) builds the spec exactly like
 // DispatchService.ensureMailboxConsumer does (consumerSpecFor) — the specs
-// must agree or NATS answers ErrConsumerExists and pulls fail.
+// must agree or NATS answers ErrConsumerExists and pulls fail. The value
+// is pinned to v190ColdPullAckPending: the one MaxAckPending a v1.9.0
+// cold-cache pull can re-ensure — the invariant GA-09's rollback leg
+// exists to prove.
 func TestCrossReplica_ColdCacheConsumerSpecMatches(t *testing.T) {
 	d := openNATSOverlayDriver(t)
 	ctx := context.Background()
@@ -1146,7 +1149,7 @@ func TestCrossReplica_ColdCacheConsumerSpecMatches(t *testing.T) {
 	}
 	// Create path spec (what MailboxService.Create drives).
 	createSpec := core.ConsumerSpec{TenantID: tenant, MailboxID: mb.ID, DurableName: mb.ID,
-		ACKWaitSeconds: mb.ACKWaitSeconds, MaxDeliver: mb.MaxDeliver, MaxACKPending: 2}
+		ACKWaitSeconds: mb.ACKWaitSeconds, MaxDeliver: mb.MaxDeliver, MaxACKPending: v190ColdPullAckPending}
 	if err := d.EnsureConsumer(ctx, createSpec); err != nil {
 		t.Fatalf("A ensure consumer: %v", err)
 	}
@@ -1157,6 +1160,8 @@ func TestCrossReplica_ColdCacheConsumerSpecMatches(t *testing.T) {
 		t.Fatalf("B ensure tenant: %v", err)
 	}
 	pullSpec := consumerSpecFor(mb)
+	assert.Equal(t, v190ColdPullAckPending, pullSpec.MaxACKPending,
+		"the value a restarted v1.9.0 replica sends must survive HEAD convergence")
 	assert.Equal(t, createSpec.MaxACKPending, pullSpec.MaxACKPending,
 		"create and pull spec builders must agree on MaxACKPending")
 	if err := b.EnsureConsumer(ctx, pullSpec); err != nil {

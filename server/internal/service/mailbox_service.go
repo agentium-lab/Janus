@@ -91,7 +91,7 @@ func (s *MailboxService) Create(ctx context.Context, mailbox core.Mailbox) error
 		MailboxID:      mailbox.ID,
 		ACKWaitSeconds: mailbox.ACKWaitSeconds,
 		MaxDeliver:     mailbox.MaxDeliver,
-		MaxACKPending:  mailbox.MaxConcurrency * 2,
+		MaxACKPending:  v190ColdPullAckPending,
 	})
 }
 
@@ -276,20 +276,17 @@ func (s *MailboxService) UpdateConfig(ctx context.Context, tenantID, mailboxID s
 	if err != nil {
 		return err
 	}
-	// MaxAckPending must mirror the CREATE path (maxConcurrency*2); an
-	// unset value makes CreateOrUpdateConsumer fall back to 100, silently
-	// widening or narrowing the broker's in-flight window.
-	ackPending := maxConcurrency * 2
-	if ackPending <= 0 {
-		ackPending = 100
-	}
+	// MaxAckPending stays at v190ColdPullAckPending on every path
+	// (create/update/reconcile/pull): it is the one value a v1.9.0
+	// cold-cache pull can re-ensure, and diverging here would strand the
+	// consumer for every restarted or rolled-back old replica.
 	spec := core.ConsumerSpec{
 		TenantID:       tenantID,
 		MailboxID:      mailboxID,
 		DurableName:    mailboxID,
 		ACKWaitSeconds: ackWaitSeconds,
 		MaxDeliver:     maxDeliver,
-		MaxACKPending:  ackPending,
+		MaxACKPending:  v190ColdPullAckPending,
 	}
 	if rc, ok := s.queueDriver.(consumerReconciler); ok {
 		syncErr := s.withMailboxLock(ctx, tenantID, mailboxID, func(exec postgres.Executor) {
@@ -375,19 +372,35 @@ func (s *MailboxService) ReconcileAllConsumers(ctx context.Context) {
 }
 
 func consumerSpecFor(mb core.Mailbox) core.ConsumerSpec {
-	ackPending := mb.MaxConcurrency * 2
-	if ackPending <= 0 {
-		ackPending = 100
-	}
 	return core.ConsumerSpec{
 		TenantID:       mb.TenantID,
 		MailboxID:      mb.ID,
 		DurableName:    mb.ID,
 		ACKWaitSeconds: mb.ACKWaitSeconds,
 		MaxDeliver:     mb.MaxDeliver,
-		MaxACKPending:  ackPending,
+		MaxACKPending:  v190ColdPullAckPending,
 	}
 }
+
+// v190ColdPullAckPending is the ONLY MaxAckPending value a v1.9.0
+// replica can re-ensure against a live consumer. v1.9.0 has two consumer
+// ensure sites with different configs: its mailbox-create path sends
+// MaxConcurrency*2, but its cold-cache PULL path (dispatch ensure, the
+// only one that runs after a restart — v1.9.0 boot never ensures
+// mailboxes) omits the field, so the driver default fills a flat 100.
+// JetStream rejects a same-name consumer create whose config differs
+// (err 10148 "consumer already exists"), v1.9.0 swallows the ensure
+// error, FetchTasks then fails with "consumer not found" and every pull
+// from the restarted or rolled-back binary answers 503. GA-09's rollback
+// leg (first test ever to restart a v1.9.0 binary over live consumers)
+// reproduced this end to end; a plain v1.9.0 restart with no upgrade
+// involved fails identically. The *2-of-concurrency refinement is
+// therefore rejected the same way the ledger generation column was:
+// broker infra that the previous release re-creates must stay identical
+// to what that release sends. 100 also matches what v1.9.0 replicas ran
+// in production for every cold ensure, and stays above any realistic
+// in-flight set bounded by CheckConcurrency.
+const v190ColdPullAckPending = 100
 
 // parkedSpec couples a failed reconcile with the PG config_version it was
 // read from: retries verify the version BEFORE applying so a superseded
