@@ -196,6 +196,74 @@ jobs:
           kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true
           kill "$(cat /tmp/janus-api-b.pid)" 2>/dev/null || true
 
+  evidence-drills:
+    # GA evidence drills proven locally 2026-11-01, wired here per owner
+    # decision: GA-07 four-cell deployment matrix (needs the shared PG + a
+    # JetStream NATS), GA-10 failover and PITR drills (own throwaway PG
+    # clusters via initdb/pg_basebackup, so the runner needs PostgreSQL
+    # SERVER binaries, not just the client). The GA-11 load and SDK-chaos
+    # drills stay manual for now (15-25 min each; revisit with the nightly
+    # time budget).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      JANUS_PG_HOST: localhost
+      JANUS_PG_PORT: "5432"
+      JANUS_PG_USER: janus
+      JANUS_PG_PASSWORD: janus
+      JANUS_PG_DBNAME: janus_test
+      JANUS_PG_SSLMODE: disable
+      JANUS_NATS_URL: nats://localhost:4222
+      PGPASSWORD: janus
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.work
+
+      - name: Install tooling (psql client + postgres server binaries for the DR drills)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client postgresql-16
+
+      - name: Start dependency containers (postgres / nats)
+        run: |
+          set -euo pipefail
+          pull() {
+            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
+              for attempt in 1 2 3; do
+                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                sleep $((attempt * 10))
+              done
+            done
+            echo "::error::unable to pull $1"; return 1
+          }
+          pull postgres:16-alpine
+          pull nats:2-alpine
+          docker run -d --name janus-pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
+            -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
+          docker run -d --name janus-nats -p 4222:4222 nats:2-alpine -js -m 8222
+          for i in $(seq 1 30); do
+            docker exec janus-pg pg_isready -U janus -d janus_test >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec janus-pg pg_isready -U janus -d janus_test
+
+      - name: GA-07 four-cell deployment matrix ({pg,pg+nats} x {1,2} replicas)
+        run: bash scripts/ga07_four_cell.sh
+
+      - name: GA-10 failover drill (RPO=0 + RTO budget)
+        run: bash scripts/dr_ga10_failover.sh
+
+      - name: GA-10 PITR drill (WAL replay to recovery target)
+        run: bash scripts/dr_ga10_pitr.sh
+
+      - name: Dump drill artifacts on failure
+        if: failure()
+        run: |
+          ls -la /tmp/ga07-fourcell.* /tmp/ga10-failover.* /tmp/janus-ga10-pitr.* 2>/dev/null || true
+          for f in /tmp/ga07-fourcell.*/*.log /tmp/ga10-failover.*/*.log /tmp/janus-ga10-pitr.*/api.log; do
+            [ -f "$f" ] && { echo "::group::$f"; tail -50 "$f"; echo "::endgroup::"; }
+          done
+
   chart-install-upgrade:
     # Real-chart proof on a kind cluster: helm install -> helm upgrade with
     # a changed value, asserting the pre-upgrade migration hook Job runs
