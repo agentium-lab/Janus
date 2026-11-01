@@ -45,7 +45,11 @@ func openLeaseLostStreamDB(t *testing.T) *pgxpool.Pool {
 	testDB := fmt.Sprintf("janus_llstream_%d", time.Now().UnixNano())
 
 	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=janus_test sslmode=disable", host, port, user, password)
+	adminDSN := "host=" + host + " port=" + port + " user=" + user
+	if password != "" {
+		adminDSN += " password=" + password
+	}
+	adminDSN += " dbname=janus_test sslmode=disable"
 	adminConn, err := pgx.Connect(ctx, adminDSN)
 	if err != nil {
 		t.Skipf("postgres not reachable (set JANUS_PG_HOST/PORT/USER to enable): %v", err)
@@ -54,7 +58,11 @@ func openLeaseLostStreamDB(t *testing.T) *pgxpool.Pool {
 	require.NoError(t, err, "create test DB")
 	adminConn.Close(ctx)
 
-	dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, testDB)
+	dsn := "host=" + host + " port=" + port + " user=" + user
+	if password != "" {
+		dsn += " password=" + password
+	}
+	dsn += " dbname=" + testDB + " sslmode=disable"
 	pool, err := pgxpool.New(ctx, dsn)
 	require.NoError(t, err)
 	require.NoError(t, pool.Ping(ctx))

@@ -44,7 +44,11 @@ func pgConfig() (host, port, user, password, dbname string) {
 
 func adminDSN() string {
 	host, port, user, password, dbname := pgConfig()
-	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable", host, port, user, password, dbname)
+	dsn := "host=" + host + " port=" + port + " user=" + user
+	if password != "" {
+		dsn += " password=" + password
+	}
+	return dsn + " dbname=" + dbname + " sslmode=disable"
 }
 
 func openTestDB(t *testing.T) *pgxpool.Pool {
