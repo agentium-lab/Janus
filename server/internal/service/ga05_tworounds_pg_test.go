@@ -22,7 +22,6 @@ package service
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -32,6 +31,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/agentium-lab/Janus/core"
@@ -104,6 +104,7 @@ type ga05Rig struct {
 	nc      *natsgo.Conn
 	js      natsgo.JetStream
 	dlqSub  *natsgo.Subscription
+	pub     *outboxpkg.Publisher
 }
 
 func ga05RigFor(t *testing.T, tenant, taskID string) *ga05Rig {
@@ -146,7 +147,16 @@ func ga05RigFor(t *testing.T, tenant, taskID string) *ga05Rig {
 	}
 	env.dispatch = env.dispatch.WithQueueDriver(&driverCloser{QueueDriver: drv})
 	env.taskSvc.WithQueueDriver(drv)
+
+	// The production Publisher drains the outbox: dedupe key = row id (the
+	// JetStream Nats-Msg-Id) and the row transitions to 'published'. Start it
+	// on a background context so Stop() alone ends it — cancelling the context
+	// would abort an in-flight batch and strand that row unpublished.
+	g.pub = outboxpkg.NewPublisher(env.outboxRepo, drv)
+	go g.pub.Start(context.Background(), 20*time.Millisecond)
+
 	t.Cleanup(func() {
+		g.pub.Stop()
 		if g.dlqSub != nil {
 			_ = g.dlqSub.Unsubscribe()
 		}
@@ -156,28 +166,127 @@ func ga05RigFor(t *testing.T, tenant, taskID string) *ga05Rig {
 	return g
 }
 
-// drain publishes pending task_publish / dlq_publish outbox rows to the real
-// broker (the harness runs no publisher goroutine — TestB4's drain pattern).
-func (g *ga05Rig) drain(ctx context.Context) {
-	entries, _ := g.env.outboxRepo.FetchPending(ctx, 50)
-	for _, e := range entries {
-		switch e.Kind {
-		case "task_publish":
-			var msg core.TaskMessage
-			if jsonUnmarshal(e.Payload, &msg) {
-				_ = g.drv.PublishTask(ctx, msg)
-			}
-		case "dlq_publish":
-			var msg core.TaskMessage
-			if jsonUnmarshal(e.Payload, &msg) {
-				_ = g.drv.PublishDLQ(ctx, msg, []byte(msg.Headers["error"]))
-			}
+// drain waits until the production Publisher has pushed every outbox row of
+// this rig's tenant to the broker.
+func (g *ga05Rig) drain(t *testing.T, ctx context.Context) {
+	t.Helper()
+	require.NoError(t, withDeadline(t, 15*time.Second, func() error {
+		var pending int
+		if err := g.env.pool.QueryRow(ctx,
+			`SELECT count(*) FROM outbox_events
+			  WHERE tenant_id=$1 AND status IN ('pending','retry','publishing')`,
+			g.tenant).Scan(&pending); err != nil {
+			return err
 		}
-	}
+		if pending > 0 {
+			return fmt.Errorf("%d outbox rows not published yet", pending)
+		}
+		return nil
+	}), "the real publisher must drain the outbox")
 }
 
-func jsonUnmarshal(b []byte, v interface{}) bool {
-	return json.Unmarshal(b, v) == nil
+// requireAllPublished waits for every outbox row of the kind to reach the
+// publisher's terminal state, and returns how many rows there are.
+func (g *ga05Rig) requireAllPublished(t *testing.T, ctx context.Context, kind string) int {
+	t.Helper()
+	var total, published int
+	require.NoError(t, withDeadline(t, 15*time.Second, func() error {
+		if err := g.env.pool.QueryRow(ctx,
+			`SELECT count(*),
+			        count(*) FILTER (WHERE status='published' AND published_at IS NOT NULL)
+			   FROM outbox_events WHERE tenant_id=$1 AND kind=$2`, g.tenant, kind).Scan(&total, &published); err != nil {
+			return err
+		}
+		if total == 0 {
+			return fmt.Errorf("no %s rows yet", kind)
+		}
+		if total != published {
+			return fmt.Errorf("%d of %d %s rows still unpublished", total-published, total, kind)
+		}
+		return nil
+	}), "every %s row must reach published with a published_at stamp", kind)
+	return total
+}
+
+func (g *ga05Rig) latestOutboxID(t *testing.T, ctx context.Context, kind string) string {
+	t.Helper()
+	var id string
+	require.NoError(t, g.env.pool.QueryRow(ctx,
+		`SELECT id FROM outbox_events WHERE tenant_id=$1 AND kind=$2
+		  ORDER BY created_at DESC, id DESC LIMIT 1`, g.tenant, kind).Scan(&id))
+	return id
+}
+
+// streamByPrefix resolves a JetStream stream at runtime: the DLQ stream name
+// embeds sanitize(mailbox), which the test must not reimplement.
+func (g *ga05Rig) streamByPrefix(t *testing.T, ctx context.Context, prefix string) string {
+	t.Helper()
+	jsm, err := jetstream.New(g.nc)
+	require.NoError(t, err)
+	lister := jsm.StreamNames(ctx)
+	var names []string
+	for name := range lister.Name() {
+		names = append(names, name)
+	}
+	require.NoError(t, lister.Err())
+	for _, name := range names {
+		if len(name) >= len(prefix) && name[:len(prefix)] == prefix {
+			return name
+		}
+	}
+	t.Fatalf("no JetStream stream with prefix %q (have %v)", prefix, names)
+	return ""
+}
+
+// requireBrokerDedupeID proves the publisher stamped the outbox row id as the
+// JetStream dedupe id on the broker's newest message for the subject.
+func (g *ga05Rig) requireBrokerDedupeID(t *testing.T, ctx context.Context, streamPrefix, subject, wantID string) {
+	t.Helper()
+	stream := g.streamByPrefix(t, ctx, streamPrefix)
+	require.NoError(t, withDeadline(t, 15*time.Second, func() error {
+		jsm, err := jetstream.New(g.nc)
+		if err != nil {
+			return err
+		}
+		st, err := jsm.Stream(ctx, stream)
+		if err != nil {
+			return err
+		}
+		msg, err := st.GetLastMsgForSubject(ctx, subject)
+		if err != nil {
+			return err
+		}
+		if got := msg.Header.Get("Nats-Msg-Id"); got != wantID {
+			return fmt.Errorf("broker dedupe id = %q, want outbox row %q", got, wantID)
+		}
+		return nil
+	}), "the publisher must stamp the outbox row id as the JetStream dedupe id")
+}
+
+type ga05LedgerRow struct {
+	scopeType string
+	scopeID   string
+	attempt   int
+	total     int64
+	cost      float64
+}
+
+func (g *ga05Rig) ledgerRows(t *testing.T, ctx context.Context) []ga05LedgerRow {
+	t.Helper()
+	rows, err := g.env.pool.Query(ctx,
+		`SELECT scope_type, scope_id, attempt, total_tokens, cost_usd
+		   FROM budget_usage_ledger WHERE tenant_id=$1 AND task_id=$2
+		  ORDER BY attempt, scope_type`, g.tenant, g.taskID)
+	require.NoError(t, err)
+	defer rows.Close()
+	var out []ga05LedgerRow
+	for rows.Next() {
+		var row ga05LedgerRow
+		require.NoError(t, rows.Scan(&row.scopeType, &row.scopeID, &row.attempt, &row.total, &row.cost))
+		out = append(out, row)
+	}
+	require.NoError(t, rows.Err())
+	return out
 }
 
 // deliver drains the outbox and pulls through the real broker until the task
@@ -186,7 +295,7 @@ func (g *ga05Rig) deliver(t *testing.T, ctx context.Context, what string) (*Pull
 	t.Helper()
 	var res *PullResult
 	err := withDeadline(t, 10*time.Second, func() error {
-		g.drain(ctx)
+		g.drain(t, ctx)
 		r, perr := g.env.dispatch.PullTask(ctx, g.tenant, g.mailbox, g.agent)
 		if perr != nil {
 			return perr
@@ -205,7 +314,7 @@ func (g *ga05Rig) deliver(t *testing.T, ctx context.Context, what string) (*Pull
 func (g *ga05Rig) fetchDLQ(t *testing.T, ctx context.Context, what string) {
 	t.Helper()
 	require.NoError(t, withDeadline(t, 10*time.Second, func() error {
-		g.drain(ctx)
+		g.drain(t, ctx)
 		if g.dlqSub == nil {
 			sub, serr := g.js.PullSubscribe(
 				fmt.Sprintf("janus.%s.tasks_dlq.%s", g.tenant, g.mailbox),
@@ -273,6 +382,13 @@ func TestGA05_T1_ReplayTwoRounds_FullDelivery_PG(t *testing.T) {
 	ctx := context.Background()
 	g.createTask(t, ctx)
 
+	// The TASKS stream is a work queue (WorkQueuePolicy): a message is gone
+	// once the pull consumer acks it, so the dedupe id is asserted on the
+	// unconsumed publish, before round 1 pulls it.
+	g.drain(t, ctx)
+	g.requireBrokerDedupeID(t, ctx, "JANUS_"+g.tenant+"_TASKS",
+		"janus."+g.tenant+".tasks."+g.mailbox, g.latestOutboxID(t, ctx, "task_publish"))
+
 	// Round 1 (generation 0): create publish -> real Pull -> Start -> Ack.
 	r1, err := g.deliver(t, ctx, "round 1")
 	require.NoError(t, err, "round 1 must deliver through the broker")
@@ -282,6 +398,9 @@ func TestGA05_T1_ReplayTwoRounds_FullDelivery_PG(t *testing.T) {
 	st, rc := g.taskStatus(t, ctx)
 	require.Equal(t, core.TaskStatusCompleted, st, "round 1 must settle completed")
 	require.Equal(t, 0, rc)
+
+	// Round 1 crossed the production publisher: its row reached 'published'.
+	require.Equal(t, 1, g.requireAllPublished(t, ctx, "task_publish"), "round 1 publishes once")
 
 	// Replay 1 -> generation 1.
 	_, err = g.env.taskSvc.Replay(ctx, g.tenant, g.taskID)
@@ -343,18 +462,56 @@ func TestGA05_T1_ReplayTwoRounds_FullDelivery_PG(t *testing.T) {
 	require.NoError(t, err, "round 3 must deliver — generation-2 dedupe key must not collide with round 2's")
 	require.Equal(t, 1, r3.Attempt, "attempt numbering restarts after replay 2 reset")
 	require.NoError(t, g.env.dispatch.StartTask(ctx, g.tenant, g.taskID, r3.LeaseID))
-	require.NoError(t, g.env.dispatch.AckTask(ctx, g.tenant, g.taskID, r3.LeaseID, "s3://ga05/r3", nil))
+
+	// Retry inside the LAST generation: the scheduler must promote it and the
+	// redelivery must be a new attempt of the same generation.
+	require.NoError(t, g.env.dispatch.NackTask(ctx, g.tenant, g.taskID, r3.LeaseID, true,
+		&core.TaskError{Code: "TRANSIENT", Message: "ga05 round3 retry"}))
+	st, _ = g.taskStatus(t, ctx)
+	require.Equal(t, core.TaskStatusRetryScheduled, st, "round 3 retriable nack schedules a retry")
+	require.NoError(t, withDeadline(t, 15*time.Second, func() error {
+		s, _ := g.taskStatus(t, ctx)
+		if s != core.TaskStatusQueued {
+			return fmt.Errorf("retry scheduler has not promoted round 3 yet: %s", s)
+		}
+		return nil
+	}), "retry scheduler must promote round 3")
+
+	r3b, err := g.deliver(t, ctx, "round 3 retry attempt")
+	require.NoError(t, err, "round 3 retry must redeliver")
+	require.Equal(t, r3.Attempt+1, r3b.Attempt, "retry redelivery is a new attempt in the same generation")
+	require.NoError(t, g.env.dispatch.StartTask(ctx, g.tenant, g.taskID, r3b.LeaseID))
+	usage := &core.TokenUsage{PromptTokens: 120, CompletionTokens: 30, TotalTokens: 150}
+	require.NoError(t, g.env.dispatch.AckTask(ctx, g.tenant, g.taskID, r3b.LeaseID, "s3://ga05/r3", usage))
 	st, _ = g.taskStatus(t, ctx)
 	require.Equal(t, core.TaskStatusCompleted, st, "round 3 must settle completed")
 
+	// Settlement ledger reconciliation: each Replay cleared the prior
+	// generation's rows, so exactly the settling attempt's two scopes remain,
+	// carrying the acked usage and its derived cost.
+	ledger := g.ledgerRows(t, ctx)
+	require.Len(t, ledger, 2, "one ledger row per settlement scope for the settling attempt")
+	scopes := map[string]string{}
+	for _, row := range ledger {
+		require.Equal(t, r3b.Attempt, row.attempt, "the settling attempt's rows only")
+		require.Equal(t, int64(150), row.total, "acked usage must land in the ledger")
+		require.InDelta(t, EstimateCostUSD(150), row.cost, 1e-9, "ledger cost derives from the acked tokens")
+		scopes[row.scopeType] = row.scopeID
+	}
+	require.Equal(t, g.tenant, scopes["tenant"], "tenant scope settled")
+	require.Equal(t, g.agent, scopes["agent"], "agent scope settled")
+
 	// Final outbox reconciliation: every historical task_publish row kept,
-	// one per delivery round, all dedupe keys distinct.
+	// one per delivery round, all published, all dedupe keys distinct.
 	require.Equal(t, []string{
 		"",
 		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 1, 1),
 		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 1, 2),
 		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 2, 1),
+		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 2, 2),
 	}, g.taskPublishKeys(t, ctx), "outbox must retain one task_publish per round with per-generation keys")
+	require.Equal(t, 5, g.requireAllPublished(t, ctx, "task_publish"), "every round's publish reached published")
+	g.requireAllPublished(t, ctx, "event_publish")
 }
 
 // T2 — DLQ replay entrance, two full rounds: dead-letter, replay from
@@ -413,6 +570,14 @@ func TestGA05_T2_DLQReplayTwoRounds_PG(t *testing.T) {
 		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 1, 1),
 		core.BuildReplayDedupeKey(g.tenant, g.taskID, "replay", 2, 1),
 	}, g.taskPublishKeys(t, ctx), "one task_publish per delivery round, keys per generation")
+
+	// Both DLQ legs crossed the production publisher: each dlq_publish row is
+	// published and the broker's newest DLQ message carries the newest row id
+	// as its JetStream dedupe id.
+	require.Equal(t, 2, g.requireAllPublished(t, ctx, "dlq_publish"), "one dlq_publish per dead-letter round")
+	g.requireBrokerDedupeID(t, ctx, "JANUS_"+g.tenant+"_DLQ",
+		"janus."+g.tenant+".tasks_dlq."+g.mailbox, g.latestOutboxID(t, ctx, "dlq_publish"))
+	require.Equal(t, 3, g.requireAllPublished(t, ctx, "task_publish"), "every round's publish reached published")
 }
 
 // T3 — Unblock resume, two rounds, keeping every old outbox row; then the
@@ -484,6 +649,7 @@ func TestGA05_T3_UnblockTwoRounds_AuditReconcile_PG(t *testing.T) {
 	require.NoError(t, g.env.pool.QueryRow(ctx,
 		`SELECT count(*) FROM outbox_events WHERE tenant_id=$1 AND kind='event_publish'`, g.tenant).Scan(&outboxEvents))
 	require.Equal(t, 17, outboxEvents, "outbox must hold every event_publish row (none swallowed at source)")
+	require.Equal(t, 17, g.requireAllPublished(t, ctx, "event_publish"), "the publisher pushed every event row")
 
 	events, lerr := g.env.eventRepo.ListByTask(ctx, g.tenant, g.taskID, 100)
 	require.NoError(t, lerr)
