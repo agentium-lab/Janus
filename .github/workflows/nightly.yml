@@ -811,20 +811,21 @@ jobs:
 
   chart-upgrade-rollback:
     # GA-09: real cross-version upgrade/rollback on a kind cluster. The
-    # PREVIOUS release (v1.9.0 image, built from the tag in a throwaway
-    # worktree so $GITHUB_WORKSPACE stays on the commit under test) runs
-    # under the CURRENT chart, gets in-flight business state seeded
-    # through its own API (a lease held and NOT acked, one completed
-    # task, projected audit rows), is upgraded to the candidate image
-    # built from this commit, then helm-rolled-back to the old image.
+    # PREVIOUS release (the LATEST vX tag's image, built from the tag in a
+    # throwaway worktree so $GITHUB_WORKSPACE stays on the commit under
+    # test) runs under the CURRENT chart, gets in-flight business state
+    # seeded through its own API (a lease held and NOT acked, one
+    # completed task, projected audit rows), is upgraded to the candidate
+    # image built from this commit, then helm-rolled-back to the old
+    # image.
     # Every leg asserts the durable rows survived in postgres; the held
     # lease is finally ACKed through the NEW binary (cross-version lease
     # compatibility) and a fresh pull works through the rolled-back OLD
-    # binary. Migrations since v1.9.0 are additive or schema-neutral
+    # binary. Migrations since the release baseline are additive or schema-neutral
     # (000019 ADD COLUMN IF NOT EXISTS; 000020 is a SELECT 1 whose
     # comment documents that the five-column ledger PK exists precisely
-    # so v1.9.0 binaries survive the migrate-then-restart window), and
-    # smoke_mixed_version_locks.sh boots a v1.9.0 binary on the
+    # so the OLD binaries survive the migrate-then-restart window), and
+    # smoke_mixed_version_locks.sh boots an older binary on the
     # schema-at-HEAD nightly — so rolling the app back while the schema
     # stays forward is the repo's tested posture, and this job does the
     # true old-image rollback. helm rollback runs no migration hook
@@ -835,14 +836,14 @@ jobs:
     env:
       NS: janus-e2e
       RELEASE: janus-core
-      # Plain password ON PURPOSE: this job boots the v1.9.0 binary,
-      # whose PostgresConfig.DSN() predates the userinfo-escaping fix
+      # Plain password ON PURPOSE for older baselines: a tag whose
+      # PostgresConfig.DSN() predates the userinfo-escaping fix
       # (f606056) — a delimiter-soup password (the "p@ss#w?rd/x" the
       # chart-install-upgrade job proves nightly) makes the URL-form DSN
       # unparseable, pgxpool.ParseConfig log.Fatalfs in mustOpenPool and
-      # the old image CrashLoops before its first readiness probe. The
-      # end-to-end DSN-escaping proof stays in chart-install-upgrade,
-      # which runs the fixed candidate image.
+      # that baseline's image CrashLoops before its first readiness
+      # probe. The end-to-end DSN-escaping proof stays in
+      # chart-install-upgrade, which runs the fixed candidate image.
       PG_PASSWORD: "ga09_v190_plain_pw"
       TENANT: ga09
       AGENT: ga09-agent
@@ -851,7 +852,8 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The v1.9.0 release tag must be present to build the OLD image.
+          # All release tags must be present: the OLD image is built from
+          # the latest one.
           fetch-depth: 0
 
       - name: Create kind cluster
@@ -874,21 +876,30 @@ jobs:
           sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
           helm version
 
-      - name: Build OLD (v1.9.0) + candidate images, load into kind
+      - name: Build OLD (latest release tag) + candidate images, load into kind
         run: |
           set -euo pipefail
+          # The OLD baseline is the LATEST release tag, not a pinned major:
+          # the upgrade under test is "previous release -> this commit".
+          OLD_TAG="$(git tag -l 'v[0-9]*' | sort -V | tail -1)"
+          [ -n "$OLD_TAG" ] || { echo "::error::no release tags found - cannot build the OLD image"; exit 1; }
+          OLD_COMMIT="$(git rev-parse "${OLD_TAG}^{commit}")"
+          if [ "$OLD_COMMIT" = "$(git rev-parse HEAD)" ]; then
+            echo "::warning::latest tag $OLD_TAG points at the commit under test - the upgrade leg degenerates to same-image (chart upgrade/rollback still proven)"
+          fi
+          echo "OLD_TAG=$OLD_TAG" >> "$GITHUB_ENV"
           # The OLD release image is built from the tag in a separate
           # worktree: the checkout itself must NEVER move off the commit
           # under test, so every chart path below stays valid.
-          git worktree add --detach /tmp/janus-v190 v1.9.0
-          docker build -t janus-core:old /tmp/janus-v190
-          git worktree remove /tmp/janus-v190
+          git worktree add --detach /tmp/janus-old "$OLD_TAG"
+          docker build -t janus-core:old /tmp/janus-old
+          git worktree remove /tmp/janus-old
           docker build -t janus-core:candidate "$GITHUB_WORKSPACE"
           # Locally built images carry an image ID, not a registry digest;
           # record the tag commit + both IDs so a failing leg can be
           # tied back to the exact build.
           {
-            echo "v1.9.0 tag commit      = $(git -C "$GITHUB_WORKSPACE" rev-parse 'v1.9.0^{commit}')"
+            echo "$OLD_TAG tag commit      = $OLD_COMMIT"
             echo "janus-core:old         = $(docker image inspect janus-core:old --format '{{.Id}}')"
             echo "janus-core:candidate   = $(docker image inspect janus-core:candidate --format '{{.Id}}')"
           } | tee /tmp/ga09-images.txt
@@ -1051,7 +1062,7 @@ jobs:
           fi
           kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus
 
-      - name: Helm install with the OLD (v1.9.0) image
+      - name: Helm install with the OLD (latest release) image
         run: |
           set -euo pipefail
           helm install "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
@@ -1063,7 +1074,7 @@ jobs:
             --set postgres.password="$PG_PASSWORD" \
             --wait --timeout 5m
           # The pre-install migration hook applied the CURRENT chart schema
-          # (schema.sql through 000020) and the v1.9.0 binary booted on it —
+          # (schema.sql through 000020) and the OLD binary booted on it —
           # exactly the migrate-then-restart posture the repo commits to
           # (000020's ledger-PK comment + smoke_mixed_version_locks.sh).
           # --wait already gates on pods Ready; assert them explicitly too.
@@ -1083,7 +1094,7 @@ jobs:
           # prefix = key[:8] AND key_hash on EVERY request, so a row
           # inserted against the running old pod authenticates it).
           # platform:admin is mandatory here, not decoration: POST
-          # /v1/tenants demands ScopePlatformAdmin on v1.9.0 AND HEAD,
+          # /v1/tenants demands ScopePlatformAdmin on the OLD binary AND HEAD,
           # and an empty-scope key is deliberately refused platform
           # authority by Principal.HasScope on both versions.
           KEY_HASH=$(printf '%s' "$API_KEY" | sha256sum | cut -d' ' -f1)
@@ -1254,12 +1265,12 @@ jobs:
           echo "candidate /healthz -> $CODE"
           [ "$CODE" = "200" ] || { echo "::error::candidate /healthz -> $CODE"; exit 1; }
           # Cross-version lease compatibility: the lease was minted by the
-          # v1.9.0 binary and must settle cleanly through the candidate.
+          # OLD binary and must settle cleanly through the candidate.
           CODE=$(curl -s -o /tmp/ga09-ack.json -w '%{http_code}' --max-time 10 -X POST "http://127.0.0.1:18082/v1/tenants/$TENANT/tasks/ga09-held-1/ack" \
             -H "x-api-key: $API_KEY" -H 'Content-Type: application/json' \
             -d "{\"lease_id\":\"$GA09_HELD_LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga09://settled-by-candidate\"}")
           echo "ack held lease via candidate -> $CODE $(cat /tmp/ga09-ack.json)"
-          [ "$CODE" = "200" ] || { echo "::error::candidate could not ACK the lease minted by v1.9.0 -> $CODE"; exit 1; }
+          [ "$CODE" = "200" ] || { echo "::error::candidate could not ACK the lease minted by $OLD_TAG -> $CODE"; exit 1; }
           HELD=$(psqlq "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='ga09-held-1'")
           [ "$HELD" = "completed" ] || { echo "::error::held task not completed after cross-version ack: $HELD"; exit 1; }
           OPEN=$(psqlq "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND lease_id='$GA09_HELD_LEASE' AND finished_at IS NULL")
@@ -1269,7 +1280,7 @@ jobs:
       - name: Helm rollback to the previous revision (OLD image) + re-assert
         run: |
           set -euo pipefail
-          # Roll back to revision 0 == the previous release (the v1.9.0
+          # Roll back to revision 0 == the previous release (the
           # install). No migration hook fires on rollback (the chart
           # annotates pre-install,pre-upgrade only), so the app steps back
           # onto the FORWARD schema — the posture this job exists to prove.
@@ -1308,7 +1319,7 @@ jobs:
           CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:18083/healthz)
           echo "rolled-back /healthz -> $CODE"
           [ "$CODE" = "200" ] || { echo "::error::rolled-back OLD binary /healthz -> $CODE"; exit 1; }
-          # A fresh pull must work through the rolled-back v1.9.0 binary:
+          # A fresh pull must work through the rolled-back OLD binary:
           # publish a task on it and consume it end to end.
           AUTH=(-H "x-api-key: $API_KEY" -H 'Content-Type: application/json')
           CODE=$(curl -s -o /tmp/ga09-body.json -w '%{http_code}' --max-time 10 -X POST "http://127.0.0.1:18083/v1/tenants/$TENANT/tasks" "${AUTH[@]}" -d '{"id":"ga09-post-rollback-1","source_agent":"ga09-agent","target_type":"mailbox","target_value":"ga09-mb","envelope":{"janus_version":"0.3","task_id":"ga09-post-rollback-1","tenant_id":"ga09","source_agent":"ga09-agent","target":{"type":"mailbox","value":"ga09-mb"},"payload":{"type":"smoke","content":"ga09"},"trace":{"trace_id":"ga09-post-rollback-1"}}}')
