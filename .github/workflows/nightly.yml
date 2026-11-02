@@ -64,6 +64,17 @@ jobs:
                 # pull does not fetch, and kind's ctr import then dies
                 # on "content digest not found"; a single-platform pull
                 # sidesteps the attestation manifest entirely.
+                # Pull by the linux/amd64 MANIFEST DIGEST when the source
+                # is an index: a tag pull stores the whole multi-platform
+                # index (even with --platform) and kind's ctr import
+                # (--all-platforms) then demands every digest the index
+                # references - including attestation manifests whose blobs
+                # were never fetched ("content digest ... not found"). A
+                # digest pull leaves only the single-platform manifest.
+                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
+                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
+                  docker tag "$src@$plat_digest" "$1"; return 0
+                fi
                 docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
@@ -250,6 +261,17 @@ jobs:
                 # pull does not fetch, and kind's ctr import then dies
                 # on "content digest not found"; a single-platform pull
                 # sidesteps the attestation manifest entirely.
+                # Pull by the linux/amd64 MANIFEST DIGEST when the source
+                # is an index: a tag pull stores the whole multi-platform
+                # index (even with --platform) and kind's ctr import
+                # (--all-platforms) then demands every digest the index
+                # references - including attestation manifests whose blobs
+                # were never fetched ("content digest ... not found"). A
+                # digest pull leaves only the single-platform manifest.
+                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
+                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
+                  docker tag "$src@$plat_digest" "$1"; return 0
+                fi
                 docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
@@ -268,21 +290,33 @@ jobs:
           docker exec janus-pg pg_isready -U janus -d janus_test
 
       - name: GA-07 four-cell deployment matrix ({pg,pg+nats} x {1,2} replicas)
+        env:
+          KEEP_WORK: "1"
         run: bash scripts/ga07_four_cell.sh
 
       - name: GA-10 failover drill (RPO=0 + RTO budget)
+        env:
+          KEEP_WORK: "1"
         run: bash scripts/dr_ga10_failover.sh
 
       - name: GA-10 PITR drill (WAL replay to recovery target)
+        env:
+          KEEP_WORK: "1"
         run: bash scripts/dr_ga10_pitr.sh
 
       - name: Dump drill artifacts on failure
         if: failure()
         run: |
           ls -la /tmp/ga07-fourcell.* /tmp/ga10-failover.* /tmp/janus-ga10-pitr.* 2>/dev/null || true
-          for f in /tmp/ga07-fourcell.*/*.log /tmp/ga10-failover.*/*.log /tmp/janus-ga10-pitr.*/api.log; do
-            [ -f "$f" ] && { echo "::group::$f"; tail -50 "$f"; echo "::endgroup::"; }
+          found=0
+          for f in /tmp/ga07-fourcell.*/*.log /tmp/ga10-failover.*/*.log /tmp/janus-ga10-pitr.*/*.log; do
+            if [ -f "$f" ]; then
+              found=1
+              echo "::group::$f"; tail -80 "$f"; echo "::endgroup::"
+            fi
           done
+          [ "$found" = "1" ] || echo "no drill logs retained (drill cleanup removed them)"
+          true
 
   chart-install-upgrade:
     # Real-chart proof on a kind cluster: helm install -> helm upgrade with
@@ -340,6 +374,17 @@ jobs:
                 # pull does not fetch, and kind's ctr import then dies
                 # on "content digest not found"; a single-platform pull
                 # sidesteps the attestation manifest entirely.
+                # Pull by the linux/amd64 MANIFEST DIGEST when the source
+                # is an index: a tag pull stores the whole multi-platform
+                # index (even with --platform) and kind's ctr import
+                # (--all-platforms) then demands every digest the index
+                # references - including attestation manifests whose blobs
+                # were never fetched ("content digest ... not found"). A
+                # digest pull leaves only the single-platform manifest.
+                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
+                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
+                  docker tag "$src@$plat_digest" "$1"; return 0
+                fi
                 docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
@@ -941,6 +986,17 @@ jobs:
                 # pull does not fetch, and kind's ctr import then dies
                 # on "content digest not found"; a single-platform pull
                 # sidesteps the attestation manifest entirely.
+                # Pull by the linux/amd64 MANIFEST DIGEST when the source
+                # is an index: a tag pull stores the whole multi-platform
+                # index (even with --platform) and kind's ctr import
+                # (--all-platforms) then demands every digest the index
+                # references - including attestation manifests whose blobs
+                # were never fetched ("content digest ... not found"). A
+                # digest pull leaves only the single-platform manifest.
+                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
+                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
+                  docker tag "$src@$plat_digest" "$1"; return 0
+                fi
                 docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
