@@ -222,7 +222,17 @@ jobs:
           go-version-file: go.work
 
       - name: Install tooling (psql client + postgres server binaries for the DR drills)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client postgresql-16
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          # The versioned package name differs by Ubuntu release (postgresql-16
+          # is absent on some runners); install whatever server major the
+          # distro ships - the drills only need initdb/pg_ctl/pg_basebackup.
+          PKG="$(apt-cache search --names-only '^postgresql-1[0-9]$' | sort -V | tail -1 | cut -d' ' -f1)"
+          [ -n "$PKG" ] || { echo "::error::no postgresql-1x server package in apt"; exit 1; }
+          echo "installing $PKG"
+          sudo apt-get install -y -qq "$PKG"
 
       - name: Start dependency containers (postgres / nats)
         run: |
