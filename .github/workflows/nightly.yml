@@ -396,9 +396,19 @@ jobs:
           pull redis:7-alpine
           # The migration hook Job image is pinned by the chart itself.
           pull migrate/migrate:v4.19.1
-          for img in janus-core:e2e postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
-            kind load docker-image "$img" --name janus
+          # Registry images are pulled INSIDE the kind node with ctr:
+          # containerd fetches only the linux/amd64 manifest, so the
+          # attestation sub-manifests that break kind's docker-image import
+          # ("content digest not found" under ctr import --all-platforms)
+          # never enter the node. The locally built janus-core image
+          # (single-platform, --provenance=false) still goes through
+          # kind load.
+          NODE="$(kind get nodes --name janus | head -1)"
+          for img in postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
+            docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "docker.io/$img" \
+              || docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "public.ecr.aws/docker/library/$img"
           done
+          kind load docker-image janus-core:e2e --name janus
 
       - name: Start in-cluster dependencies (postgres / nats / redis)
         run: |
@@ -1008,9 +1018,16 @@ jobs:
           pull redis:7-alpine
           # The migration hook Job image is pinned by the chart itself.
           pull migrate/migrate:v4.19.1
-          for img in janus-core:old janus-core:candidate postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
-            kind load docker-image "$img" --name janus-ga09
+          # Registry images are pulled INSIDE the kind node with ctr
+          # (single linux/amd64 manifest - see the chart-install-upgrade
+          # job for why kind's import of hub indexes breaks); the locally
+          # built janus-core images still go through kind load.
+          NODE="$(kind get nodes --name janus-ga09 | head -1)"
+          for img in postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
+            docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "docker.io/$img" \
+              || docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "public.ecr.aws/docker/library/$img"
           done
+          kind load docker-image janus-core:old janus-core:candidate --name janus-ga09
 
       - name: Start in-cluster dependencies (postgres / nats / redis)
         run: |
