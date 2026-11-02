@@ -59,7 +59,11 @@ cleanup() {
         "$PG_BIN/pg_ctl" -D "$PGDATA_RESTORE" stop -m immediate -t 20 >/dev/null 2>&1 || true
         "$PG_BIN/pg_ctl" -D "$PGDATA_PRIMARY" stop -m immediate -t 20 >/dev/null 2>&1 || true
     fi
-    rm -rf "$WORK"
+    if [ "${KEEP_WORK:-0}" = "1" ]; then
+        echo "KEEP_WORK=1: workdir retained at $WORK (api.log, primary.log, restore.log)"
+    else
+        rm -rf "$WORK"
+    fi
     exit "$rc"
 }
 trap cleanup EXIT
@@ -196,7 +200,14 @@ for _ in $(seq 1 60); do
     if curl -fsS --max-time 2 "http://127.0.0.1:$HTTP_PORT/readyz" >/dev/null 2>&1; then ready=1; break; fi
     sleep 1
 done
-if [ "$ready" != 1 ]; then fail "API did not become ready on :$HTTP_PORT within 60s (see $WORK/api.log)"; fi
+if [ "$ready" != 1 ]; then
+    echo "--- api boot diagnostics (pid=$(cat "$API_PID_FILE" 2>/dev/null), port $HTTP_PORT) ---" >&2
+    kill -0 "$(cat "$API_PID_FILE" 2>/dev/null)" 2>/dev/null && echo "api process: RUNNING (never became ready)" >&2 || echo "api process: DEAD (crashed at boot)" >&2
+    ss -ltn 2>/dev/null | grep ":$HTTP_PORT " >&2 || true
+    echo "--- api.log tail ---" >&2
+    tail -30 "$WORK/api.log" >&2 2>/dev/null || true
+    fail "API did not become ready on :$HTTP_PORT within 60s"
+fi
 log "janus-api ready on 127.0.0.1:$HTTP_PORT (schema via auto-migration)"
 
 api() { # method path [json body]
