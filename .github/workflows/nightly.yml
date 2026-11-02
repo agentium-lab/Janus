@@ -59,7 +59,12 @@ jobs:
           pull() {
             for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
               for attempt in 1 2 3; do
-                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                # --platform linux/amd64: docker-hub images now ship
+                # attestation/SBOM sub-manifests whose content a plain
+                # pull does not fetch, and kind's ctr import then dies
+                # on "content digest not found"; a single-platform pull
+                # sidesteps the attestation manifest entirely.
+                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
             done
@@ -240,7 +245,12 @@ jobs:
           pull() {
             for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
               for attempt in 1 2 3; do
-                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                # --platform linux/amd64: docker-hub images now ship
+                # attestation/SBOM sub-manifests whose content a plain
+                # pull does not fetch, and kind's ctr import then dies
+                # on "content digest not found"; a single-platform pull
+                # sidesteps the attestation manifest entirely.
+                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
             done
@@ -321,7 +331,12 @@ jobs:
           pull() {
             for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
               for attempt in 1 2 3; do
-                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                # --platform linux/amd64: docker-hub images now ship
+                # attestation/SBOM sub-manifests whose content a plain
+                # pull does not fetch, and kind's ctr import then dies
+                # on "content digest not found"; a single-platform pull
+                # sidesteps the attestation manifest entirely.
+                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
             done
@@ -909,7 +924,12 @@ jobs:
           pull() {
             for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
               for attempt in 1 2 3; do
-                docker pull "$src" && { docker tag "$src" "$1"; return 0; }
+                # --platform linux/amd64: docker-hub images now ship
+                # attestation/SBOM sub-manifests whose content a plain
+                # pull does not fetch, and kind's ctr import then dies
+                # on "content digest not found"; a single-platform pull
+                # sidesteps the attestation manifest entirely.
+                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
                 sleep $((attempt * 10))
               done
             done
