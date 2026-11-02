@@ -324,7 +324,11 @@ jobs:
       - name: Build janus-api image (this commit) + load into kind
         run: |
           set -euo pipefail
-          docker build -t janus-core:e2e .
+          # --provenance=false --sbom=false: newer BuildKit defaults emit
+          # attestation sub-manifests, and kind's ctr import
+          # (--all-platforms) then dies on the unpushed attestation
+          # digest; plain single-platform images load cleanly.
+          docker build --provenance=false --sbom=false -t janus-core:e2e .
           # Dependency images are pulled here (docker.io with an ECR mirror
           # fallback, same as production-gates) and side-loaded into the
           # node so kubelet never hits Docker Hub rate limits mid-run.
@@ -907,9 +911,17 @@ jobs:
           # worktree: the checkout itself must NEVER move off the commit
           # under test, so every chart path below stays valid.
           git worktree add --detach /tmp/janus-old "$OLD_TAG"
-          docker build -t janus-core:old /tmp/janus-old
+          # --provenance=false --sbom=false: newer BuildKit defaults emit
+          # attestation sub-manifests, and kind's ctr import
+          # (--all-platforms) then dies on the unpushed attestation
+          # digest; plain single-platform images load cleanly.
+          docker build --provenance=false --sbom=false -t janus-core:old /tmp/janus-old
           git worktree remove /tmp/janus-old
-          docker build -t janus-core:candidate "$GITHUB_WORKSPACE"
+          # --provenance=false --sbom=false: newer BuildKit defaults emit
+          # attestation sub-manifests, and kind's ctr import
+          # (--all-platforms) then dies on the unpushed attestation
+          # digest; plain single-platform images load cleanly.
+          docker build --provenance=false --sbom=false -t janus-core:candidate "$GITHUB_WORKSPACE"
           # Locally built images carry an image ID, not a registry digest;
           # record the tag commit + both IDs so a failing leg can be
           # tied back to the exact build.
