@@ -512,6 +512,7 @@ gate() { # name measured comparator target extra
 }
 
 gate "persisted==published" "$PERSISTED" eq "$PUBLISHED" "(persisted=$PERSISTED published=$PUBLISHED)"
+gate "zero_publish_failures" "$PUB_FAILURES" eq "0" "(failures=$PUB_FAILURES ${PUB_FAIL_DETAIL})"
 gate "all_completed" "$COMPLETED" eq "$PUBLISHED" "(completed=$COMPLETED published=$PUBLISHED drain=${DRAIN_S}s)"
 gate "zero_dead_lettered" "$DEAD_LETTERED" eq "0" "(dead_lettered=$DEAD_LETTERED)"
 gate "outbox_backlog_zero" "$OUTBOX_BACKLOG" eq "0" "(backlog=$OUTBOX_BACKLOG unprojected=$UNPROJECTED)"
@@ -529,6 +530,11 @@ else
 fi
 EXPECTED_EVENTS_TOTAL=$(( (PUBLISHED + PROBES_SETTLED) * EXPECTED_EVENTS_PER_TASK * 9 / 10 ))
 gate "event_completeness_ge_90pct" "$EVENTS_ALL" ge "$EXPECTED_EVENTS_TOTAL" "(events_all=$EVENTS_ALL expected>=${EXPECTED_EVENTS_TOTAL} = (published $PUBLISHED + probes $PROBES_SETTLED) x $EXPECTED_EVENTS_PER_TASK x 90%; window rate ${EVENTS_PER_S}/s for reference)"
+
+ACTUAL_RATE=$(awk -v p="$PUBLISHED" -v w="$WINDOW_SECONDS" 'BEGIN { printf "%.1f", p / w }')
+gate "actual_rate_ge_$(( TASK_RATE * 8 / 10 ))tps" "$ACTUAL_RATE" ge "$(( TASK_RATE * 8 / 10 ))" "(actual=${ACTUAL_RATE}/s target=${TASK_RATE}/s x 80% over ${WINDOW_SECONDS}s)"
+EVENT_RATE_GATE_V2=$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 7 / 10 ))
+gate "event_rate_ge_${EVENT_RATE_GATE_V2}ps" "$EVENTS_PER_S" ge "$EVENT_RATE_GATE_V2" "(events_per_s=${EVENTS_PER_S}/s gate=${EVENT_RATE_GATE_V2}/s = ${TASK_RATE}/s x $EXPECTED_EVENTS_PER_TASK x 70% — measured over the 120s window)"
 
 echo ""
 if [ "$GATES_FAILED" -gt 0 ]; then
