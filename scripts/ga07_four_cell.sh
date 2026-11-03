@@ -440,9 +440,95 @@ run_cell() { # run_cell <name> <driver> <replicas> <redis_addr|->
   a_list="$(sql "SELECT coalesce(string_agg(attempt || '=' || status || ' fin=' || coalesce(finished_at::text,'NULL'), ', ' ORDER BY attempt), 'NONE') FROM task_attempts WHERE tenant_id='$TENANT' AND task_id='$TID3'")"
   check "cancel leaves no open attempt" "[ \"$open_cnt\" -eq 0 ]" "open=$open_cnt attempts: $a_list"
 
+  # --- leg 4: priority order (PG scheduler; NATS delivery is FIFO) -------
+  if [ "$DRIVER" = "pg" ]; then
+    echo "  leg 4: priority order critical > high > normal > low"
+    local pfx="ga07-prio-$(date +%s%N)"
+    local p prio tid_p
+    for prio in low normal high critical; do
+      api POST "$URL_A/v1/tenants/$TENANT/tasks" "$(TASK_BODY "$pfx-$prio")" >/dev/null
+      sql "UPDATE tasks SET priority='$prio' WHERE tenant_id='$TENANT' AND id='$pfx-$prio'" >/dev/null
+    done
+    local order="" got_id
+    local prio_ids=""
+    for p in 1 2 3 4; do
+      got_id=""
+      out="$(api POST "$URL_PULL/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")"
+      if [ "${out%% *}" = "200" ]; then
+        got_id="$(jget "${out#* }" "d['task']['id']")"
+      fi
+      if [ -n "$got_id" ]; then
+        order="$order ${got_id##*-}"
+        prio_ids="$prio_ids $got_id"
+      fi
+    done
+    check "pg queue delivers critical > high > normal > low" \
+      "[ \"$order\" = \" critical high normal low\" ]" "order:$order"
+
+    local pair_id pair_lease
+    for pair_id in $prio_ids; do
+      pair_lease="$(sql "SELECT lease_id FROM task_attempts WHERE tenant_id='$TENANT' AND task_id='$pair_id' AND finished_at IS NULL ORDER BY attempt DESC LIMIT 1")"
+      api POST "$URL_A/v1/tenants/$TENANT/tasks/$pair_id/start" "{\"lease_id\":\"$pair_lease\",\"agent_id\":\"$AGENT\"}" >/dev/null 2>&1 || true
+      api POST "$URL_A/v1/tenants/$TENANT/tasks/$pair_id/ack" "{\"lease_id\":\"$pair_lease\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga07://prio/$pair_id\"}" >/dev/null 2>&1 || true
+    done
+  fi
+
+  # --- leg 5: mailbox pause / resume ------------------------------------
+  # Pause stops NEW work: routing admission rejects creates aimed at a
+  # paused mailbox; the backlog may still drain. Resume reopens intake.
+  echo "  leg 5: pause gates new-task intake -> resume reopens -> delivery"
+  local TID5="ga07-pause-$(date +%s%N)"
+  api POST "$URL_A/v1/tenants/$TENANT/mailboxes/$MB/pause" "{}" >/dev/null
+  check "pause -> mailboxes.status=paused" \
+    "[ \"$(sql "SELECT status FROM mailboxes WHERE tenant_id='$TENANT' AND id='$MB'")\" = paused ]" \
+    "status=$(sql "SELECT status FROM mailboxes WHERE tenant_id='$TENANT' AND id='$MB'")"
+  out="$(api POST "$URL_A/v1/tenants/$TENANT/tasks" "$(TASK_BODY "$TID5")")"
+  check "paused mailbox rejects new tasks (HTTP ${out%% *})" \
+    "[ \"${out%% *}\" != 201 ] && [ \"${out%% *}\" != 200 ]" \
+    "$(printf '%s' "${out#* }" | head -c 120)"
+  api POST "$URL_A/v1/tenants/$TENANT/mailboxes/$MB/resume" "{}" >/dev/null
+  check "resume -> mailboxes.status=active" \
+    "[ \"$(sql "SELECT status FROM mailboxes WHERE tenant_id='$TENANT' AND id='$MB'")\" = active ]" \
+    "status=$(sql "SELECT status FROM mailboxes WHERE tenant_id='$TENANT' AND id='$MB'")"
+  api POST "$URL_A/v1/tenants/$TENANT/tasks" "$(TASK_BODY "$TID5")" >/dev/null
+  if pull_until "$URL_PULL" "$TID5" 30; then
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID5/start" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\"}" >/dev/null
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID5/ack" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga07://pause-ok\"}" >/dev/null
+    check "post-resume intake delivers and completes" \
+      "[ \"$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID5'")\" = completed ]" \
+      "status=$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID5'")"
+  else
+    check "post-resume intake delivers and completes" "[ 1 -eq 2 ]" "pull never returned $TID5"
+  fi
+
+  # --- leg 6: degraded-dependency readiness (redis down, PG cells) -------
+  if [ "$REDIS" != "-" ]; then
+    echo "  leg 6: readyz stays ready with redis unreachable"
+    local ready_body
+    ready_body="$(api GET "$URL_A/readyz" -)"
+    check "readyz 200 with redis down (degraded, not unavailable)" \
+      "[ \"${ready_body%% *}\" = 200 ]" "$(printf '%s' "${ready_body#* }" | head -c 160)"
+  fi
+
   stop_cell_replicas
   cell_result
   drop_cell_db
+}
+
+# pull_next_id posts one pull and prints the delivered task id ("" on empty).
+pull_next_id() {
+  local base="$1" tries="${2:-30}" i out code body got
+  for i in $(seq 1 "$tries"); do
+    out="$(api POST "$base/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")"
+    code="${out%% *}"
+    if [ "$code" = "200" ]; then
+      body="${out#* }"
+      got="$(jget "$body" "d['task']['id']")"
+      [ -n "$got" ] && { printf '%s' "$got"; return 0; }
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 drop_cell_db() {
