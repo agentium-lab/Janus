@@ -48,3 +48,6 @@ cli/cli
 # Local-only working docs (owner decision 2026-10-20)
 /docs/
 /handoff.md
+
+# Agent-local artifacts (keep local-only)
+.omo/
