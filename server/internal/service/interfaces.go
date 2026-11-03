@@ -121,6 +121,7 @@ type ApprovalTxRepo interface {
 	ApprovalRepo
 	CreateTx(ctx context.Context, tx pgx.Tx, a core.Approval) error
 	UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error
+	ExpireDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, approver, reason string) error
 }
 
 type OutboxTxWriter interface {

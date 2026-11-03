@@ -39,7 +39,7 @@ func TestCov_ApprovalService_Expire_UpdateError(t *testing.T) {
 	svc := NewApprovalService(repo, NewTaskService(taskRepo, &mockQueueDriver{}, nil, nil), nil)
 	err := svc.Expire(context.Background(), "acme", "a1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "update approval")
+	assert.Contains(t, err.Error(), "expire approval")
 }
 
 func TestCov_ApprovalService_Expire_TaskGetFailure(t *testing.T) {

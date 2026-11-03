@@ -141,6 +141,29 @@ func (r *ApprovalRepo) UpdateDecision(ctx context.Context, tenantID, approvalID,
 	return nil
 }
 
+// ExpireDecisionTx settles a pending approval as EXPIRED - the one decision
+// that must match rows expires_at <= now() (the > now() guard on
+// approve/reject would make every genuine expiry update zero rows and roll
+// the settlement back, leaving expired approvals pending forever). Approval
+// decisions keep now(): a decision transaction that waited on a row lock
+// carries the tx-start clock, so it cannot land past a deadline that passed
+// while it waited.
+func (r *ApprovalRepo) ExpireDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, approver, reason string) error {
+	tag, err := tx.Exec(ctx,
+		`UPDATE approvals SET status = 'expired', decision = 'expired', approver = $1, reason = $2, decided_at = now()
+		 WHERE tenant_id = $3 AND id = $4 AND status = 'pending'
+		   AND expires_at IS NOT NULL AND expires_at <= now()`,
+		approver, reason, tenantID, approvalID,
+	)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("approval not pending, not yet expired, or not found")
+	}
+	return nil
+}
+
 // UpdateDecisionTx is the transactional variant of UpdateDecision for use
 // inside a caller-supplied tx (e.g. lifecycle.ApplyTx). The expires_at
 // predicate runs on the database clock so a decision cannot land past the

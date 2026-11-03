@@ -109,6 +109,16 @@ func TestCovPG_Expire_AtomicPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// GA-03/04: a not-yet-expired approval must NOT be expirable - the
+	// decision predicate refuses it.
+	_, err = env.pool.Exec(ctx,
+		`UPDATE approvals SET expires_at = now() + interval '24 hours' WHERE tenant_id='acme' AND id=$1`, approval.ID)
+	require.NoError(t, err)
+	require.Error(t, approvalSvc.Expire(ctx, "acme", approval.ID), "future-deadline approval must not expire")
+
+	_, err = env.pool.Exec(ctx,
+		`UPDATE approvals SET expires_at = now() - interval '1 second' WHERE tenant_id='acme' AND id=$1`, approval.ID)
+	require.NoError(t, err)
 	require.NoError(t, approvalSvc.Expire(ctx, "acme", approval.ID))
 
 	got, _ := pgApprovalRepo.Get(ctx, "acme", approval.ID)

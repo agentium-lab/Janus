@@ -142,3 +142,7 @@ func (a ApprovalRepoTxAdapter) CreateTx(ctx context.Context, _ pgx.Tx, approval 
 func (a ApprovalRepoTxAdapter) UpdateDecisionTx(ctx context.Context, _ pgx.Tx, tenantID, approvalID, decision, approver, reason string) error {
 	return a.UpdateDecision(ctx, tenantID, approvalID, decision, approver, reason)
 }
+
+func (a ApprovalRepoTxAdapter) ExpireDecisionTx(ctx context.Context, _ pgx.Tx, tenantID, approvalID, approver, reason string) error {
+	return a.UpdateDecision(ctx, tenantID, approvalID, "expired", approver, reason)
+}

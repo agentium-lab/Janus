@@ -188,7 +188,33 @@ func (s *ApprovalService) Expire(ctx context.Context, tenantID, approvalID strin
 	if err != nil || approval == nil {
 		return err
 	}
-	return s.approveAtomic(ctx, tenantID, approvalID, "system", "approval timeout", "expired", approval)
+	if approval.Status != "pending" {
+		return fmt.Errorf("approval already decided: %s", approval.Status)
+	}
+
+	// Expire settles only rows that are genuinely past their deadline, and
+	// must not route through approveAtomic: UpdateDecisionTx's
+	// expires_at > now() guard exists so a decision cannot land past a
+	// deadline - for the expiry itself that predicate selects exactly the
+	// wrong rows (zero updated, tx rolled back, the approval stays pending
+	// forever). ExpireDecisionTx targets expires_at <= now(); the task
+	// settles to cancelled with its event in the same transaction.
+	var task *core.Task
+	task, err = s.taskSvc.Get(ctx, tenantID, approval.TaskID)
+	if err != nil {
+		return fmt.Errorf("get task: %w", err)
+	}
+	err = s.lifecycle.ApplyTx(ctx, func(tx pgx.Tx) error {
+		if uerr := s.approvalTx.ExpireDecisionTx(ctx, tx, tenantID, approvalID, "system", "approval timeout"); uerr != nil {
+			return fmt.Errorf("expire approval: %w", uerr)
+		}
+		if terr := s.taskSvc.TransitionInTx(ctx, tx, tenantID, approval.TaskID,
+			task.Status, core.TaskStatusCancelled, core.EventTaskCancelled, 0); terr != nil {
+			return fmt.Errorf("transition task in expire tx: %w", terr)
+		}
+		return nil
+	})
+	return err
 }
 
 func (s *ApprovalService) Get(ctx context.Context, tenantID, approvalID string) (*core.Approval, error) {
