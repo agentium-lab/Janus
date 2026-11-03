@@ -180,6 +180,12 @@ jobs:
         run: bash scripts/smoke_release_ops.sh
 
       - name: Load baseline (1000 agents / 1000 tasks, p95 gate)
+        env:
+          # Shared-runner budget: a healthy local run sits at ~20-30ms, but
+          # bursty neighbors move the p95 tail by hundreds of ms; the gate
+          # exists to catch order-of-magnitude regressions (seconds), so the
+          # nightly budget is 1s.
+          LOAD_BASELINE_P95_MS: "1000"
         run: |
           set -o pipefail
           NUM_AGENTS=1000 NUM_MAILBOXES=1000 NUM_TASKS=1000 bash scripts/load_baseline.sh | tee /tmp/load-baseline.log

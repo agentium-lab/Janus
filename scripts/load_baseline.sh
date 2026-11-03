@@ -62,6 +62,16 @@ echo "  Done in $(( (T1 - T0) / 1000000 ))ms ($(( (T1 - T0) / 1000000 / NUM_MAIL
 echo "Phase 3: Publish $NUM_TASKS tasks CONCURRENTLY ($CONCURRENCY workers)..."
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
+
+# Warm-up (unmeasured, id namespace outside task-% so the persisted check
+# stays exact): the first requests pay connection setup, page cache and PG
+# WAL init - exactly the tail a p95 gate should not be fed.
+for i in $(seq 1 50); do
+  curl -s -o /dev/null --max-time 15 -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks" \
+    -H 'Content-Type: application/json' \
+    -d "{\"id\":\"warm-$i\",\"source_agent\":\"agent-00001\",\"target_type\":\"mailbox\",\"target_value\":\"mb-00001\",\"envelope\":{\"janus_version\":\"0.3\",\"task_id\":\"warm-$i\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"agent-00001\",\"target\":{\"type\":\"mailbox\",\"value\":\"mb-00001\"},\"payload\":{\"type\":\"load\",\"content\":\"warmup\"},\"trace\":{\"trace_id\":\"warm-$i\"}}}" || true
+done
+
 seq 1 "$NUM_TASKS" | split -l $(( (NUM_TASKS + CONCURRENCY - 1) / CONCURRENCY )) -d -a 4 - "$WORK/chunk."
 
 worker() {
