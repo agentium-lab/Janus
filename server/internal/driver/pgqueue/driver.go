@@ -94,7 +94,13 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 			WHERE tenant_id = $1 AND mailbox_id = $2 AND status = 'queued'
 			  AND (retry_at IS NULL OR retry_at <= now())
 			  AND (queue_lease_until IS NULL OR queue_lease_until <= now())
-			ORDER BY priority DESC, created_at
+			ORDER BY CASE priority
+			             WHEN 'critical' THEN 4
+			             WHEN 'high' THEN 3
+			             WHEN 'normal' THEN 2
+			             WHEN 'low' THEN 1
+			             ELSE 0
+			         END DESC, created_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT $3
 		)
@@ -178,18 +184,26 @@ func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayloa
 	if len(errPayload) == 0 || string(errPayload) == "" {
 		errPayload = []byte(`{"reason":"unspecified"}`)
 	}
-	// Receipt guard: the delivery ref's attempt_count must still match the
-	// task row — a DLQ drained after a Replay reset must not overwrite the
-	// live round's error with the dead round's payload.
-	if attempt, perr := strconv.Atoi(msg.Headers["attempt_count"]); perr == nil {
-		_, err := d.pool.Exec(ctx,
-			`UPDATE tasks SET error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2 AND attempt_count=$4`,
-			msg.TaskID, msg.TenantID, string(errPayload), attempt)
-		return err
+	// Receipt guard, round-scoped: attempt_count must match AND the task
+	// must still be dead_lettered (the state this DLQ row was minted from).
+	// attempt numbers alone repeat across replay rounds, and a header-less
+	// legacy row carries no receipt at all — both must never overwrite a
+	// live round's error column. The broker publish still happens (the
+	// outbox publisher retries on error); only the business-row write is
+	// guarded.
+	replayCount, rerr := strconv.Atoi(msg.Headers["replay_count"])
+	if rerr != nil {
+		replayCount = -1
+	}
+	attempt, perr := strconv.Atoi(msg.Headers["attempt_count"])
+	if perr != nil {
+		return nil
 	}
 	_, err := d.pool.Exec(ctx,
-		`UPDATE tasks SET error=$3::jsonb, updated_at=now() WHERE id=$1 AND tenant_id=$2`,
-		msg.TaskID, msg.TenantID, string(errPayload))
+		`UPDATE tasks SET error=$3::jsonb, updated_at=now()
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$4
+		   AND replay_count=$5 AND status='dead_lettered'`,
+		msg.TaskID, msg.TenantID, string(errPayload), attempt, replayCount)
 	return err
 }
 

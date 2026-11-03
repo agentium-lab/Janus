@@ -135,7 +135,23 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 				}
 			}()
 
+			// Lock order task -> attempt, matching the foreground lifecycle
+			// (claim/ack lock the task row first): the reverse order can
+			// deadlock against a concurrent claim and roll the sweep back.
 			tag, err := tx.Exec(ctx,
+				`UPDATE tasks SET updated_at = now()
+				 WHERE tenant_id = $1 AND id = $2 AND status IN ('claimed', 'running')`,
+				e.TenantID, e.TaskID,
+			)
+			if err != nil {
+				log.Printf("lease scanner: lock task %s/%s: %v", e.TenantID, e.TaskID, err)
+				return false
+			}
+			if tag.RowsAffected() == 0 {
+				return false
+			}
+
+			tag, err = tx.Exec(ctx,
 				`UPDATE task_attempts SET status = 'failed', finished_at = now()
 				 WHERE tenant_id = $1 AND task_id = $2 AND attempt = $3 AND status IN ('claimed', 'running')
 				   AND COALESCE(heartbeat_at, started_at) + (COALESCE($4, 300) || ' seconds')::interval < now()`,
