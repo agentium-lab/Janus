@@ -231,7 +231,7 @@ func main() {
 	// Replay durable PG mailbox configs onto the broker at startup: the
 	// in-memory pending map does not survive restarts.
 	go mailboxSvc.ReconcileAllConsumers(context.Background())
-	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc)
+	dispatchSvc := service.NewDispatchService(taskRepo, attemptRepo, mailboxRepo, queueDrv, policySvc, budgetSvc).WithFinalAdmission(router)
 	pgLifecycle := service.NewPGLifecycle(pool)
 	taskSvc = taskSvc.WithLifecycle(pgLifecycle)
 	dispatchSvc = dispatchSvc.WithTxPath(pgLifecycle, outboxRepo, service.PGBudgetLedger(budgetUsageRepo))

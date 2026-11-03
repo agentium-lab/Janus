@@ -37,12 +37,31 @@ type DispatchService struct {
 	policySvc   *PolicyService
 	budgetSvc   *BudgetService
 
+	// GA-02: final target admission re-checked at claim time with the
+	// mailbox owner's CURRENT attributes (the same gate Create runs).
+	finalAdmission FinalAdmissionCheck
+
 	// Unified transaction path (Priority 1): one code shape for PG and memory.
 	lifecycle Lifecycle
 	taskTx    TaskTxRepo
 	attemptTx AttemptTxRepo
 	txOutbox  OutboxDedupeWriter
 	ledger    BudgetLedger
+}
+
+// FinalAdmissionCheck re-runs the routing admission for a queued task.
+// routing.Router satisfies it via CheckMailboxAdmission (owner resolution,
+// TargetTeamID selection, built-in hard constraints, execute/task.route
+// policy - all against live attributes).
+type FinalAdmissionCheck interface {
+	CheckMailboxAdmission(ctx context.Context, tenantID, mailboxID string, envelope core.TaskEnvelope) error
+}
+
+// WithFinalAdmission installs the claim-time admission re-check (GA-02).
+// A nil checker keeps the ungoverned dev path, mirroring Router.policy.
+func (s *DispatchService) WithFinalAdmission(a FinalAdmissionCheck) *DispatchService {
+	s.finalAdmission = a
+	return s
 }
 
 func NewDispatchService(
@@ -263,6 +282,34 @@ func (s *DispatchService) PullTask(ctx context.Context, tenantID, mailboxID, age
 		// owns the task.
 		_ = s.queueDriver.AckTask(ctx, tenantID, core.DeliveryRef(delivery.DeliveryRef))
 		return nil, nil
+	}
+
+	// Final admission (GA-02): a rule or owner attribute that changed after
+	// the task was queued must stop the claim — the queue must not hand out
+	// work the target is no longer admissible for. Same requeue shape as the
+	// dispatch-deny leg below.
+	if s.finalAdmission != nil {
+		if aerr := s.finalAdmission.CheckMailboxAdmission(ctx, tenantID, mailboxID, task.Envelope); aerr != nil {
+			metrics.PolicyDenied.WithLabelValues(tenantID).Inc()
+			s.publishEvent(ctx, core.JanusEvent{
+				EventType: core.EventPolicyDenied,
+				TenantID: tenantID, TaskID: task.ID,
+				Payload: mustMarshal(map[string]string{
+					"agent_id": agentID, "delivery_ref": string(delivery.DeliveryRef),
+					"reason": fmt.Sprintf("final admission denied: %v", aerr),
+				}),
+			})
+			deliveryRef := delivery.DeliveryRef
+			time.AfterFunc(5*time.Second, func() {
+				nackCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = s.queueDriver.NackTask(nackCtx, tenantID, deliveryRef, core.NackRetriable)
+			})
+			return nil, &core.BackpressureError{
+				Reason:  core.ReasonApprovalRequired,
+				Message: fmt.Sprintf("final admission denied: %v", aerr),
+			}
+		}
 	}
 
 	dispatchDecision, dispatchErr := s.policySvc.Evaluate(ctx, core.PolicyInput{
