@@ -98,6 +98,12 @@ func PrincipalFromContext(ctx context.Context) (Principal, bool) {
 	return p, ok
 }
 
+// WithPrincipal injects a principal for middleware-level tests and future
+// non-HTTP entry points; HTTP requests get theirs from Middleware.
+func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, PrincipalCtxKey, p)
+}
+
 func ActingUserFromContext(ctx context.Context) string {
 	if v, ok := ctx.Value(ActingUserCtxKey).(string); ok {
 		return v
@@ -437,7 +443,7 @@ func TenantGuard(extractTenantFromPath func(string) string) func(http.Handler) h
 				http.Error(w, `{"error":"missing authenticated tenant"}`, http.StatusForbidden)
 				return
 			}
-			pathTenant := extractTenantFromPath(r.URL.Path)
+			pathTenant := extractTenantFromPath(r.URL.EscapedPath())
 			if pathTenant == "" {
 				next.ServeHTTP(w, r)
 				return

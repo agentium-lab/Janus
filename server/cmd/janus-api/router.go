@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	_ "github.com/golang-migrate/migrate/v4/database/postgres"
@@ -54,7 +55,7 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		if !ok {
 			panic("janus-api: tenant route " + target + " has no handler binding")
 		}
-		mux.Handle(target, requireScope(rt.Scope, h))
+		mux.Handle(target, tenantPathValueGuard(requireScope(rt.Scope, h)))
 	}
 
 	return withTenantPathNormalization(mux)
@@ -129,6 +130,23 @@ func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHa
 	}
 }
 
+// tenantPathValueGuard authorizes the tenant AFTER the mux matched, using
+// the same PathValue derivation every handler uses. The pre-routing guard
+// splits the decoded path, but ServeMux matches the ESCAPED path — an
+// encoded %2F is one segment to the mux and two to a decoded split, so the
+// derivations could disagree on which tenant the request addresses.
+func tenantPathValueGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {		if principal, ok := auth.PrincipalFromContext(r.Context()); ok {
+			if pathTenant := r.PathValue("tenantID"); pathTenant != "" && pathTenant != principal.TenantID {
+				w.Header().Set("Content-Type", "application/json")
+				http.Error(w, `{"error":"tenant mismatch: authenticated tenant cannot access this resource"}`, http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // requireScope enforces the route-table scope at dispatch: a request whose
 // authenticated principal lacks the scope is refused with the same body
 // auth.ScopeGuard produces (the middleware applies the same decision from
@@ -164,6 +182,9 @@ func extractTenantFromPath(path string) string {
 	parts := strings.Split(path, "/")
 	for i, p := range parts {
 		if p == "tenants" && i+1 < len(parts) {
+			if unescaped, err := url.PathUnescape(parts[i+1]); err == nil {
+				return unescaped
+			}
 			return parts[i+1]
 		}
 	}
