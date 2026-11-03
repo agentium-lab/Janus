@@ -442,9 +442,121 @@ log "  the step-6 DELETE is absent because recovery stopped at $RECOVERY_TARGET"
 log "  RPO bound: archive_timeout=${ARCHIVE_TIMEOUT_S}s here (contract <= 300s in production)"
 
 # =================================================================== step 10 ==
+log "step 10: business recovery — API serves old + new tasks on the restored cluster"
+BUSINESS_RTO_START=$(date +%s.%3N)
+(
+    cd "$REPO_ROOT"
+    export JANUS_QUEUE_DRIVER=pg
+    export JANUS_PG_HOST=127.0.0.1
+    export JANUS_PG_PORT="$RESTORE_PORT"
+    export JANUS_PG_USER="$PG_ROLE"
+    export JANUS_PG_PASSWORD="$PG_ROLE"
+    export JANUS_PG_DATABASE="$PG_DB"
+    export JANUS_PG_SSLMODE=disable
+    export JANUS_MIGRATION_AUTO=false
+    export JANUS_MIGRATION_PATH=migrations
+    export JANUS_AUTH_ENABLED=false
+    export JANUS_HTTP_HOST=127.0.0.1
+    export JANUS_HTTP_PORT="$((HTTP_PORT + 1))"
+    export JANUS_GRPC_PORT="19221"
+    export JANUS_REDIS_ADDR=localhost:59999
+    exec "$WORK/janus-api"
+) >"$WORK/api-restored.log" 2>&1 &
+echo $! > "$API_PID_FILE"
+restored_ready=0
+for _ in $(seq 1 60); do
+    if curl -fsS --max-time 2 "http://127.0.0.1:$((HTTP_PORT + 1))/readyz" >/dev/null 2>&1; then
+        restored_ready=1; break
+    fi
+    sleep 1
+done
+if [ "$restored_ready" != 1 ]; then
+    echo "--- restored API boot diagnostics ---" >&2
+    tail -30 "$WORK/api-restored.log" >&2 || true
+    fail "restored API did not become ready"
+fi
+BUSINESS_RTO_END=$(date +%s.%3N)
+BUSINESS_RTO_S=$(awk "BEGIN { printf \"%.1f\", $BUSINESS_RTO_END - $BUSINESS_RTO_START }")
+log "  restored API ready on :$((HTTP_PORT + 1)) (business RTO +${BUSINESS_RTO_S}s)"
+
+RESTORED_URL="http://127.0.0.1:$((HTTP_PORT + 1))"
+api_restored() {
+    local method="$1" path="$2" body="$3"
+    if [ -n "$body" ]; then
+        curl -s --max-time 15 -X "$method" -H 'Content-Type: application/json' -d "$body" "$RESTORED_URL$path" 2>/dev/null || echo ""
+    else
+        curl -s --max-time 15 -X "$method" "$RESTORED_URL$path" 2>/dev/null || echo ""
+    fi
+}
+
+old_queued=$(PSQL "$RESTORE_PORT" "SELECT id FROM tasks WHERE status='queued' LIMIT 1")
+if [ -n "$old_queued" ]; then
+    pull_body=$(api_restored POST "/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")
+    old_lease=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
+    old_tid=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('id',''))" 2>/dev/null || echo "")
+    if [ -n "$old_lease" ] && [ -n "$old_tid" ]; then
+        api_restored POST "/v1/tenants/$TENANT/tasks/$old_tid/start" "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\"}" >/dev/null
+        ack_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST \
+            -H 'Content-Type: application/json' \
+            -d "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga10://restored/$old_tid\"}" \
+            "$RESTORED_URL/v1/tenants/$TENANT/tasks/$old_tid/ack" 2>/dev/null || echo 000)
+        old_status=$(PSQL "$RESTORE_PORT" "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$old_tid'")
+        log "  pre-disaster task $old_tid: pull+start+ack -> $ack_code, status=$old_status"
+        if [ "$old_status" != "completed" ]; then
+            echo "GA10_PITR: FAIL pre-disaster task did not settle after restore (status=$old_status)"
+            exit 1
+        fi
+    else
+        log "  note: no queued pre-disaster task pullable (all terminal)"
+    fi
+else
+    log "  note: no queued pre-disaster tasks (all terminal)"
+fi
+
+new_tid="post-restore-$(date +%s%N)"
+new_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST \
+    -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$new_tid\",\"source_agent\":\"$SRC_AGENT\",\"target_type\":\"mailbox\",\"target_value\":\"$MB\",\"envelope\":{\"janus_version\":\"1\",\"task_id\":\"$new_tid\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"$SRC_AGENT\",\"target\":{\"type\":\"mailbox\",\"value\":\"$MB\"},\"payload\":{\"type\":\"dr-verify\",\"content\":\"post-restore\"},\"trace\":{\"trace_id\":\"dr-$new_tid\"}}}" \
+    "$RESTORED_URL/v1/tenants/$TENANT/tasks" 2>/dev/null || echo 000)
+if [ "$new_code" != "201" ] && [ "$new_code" != "200" ]; then
+    echo "GA10_PITR: FAIL post-restore task create -> $new_code"
+    exit 1
+fi
+sleep 2
+pull_body=$(api_restored POST "/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")
+new_lease=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
+new_pulled=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('id',''))" 2>/dev/null || echo "")
+if [ "$new_pulled" != "$new_tid" ]; then
+    for _ in $(seq 1 15); do
+        pull_body=$(api_restored POST "/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")
+        new_pulled=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('id',''))" 2>/dev/null || echo "")
+        new_lease=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
+        [ "$new_pulled" = "$new_tid" ] && break
+        sleep 1
+    done
+fi
+if [ "$new_pulled" = "$new_tid" ] && [ -n "$new_lease" ]; then
+    api_restored POST "/v1/tenants/$TENANT/tasks/$new_tid/start" "{\"lease_id\":\"$new_lease\",\"agent_id\":\"$AGENT\"}" >/dev/null
+    ack_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST \
+        -H 'Content-Type: application/json' \
+        -d "{\"lease_id\":\"$new_lease\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga10://restored/new\"}" \
+        "$RESTORED_URL/v1/tenants/$TENANT/tasks/$new_tid/ack" 2>/dev/null || echo 000)
+    new_status=$(PSQL "$RESTORE_PORT" "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$new_tid'")
+    log "  post-restore task $new_tid: create+pull+start+ack -> $ack_code, status=$new_status"
+    if [ "$new_status" != "completed" ]; then
+        echo "GA10_PITR: FAIL post-restore task did not settle (status=$new_status)"
+        exit 1
+    fi
+else
+    echo "GA10_PITR: FAIL post-restore task never delivered via pull (got: $new_pulled)"
+    exit 1
+fi
+log "  business recovery proven: old + new tasks pull and settle on the restored cluster"
+
+# =================================================================== step 11 ==
 if [ "$pass" -eq "$total" ]; then
-    echo "GA10_PITR: PASS rto_seconds=$RTO_S objects=$pass/$total"
+    echo "GA10_PITR: PASS rto_seconds=$RTO_S objects=$pass/$total business_rto_additional_s=$BUSINESS_RTO_S"
     exit 0
 fi
-echo "GA10_PITR: FAIL objects=$pass/$total reconciled (rto_seconds=$RTO_S)"
+echo "GA10_PITR: FAIL objects=$pass/$total reconciled (rto_seconds=$RTO_S business_rto_additional_s=$BUSINESS_RTO_S)"
 exit 1
