@@ -416,8 +416,16 @@ func GenerateKey() (rawKey, prefix, keyHash string, err error) {
 	return
 }
 
+// hashKey digests an API key for at-rest storage (api_keys.key_hash) and
+// per-request validation. The input is a 256-bit crypto-random token
+// (GenerateKey), not a human password: SHA-256 preimage over that entropy
+// is infeasible, a DB leak reveals nothing, and salt is pointless for
+// globally unique random inputs. Adaptive hashes (bcrypt/argon2) would cost
+// 50-250ms on EVERY request's validation with zero security gain at this
+// entropy, so plain SHA-256 is the deliberate choice (same posture as
+// GitHub's own ghp_ token digests).
 func hashKey(key string) string {
-	h := sha256.Sum256([]byte(key))
+	h := sha256.Sum256([]byte(key)) // codeql[go/weak-cryptographic-algorithm]
 	return hex.EncodeToString(h[:])
 }
 
