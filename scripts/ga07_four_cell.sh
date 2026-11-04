@@ -49,6 +49,7 @@ DEAD_REDIS_ADDR="localhost:59999" # PG-only cells run without a live Redis
 
 WORK="$(mktemp -d /tmp/ga07-fourcell.XXXXXX)"
 PIDS=()
+REDIS_PIDS=()
 CELL_DBS=()
 CELL_DB=""
 CELLS_PASS=0
@@ -59,6 +60,9 @@ die()  { printf '\033[0;31mFATAL: %s\033[0m\n' "$*" >&2; exit 2; }
 
 cleanup() {
   local pid
+  for pid in ${REDIS_PIDS[@]+"${REDIS_PIDS[@]}"}; do
+    kill "$pid" 2>/dev/null || true
+  done
   for pid in ${PIDS[@]+"${PIDS[@]}"}; do
     kill "$pid" 2>/dev/null || true
   done
@@ -168,6 +172,7 @@ boot_replica() { # boot_replica <cell> <idx> <driver> <redis_addr|-> ; sets R_UR
   )
   [ "$driver" = "nats" ] && envs+=("JANUS_NATS_URL=$NATS_URL")
   [ "$redis_addr" != "-" ] && envs+=("JANUS_REDIS_ADDR=$redis_addr")
+  [ -n "${FC_MODE:-}" ] && envs+=("JANUS_BUDGET_RATE_LIMIT_FAILURE_MODE=$FC_MODE")
 
   ( cd "$WORK" && exec env "${envs[@]}" "$BIN" >"$log" 2>&1 ) &
   local pid=$!
@@ -515,6 +520,158 @@ run_cell() { # run_cell <name> <driver> <replicas> <redis_addr|->
   drop_cell_db
 }
 
+# run_failclosed_cell proves the Redis fail-CLOSED runtime policy on a live
+# dedicated Redis: with Redis up a budget-gated pull is allowed; with Redis
+# killed the pull is rejected with NO half-write (task stays queued, zero
+# attempts); after Redis restarts the pull is allowed again.
+run_failclosed_cell() {
+  local CELL="ga07-fc-pg"
+  TENANT="$CELL"
+  AGENT="ga07-agent"
+  MB="ga07-mb"
+  CPASS=0; CFAIL=0
+  CELL_START="${#PIDS[@]}"
+
+  CELL_DB="janus_ga07_fc_pg"
+  CELL_DBS+=("$CELL_DB")
+  psql_admin "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$CELL_DB'" >/dev/null 2>&1 || true
+  psql_admin "DROP DATABASE IF EXISTS $CELL_DB" >/dev/null \
+    || die "cannot drop stale cell DB $CELL_DB"
+  psql_admin "CREATE DATABASE $CELL_DB OWNER $PG_USER" >/dev/null \
+    || die "cannot create cell DB $CELL_DB"
+
+  say "CELL $CELL (fail-closed redis runtime)"
+
+  # dedicated redis as a DIRECT CHILD of this script (--daemonize no,
+  # backgrounded): $! is the real pid, so kill/wait are deterministic —
+  # a daemonized redis writes its pidfile from a racing child and the
+  # kill at leg B can miss, leaving the port held and faking "fail-closed
+  # did not engage".
+  FC_REDIS_PID=""
+  local rdir="$WORK/fc-redis"
+  mkdir -p "$rdir"
+  local fc_free=0 i
+  for i in $(seq 1 10); do
+    FC_REDIS_PORT="$((6390 + RANDOM % 100))"
+    if ! redis-cli -h 127.0.0.1 -p "$FC_REDIS_PORT" ping >/dev/null 2>&1; then
+      fc_free=1; break
+    fi
+  done
+  if [ "$fc_free" != 1 ]; then
+    check "scratch redis port found" "[ 1 -eq 2 ]" "no free port in 6390-6489"
+    cell_result; drop_cell_db; return
+  fi
+  start_fc_redis() { # starts the child; sets FC_REDIS_PID; waits for PONG
+    redis-server --port "$FC_REDIS_PORT" --save '' --appendonly no \
+      --daemonize no >"$rdir/redis.log" 2>&1 &
+    FC_REDIS_PID=$!
+    local j
+    for j in $(seq 1 20); do
+      redis-cli -h 127.0.0.1 -p "$FC_REDIS_PORT" ping 2>/dev/null | grep -q PONG && return 0
+      sleep 0.5
+    done
+    return 1
+  }
+  if ! start_fc_redis; then
+    check "dedicated redis booted" "[ 1 -eq 2 ]" "redis never answered PONG on port $FC_REDIS_PORT"
+    cell_result; drop_cell_db; return
+  fi
+  REDIS_PIDS+=("$FC_REDIS_PID")
+
+  FC_MODE="fail-closed"
+  boot_replica "$CELL" 1 "pg" "127.0.0.1:$FC_REDIS_PORT" || { FC_MODE=""; stop_cell_replicas; cell_result; drop_cell_db; return; }
+  FC_MODE=""
+  local URL_A="$R_URL"
+  echo "  booted: A=$URL_A redis=127.0.0.1:$FC_REDIS_PORT (pid $FC_REDIS_PID)"
+
+  create_or_exists "$URL_A/v1/tenants" \
+    "{\"id\":\"$TENANT\",\"name\":\"GA07 failclosed\"}" \
+    "$URL_A/v1/tenants/$TENANT" || { stop_cell_replicas; kill "$FC_REDIS_PID" 2>/dev/null; cell_result; drop_cell_db; return; }
+  create_or_exists "$URL_A/v1/tenants/$TENANT/agents" \
+    "{\"id\":\"$AGENT\",\"display_name\":\"GA07 FC\",\"protocol\":\"a2a\"}" \
+    "$URL_A/v1/tenants/$TENANT/agents/$AGENT" || { stop_cell_replicas; kill "$FC_REDIS_PID" 2>/dev/null; cell_result; drop_cell_db; return; }
+  create_or_exists "$URL_A/v1/tenants/$TENANT/mailboxes" \
+    "{\"id\":\"$MB\",\"agent_id\":\"$AGENT\"}" \
+    "$URL_A/v1/tenants/$TENANT/mailboxes/$MB" || { stop_cell_replicas; kill "$FC_REDIS_PID" 2>/dev/null; cell_result; drop_cell_db; return; }
+
+  # agent-scope budget with a live RPM so the redis throttle actually runs
+  api POST "$URL_A/v1/tenants/$TENANT/budgets" \
+    "{\"scope_type\":\"agent\",\"scope_id\":\"$AGENT\",\"rpm\":100,\"tpm\":10000,\"max_concurrency\":10}" >/dev/null
+  check "agent budget row present" \
+    "[ \"$(sql "SELECT count(*) FROM budgets WHERE tenant_id='$TENANT' AND scope_type='agent' AND scope_id='$AGENT' AND rpm>0")\" -ge 1 ]" \
+    "budgets=$(sql "SELECT count(*) FROM budgets WHERE tenant_id='$TENANT' AND scope_id='$AGENT'")"
+
+  # --- leg A: redis up -> budget-gated pull allowed ---------------------
+  echo "  leg A: budget-gated pull allowed with redis up"
+  local TID_A="ga07-fc-a-$(date +%s%N)"
+  api POST "$URL_A/v1/tenants/$TENANT/tasks" "$(TASK_BODY "$TID_A")" >/dev/null
+  # the throttle must have RUN for leg A: a ratelimit key in the dedicated
+  # redis proves the budget path actually consulted it
+  local rl_keys
+  rl_keys="$(redis-cli -h 127.0.0.1 -p "$FC_REDIS_PORT" --scan --pattern 'ratelimit:*' 2>/dev/null | head -1)"
+  if pull_until "$URL_A" "$TID_A" 30; then
+    # the throttle must have RUN for the delivery: a ratelimit key in the
+    # dedicated redis proves the budget path actually consulted it
+    rl_keys="$(redis-cli -h 127.0.0.1 -p "$FC_REDIS_PORT" --scan --pattern 'ratelimit:*' 2>/dev/null | head -1)"
+    check "leg A pull consulted the redis throttle" "[ -n \"$rl_keys\" ]" "ratelimit keys: ${rl_keys:-NONE}"
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID_A/start" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\"}" >/dev/null
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID_A/ack" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga07://fc-ok\"}" >/dev/null
+    check "leg A task completes with redis up" \
+      "[ \"$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_A'")\" = completed ]" \
+      "status=$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_A'")"
+  else
+    check "leg A task completes with redis up" "[ 1 -eq 2 ]" "pull never returned $TID_A"
+  fi
+
+  # --- leg B: redis killed -> pull rejected, no half-write --------------
+  echo "  leg B: fail-closed rejects with redis down (no half-write)"
+  kill "$FC_REDIS_PID" 2>/dev/null || true
+  wait "$FC_REDIS_PID" 2>/dev/null || true
+  local j
+  for j in $(seq 1 20); do
+    redis-cli -h 127.0.0.1 -p "$FC_REDIS_PORT" ping >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  check "redis is really down for leg B" \
+    "! redis-cli -h 127.0.0.1 -p \"$FC_REDIS_PORT\" ping >/dev/null 2>&1" \
+    "redis still answers on port $FC_REDIS_PORT"
+  local TID_B="ga07-fc-b-$(date +%s%N)"
+  api POST "$URL_A/v1/tenants/$TENANT/tasks" "$(TASK_BODY "$TID_B")" >/dev/null
+  local out code
+  out="$(api POST "$URL_A/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")"
+  code="${out%% *}"
+  check "pull rejected while redis down (fail-closed)" "[ \"$code\" != 200 ]" "pull=$code ${out#* }"
+  check "rejected pull leaves task queued (no half-write)" \
+    "[ \"$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_B'")\" = queued ]" \
+    "status=$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_B'")"
+  check "rejected pull mints zero attempts" \
+    "[ \"$(sql "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND task_id='$TID_B'")\" -eq 0 ]" \
+    "attempts=$(sql "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND task_id='$TID_B'")"
+
+  # --- leg C: redis back -> pull allowed again --------------------------
+  echo "  leg C: recovery allows the pull again"
+  if ! start_fc_redis; then
+    check "redis restarted for leg C" "[ 1 -eq 2 ]" "redis never answered PONG on port $FC_REDIS_PORT after restart"
+  else
+    check "redis restarted for leg C" "[ 1 -eq 1 ]" ""
+    REDIS_PIDS+=("$FC_REDIS_PID")
+  fi
+  if pull_until "$URL_A" "$TID_B" 45; then
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID_B/start" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\"}" >/dev/null
+    api POST "$URL_A/v1/tenants/$TENANT/tasks/$TID_B/ack" "{\"lease_id\":\"$LEASE\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga07://fc-recovered\"}" >/dev/null
+    check "leg C task completes after redis recovery" \
+      "[ \"$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_B'")\" = completed ]" \
+      "status=$(sql "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$TID_B'")"
+  else
+    check "leg C task completes after redis recovery" "[ 1 -eq 2 ]" "pull never returned $TID_B"
+  fi
+
+  stop_cell_replicas
+  kill "$FC_REDIS_PID" 2>/dev/null || true
+  cell_result
+  drop_cell_db
+}
+
 # pull_next_id posts one pull and prints the delivered task id ("" on empty).
 pull_next_id() {
   local base="$1" tries="${2:-30}" i out code body got
@@ -557,6 +714,7 @@ want_cell "ga07-pg-1r"   && run_cell "ga07-pg-1r"   "pg"   1 "$DEAD_REDIS_ADDR"
 want_cell "ga07-pg-2r"   && run_cell "ga07-pg-2r"   "pg"   2 "$DEAD_REDIS_ADDR"
 want_cell "ga07-nats-1r" && run_cell "ga07-nats-1r" "nats" 1 "-"
 want_cell "ga07-nats-2r" && run_cell "ga07-nats-2r" "nats" 2 "-"
+want_cell "ga07-fc-pg"   && run_failclosed_cell
 
 say "Summary"
 echo "GA07_FOUR_CELL: PASS=$CELLS_PASS FAIL=$CELLS_FAIL"

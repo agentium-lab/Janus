@@ -305,6 +305,55 @@ consumer() {
 }
 
 # ---------------------------------------------------------------------------
+# Load-phase handoff probe: samples pull latency on a dedicated pre-loaded
+# mailbox WHILE the sustained load runs (publishers + consumers active), so
+# the p95 gate proves handoff speed with work already in flight — not on an
+# idled post-drain broker. Writes one latency (ms) line per completed probe.
+# ---------------------------------------------------------------------------
+load_probe() {
+  local out="$1" tag="$2" samples="${3:-40}"
+  local pagent="agent-probe-$tag" pmb="mb-probe-$tag" i c ptid ok n ts te body code json lid ptid2 w
+  c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 -X POST \
+    "$JANUS_URL/v1/tenants/$TENANT/agents" -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$pagent\",\"display_name\":\"GA11 $tag probe\",\"protocol\":\"a2a\"}")
+  case "$c" in 200|201|400|409) ;; *) echo "FATAL: $tag probe agent create -> $c"; exit 1 ;; esac
+  c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 15 -X POST \
+    "$JANUS_URL/v1/tenants/$TENANT/mailboxes" -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$pmb\",\"agent_id\":\"$pagent\"}")
+  case "$c" in 200|201|400|409) ;; *) echo "FATAL: $tag probe mailbox create -> $c"; exit 1 ;; esac
+  : > "$out"
+  for (( i = 1; i <= samples; i++ )); do
+    ptid="probe-$tag-$i"
+    c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST \
+      "$JANUS_URL/v1/tenants/$TENANT/tasks" -H 'Content-Type: application/json' \
+      -d "{\"id\":\"$ptid\",\"source_agent\":\"$pagent\",\"target_type\":\"mailbox\",\"target_value\":\"$pmb\",\"envelope\":{\"janus_version\":\"1\",\"task_id\":\"$ptid\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"$pagent\",\"target\":{\"type\":\"mailbox\",\"value\":\"$pmb\"},\"payload\":{\"type\":\"ga11-$tag-probe\",\"content\":\"$i\"},\"trace\":{\"trace_id\":\"probe-$ptid\"}}}")
+    [ "$c" = "201" ] || [ "$c" = "200" ] || continue
+    ok=""
+    for w in $(seq 1 100); do
+      n=$(pgq "SELECT count(*) FROM outbox_events WHERE tenant_id='$TENANT' AND kind='task_publish' AND payload->>'TaskID'='$ptid' AND status='published'")
+      [ "$n" = "1" ] && { ok=1; break; }
+      sleep 0.05
+    done
+    [ -n "$ok" ] || continue
+    ts=$(date +%s%N)
+    body=$(curl -s --max-time 10 -w $'\n%{http_code}' -X POST \
+      "$JANUS_URL/v1/tenants/$TENANT/mailboxes/$pmb/pull" \
+      -H 'Content-Type: application/json' -d "{\"agent_id\":\"$pagent\"}" || echo $'\n000')
+    te=$(date +%s%N)
+    code="${body##*$'\n'}"; json="${body%$'\n'*}"
+    [ "$code" = "200" ] || continue
+    echo $(( (te - ts) / 1000000 )) >> "$out"
+    lid=$(jq -r '.lease.lease_id // empty' <<<"$json")
+    ptid2=$(jq -r '.task.id // empty' <<<"$json")
+    [ -n "$lid" ] && [ -n "$ptid2" ] || continue
+    curl -s -o /dev/null --max-time 10 -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks/$ptid2/start" \
+      -H 'Content-Type: application/json' -d "{\"lease_id\":\"$lid\",\"agent_id\":\"$pagent\"}" >/dev/null
+    curl -s -o /dev/null --max-time 10 -X POST "$JANUS_URL/v1/tenants/$TENANT/tasks/$ptid2/ack" \
+      -H 'Content-Type: application/json' -d "{\"lease_id\":\"$lid\",\"agent_id\":\"$pagent\",\"result_ref\":\"result://ga11/$tag-probe\"}" >/dev/null
+  done
+}
+
+# ---------------------------------------------------------------------------
 # Sustained window: publishers + consumers run concurrently.
 # ---------------------------------------------------------------------------
 echo ""
@@ -318,6 +367,14 @@ for (( c = 0; c < CONSUMERS; c++ )); do
   consumer "$c" &
   PIDS="$PIDS $!"
 done
+# In-flight handoff probe: runs THROUGHOUT the load window, spaced so its
+# samples span it; its p95 is gated below as load_handoff_p95.
+LOAD_PROBE_SAMPLES="${LOAD_PROBE_SAMPLES:-40}"
+(
+  sleep "${LOAD_PROBE_RAMP_S:-5}"
+  load_probe "$WORK/lat-load" load "$LOAD_PROBE_SAMPLES"
+) &
+LOAD_PROBE_PID=$!
 
 # Publishers self-terminate at their own WINDOW_SECONDS deadline. They were
 # spawned first, so wait on the first PUB_WORKERS pids only; consumers keep
@@ -446,6 +503,8 @@ percentile() { # files-glob index-percent
 PUB_P95=$(percentile "$WORK/lat-pub-*" 95)
 PULL_P95=$(percentile "$WORK/lat-pull-*" 95)
 WARM_P95=$(percentile "$WORK/lat-warm" 95)
+LOAD_P95=$(percentile "$WORK/lat-load" 95)
+LOAD_SAMPLES=$(grep -c . "$WORK/lat-load" 2>/dev/null || true)
 WARM_SAMPLES=$(grep -c . "$WORK/lat-warm" 2>/dev/null || true)
 PULL_SAMPLES=$(cat "$WORK"/lat-pull-* 2>/dev/null | wc -l | tr -d ' ')
 EMPTY_PULLS=$(cat "$WORK"/empty-* 2>/dev/null | wc -l | tr -d ' ')
@@ -528,20 +587,26 @@ else
   echo "  FAIL warm_handoff_p95: no probe samples"
   GATES_FAILED=$(( GATES_FAILED + 1 ))
 fi
+if [ -n "$LOAD_P95" ]; then
+  gate "load_handoff_p95_lt_${P95_GATE_MS}ms" "$LOAD_P95" lt "$P95_GATE_MS" "(load_p95=${LOAD_P95}ms over $LOAD_SAMPLES in-window probe pulls taken WHILE the sustained load ran)"
+else
+  echo "  FAIL load_handoff_p95: no in-window probe samples"
+  GATES_FAILED=$(( GATES_FAILED + 1 ))
+fi
 EXPECTED_EVENTS_TOTAL=$(( (PUBLISHED + PROBES_SETTLED) * EXPECTED_EVENTS_PER_TASK * 9 / 10 ))
 gate "event_completeness_ge_90pct" "$EVENTS_ALL" ge "$EXPECTED_EVENTS_TOTAL" "(events_all=$EVENTS_ALL expected>=${EXPECTED_EVENTS_TOTAL} = (published $PUBLISHED + probes $PROBES_SETTLED) x $EXPECTED_EVENTS_PER_TASK x 90%; window rate ${EVENTS_PER_S}/s for reference)"
 
 ACTUAL_RATE=$(awk -v p="$PUBLISHED" -v w="$WINDOW_SECONDS" 'BEGIN { printf "%.1f", p / w }')
-gate "actual_rate_ge_$(( TASK_RATE * 8 / 10 ))tps" "$ACTUAL_RATE" ge "$(( TASK_RATE * 8 / 10 ))" "(actual=${ACTUAL_RATE}/s target=${TASK_RATE}/s x 80% over ${WINDOW_SECONDS}s)"
-EVENT_RATE_GATE_V2=$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 7 / 10 ))
+gate "actual_rate_ge_$(( TASK_RATE * 95 / 100 ))tps" "$ACTUAL_RATE" ge "$(( TASK_RATE * 95 / 100 ))" "(actual=${ACTUAL_RATE}/s target=${TASK_RATE}/s x 95% over ${WINDOW_SECONDS}s)"
+EVENT_RATE_GATE_V2=$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 90 / 100 ))
 gate "event_rate_ge_${EVENT_RATE_GATE_V2}ps" "$EVENTS_PER_S" ge "$EVENT_RATE_GATE_V2" "(events_per_s=${EVENTS_PER_S}/s gate=${EVENT_RATE_GATE_V2}/s = ${TASK_RATE}/s x $EXPECTED_EVENTS_PER_TASK x 70% — measured over the 120s window)"
 
 echo ""
 if [ "$GATES_FAILED" -gt 0 ]; then
   echo "SUSTAINED_PASS=0 ($GATES_FAILED gate(s) failed)"
-  echo "SUSTAINED_METRICS agents=$NUM_AGENTS mailboxes=$NUM_MAILBOXES tasks=$PUBLISHED window_s=$WINDOW_SECONDS publish_p95_ms=${PUB_P95:-n/a} warm_handoff_p95_ms=${WARM_P95:-n/a} sweep_pull_p95_ms=${PULL_P95:-n/a} events_total=$EVENTS_ALL events_per_s=$EVENTS_PER_S drain_s=$DRAIN_S"
+  echo "SUSTAINED_METRICS agents=$NUM_AGENTS mailboxes=$NUM_MAILBOXES tasks=$PUBLISHED window_s=$WINDOW_SECONDS publish_p95_ms=${PUB_P95:-n/a} warm_handoff_p95_ms=${WARM_P95:-n/a} load_handoff_p95_ms=${LOAD_P95:-n/a} sweep_pull_p95_ms=${PULL_P95:-n/a} events_total=$EVENTS_ALL events_per_s=$EVENTS_PER_S drain_s=$DRAIN_S"
   exit 1
 fi
 echo "SUSTAINED_PASS=1"
-echo "SUSTAINED_METRICS agents=$NUM_AGENTS mailboxes=$NUM_MAILBOXES tasks=$PUBLISHED window_s=$WINDOW_SECONDS publish_p95_ms=$PUB_P95 warm_handoff_p95_ms=$WARM_P95 sweep_pull_p95_ms=$PULL_P95 events_total=$EVENTS_ALL events_per_s=$EVENTS_PER_S drain_s=$DRAIN_S"
+echo "SUSTAINED_METRICS agents=$NUM_AGENTS mailboxes=$NUM_MAILBOXES tasks=$PUBLISHED window_s=$WINDOW_SECONDS publish_p95_ms=$PUB_P95 warm_handoff_p95_ms=$WARM_P95 load_handoff_p95_ms=${LOAD_P95:-n/a} sweep_pull_p95_ms=${PULL_P95:-n/a} events_total=$EVENTS_ALL events_per_s=$EVENTS_PER_S drain_s=$DRAIN_S"
 exit 0
