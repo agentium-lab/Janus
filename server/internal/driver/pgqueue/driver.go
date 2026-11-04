@@ -63,20 +63,32 @@ func (d *Driver) remove(ch chan<- core.JanusEvent) {
 
 var ErrNotSupported = errors.New("pgqueue: not supported in postgres-only mode")
 
-func ref(taskID string, attempt int) core.DeliveryRef {
-	return core.DeliveryRef(fmt.Sprintf("%s:%d", taskID, attempt))
+// ref mints a cross-round delivery receipt: attempt numbers REPEAT after
+// Replay (ResetForReplay sets attempt_count back to 0), so attempt alone
+// cannot identify a delivery round — an old round's delayed callback would
+// match the new round's rows. replay_count strictly increases per replay,
+// making task:attempt:replay unique per round. Legacy two-part refs (minted
+// by pre-receipt code mid-rollout) parse with replay=-1 and keep the
+// attempt-only guard.
+func ref(taskID string, attempt, replay int) core.DeliveryRef {
+	return core.DeliveryRef(fmt.Sprintf("%s:%d:%d", taskID, attempt, replay))
 }
 
-func splitRef(r core.DeliveryRef) (taskID string, attempt int, err error) {
+func splitRef(r core.DeliveryRef) (taskID string, attempt, replay int, err error) {
 	parts := strings.Split(string(r), ":")
-	if len(parts) != 2 {
-		return "", 0, fmt.Errorf("malformed delivery ref %q", r)
+	if len(parts) != 2 && len(parts) != 3 {
+		return "", 0, 0, fmt.Errorf("malformed delivery ref %q", r)
 	}
-	_, err = fmt.Sscanf(parts[1], "%d", &attempt)
-	if err != nil {
-		return "", 0, fmt.Errorf("malformed delivery ref %q", r)
+	if _, err = fmt.Sscanf(parts[1], "%d", &attempt); err != nil {
+		return "", 0, 0, fmt.Errorf("malformed delivery ref %q", r)
 	}
-	return parts[0], attempt, nil
+	replay = -1
+	if len(parts) == 3 {
+		if _, err = fmt.Sscanf(parts[2], "%d", &replay); err != nil {
+			return "", 0, 0, fmt.Errorf("malformed delivery ref %q", r)
+		}
+	}
+	return parts[0], attempt, replay, nil
 }
 
 // PublishTask is a no-op: in PG mode the task row inserted by TaskService IS
@@ -106,7 +118,7 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 		)
 		UPDATE tasks t SET queue_lease_until = now() + interval '45 seconds', updated_at = now()
 		FROM picked WHERE t.tenant_id = picked.tenant_id AND t.id = picked.id
-		RETURNING t.id, t.tenant_id, t.source_agent, t.attempt_count,
+		RETURNING t.id, t.tenant_id, t.source_agent, t.attempt_count, t.replay_count,
 		          COALESCE(t.envelope->>'content_type',''), COALESCE(t.envelope->'payload','{}'::jsonb)`, tenantID, mailbox, limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim query: %w", err)
@@ -117,13 +129,13 @@ func (d *Driver) FetchTasks(ctx context.Context, tenantID, mailbox string, opts 
 	for rows.Next() {
 		var (
 			id, tenantID, srcAgent, ctype string
-			attempt                       int
-			payload                       []byte
+			attempt, replay           int
+			payload                   []byte
 		)
-		if err := rows.Scan(&id, &tenantID, &srcAgent, &attempt, &ctype, &payload); err != nil {
+		if err := rows.Scan(&id, &tenantID, &srcAgent, &attempt, &replay, &ctype, &payload); err != nil {
 			return nil, err
 		}
-		ref := ref(id, attempt)
+		ref := ref(id, attempt, replay)
 		env, _ := jsonEnvelope(tenantID, id, srcAgent, ctype, payload)
 		deliveries = append(deliveries, core.TaskDelivery{
 			TaskID: id, Attempt: attempt, Payload: env, DeliveryRef: ref,
@@ -138,42 +150,61 @@ func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byt
 		taskID, tenant, srcAgent, ctype, payload), nil
 }
 
+// receiptGuard returns the replay-round CAS fragment and its argument:
+// refs minted with a replay round guard every delivery side effect against
+// acting on a different round's rows; legacy refs (replay=-1) keep the
+// attempt-only guard of the previous wire format.
+func receiptGuard(replay int) (string, any) {
+	if replay >= 0 {
+		return " AND replay_count = $4", replay
+	}
+	return "", nil
+}
+
 // AckTask finalizes the attempt row; authoritative task completion still runs
 // through DispatchService.AckTask's own guarded transaction.
 func (d *Driver) AckTask(ctx context.Context, tenantID string, r core.DeliveryRef) error {
-	taskID, attempt, err := splitRef(r)
+	taskID, attempt, replay, err := splitRef(r)
 	if err != nil {
 		return err
 	}
-	// Receipt guard: the ref carries the attempt_count seen at fetch; the
-	// claim that handed this delivery out incremented it by one. A ref from
-	// a pre-Replay round no longer matches after the counter reset.
+	// Receipt guard: the ref carries the attempt_count seen at fetch (the
+	// claim incremented it by one) plus the replay round — a ref from a
+	// pre-Replay round no longer matches after the counter reset even when
+	// the new round reuses the same attempt number.
+	guard, guardArg := receiptGuard(replay)
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET queue_lease_until = NULL WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
-		taskID, tenantID, attempt+1)
+		`UPDATE tasks SET queue_lease_until = NULL
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
+		taskID, tenantID, attempt+1, guardArg)
 	return err
 }
 
 func (d *Driver) NackTask(ctx context.Context, tenantID string, r core.DeliveryRef, reason core.NackReason) error {
-	taskID, attempt, err := splitRef(r)
+	taskID, attempt, replay, err := splitRef(r)
 	if err != nil {
 		return err
 	}
-	d.clearLease(ctx, tenantID, taskID, attempt)
+	d.clearLease(ctx, tenantID, taskID, attempt, replay)
 	// Task status transitions (dead_lettered etc.) belong to the service
 	// lifecycle transaction, NOT the queue driver — the driver previously
 	// wrote status='dead_letter' (a value the state machine/DLQ queries
 	// don't recognize) and corrupted the core state. The driver now only
 	// manages DELIVERY state: retry scheduling via retry_at.
+	guard, guardArg := receiptGuard(replay)
 	_, err = d.pool.Exec(ctx,
-		`UPDATE tasks SET retry_at = COALESCE(retry_at, now()) WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
-		taskID, tenantID, attempt+1)
+		`UPDATE tasks SET retry_at = COALESCE(retry_at, now())
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
+		taskID, tenantID, attempt+1, guardArg)
 	return err
 }
 
-func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string, attempt int) {
-	_, _ = d.pool.Exec(ctx, `UPDATE tasks SET queue_lease_until=NULL WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`,
-		taskID, tenantID, attempt+1)
+func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string, attempt, replay int) {
+	guard, guardArg := receiptGuard(replay)
+	_, _ = d.pool.Exec(ctx,
+		`UPDATE tasks SET queue_lease_until=NULL
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
+		taskID, tenantID, attempt+1, guardArg)
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {

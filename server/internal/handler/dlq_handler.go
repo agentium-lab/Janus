@@ -297,11 +297,31 @@ func (a *DLQServiceAdapter) DiscardDLQ(ctx context.Context, tenantID, taskID str
 		if uerr != nil {
 			return fmt.Errorf("update task cancelled: %w", uerr)
 		}
-		// Check if the task was actually updated. If not, a concurrent operation
-		// (e.g., Replay) has already changed the status, so we must rollback to
-		// avoid leaving task_attempts cancelled but task in a different state.
 		if tag.RowsAffected() == 0 {
 			return fmt.Errorf("task %s is no longer dead_lettered (concurrent modification)", taskID)
+		}
+		if a.outboxRepo != nil {
+			// Same-transaction lifecycle audit: the task row and the
+			// task.cancelled event commit together or not at all, so a
+			// successful Discard is always visible to stream consumers.
+			discardEvent := core.JanusEvent{
+				EventID:     "evt_" + dlqULID(),
+				EventType:   core.EventTaskCancelled,
+				Timestamp:   time.Now().UTC(),
+				TenantID:    tenantID,
+				TaskID:      taskID,
+				SourceAgent: "dlq:discard",
+				Payload:     []byte(`{"reason":"discarded_from_dlq"}`),
+			}
+			epayload, merr := json.Marshal(discardEvent)
+			if merr != nil {
+				return fmt.Errorf("discard audit event marshal: %w", merr)
+			}
+			if _, oerr := tx.Exec(ctx,
+				`INSERT INTO outbox_events (id, tenant_id, kind, payload) VALUES ($1, $2, 'event_publish', $3)`,
+				dlqULID(), tenantID, epayload); oerr != nil {
+				return fmt.Errorf("discard audit outbox: %w", oerr)
+			}
 		}
 		if cerr := tx.Commit(ctx); cerr != nil {
 			return fmt.Errorf("commit discard tx: %w", cerr)

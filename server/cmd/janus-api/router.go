@@ -169,13 +169,19 @@ func requireScope(scope string, next http.HandlerFunc) http.Handler {
 // bare "/v1/tenants/" root is left alone and stays 404.
 func withTenantPathNormalization(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Trim the ESCAPED path: an encoded %2F in the last segment
-		// (…/tasks/t1%2F) is NOT a literal trailing slash — trimming the
-		// decoded form would rewrite the resource id.
+		// Trim the ESCAPED path so an encoded %2F in the last segment is not
+		// mistaken for a literal trailing slash, then write back BOTH forms
+		// consistently: Path = unescape(trimmed), RawPath = trimmed when it
+		// differs (writing the escaped form into Path would double-encode).
 		if ep := r.URL.EscapedPath(); strings.HasPrefix(ep, "/v1/tenants/") && ep != "/v1/tenants/" {
 			if trimmed := strings.TrimRight(ep, "/"); trimmed != "" && trimmed != "/v1/tenants" && trimmed != ep {
-				r.URL.Path = trimmed
-				r.URL.RawPath = ""
+				if unescaped, uerr := url.PathUnescape(trimmed); uerr == nil {
+					r.URL.Path = unescaped
+					r.URL.RawPath = ""
+					if unescaped != trimmed {
+						r.URL.RawPath = trimmed
+					}
+				}
 			}
 		}
 		next.ServeHTTP(w, r)

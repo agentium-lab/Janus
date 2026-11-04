@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -165,15 +166,44 @@ func (r *ApprovalRepo) ExpireDecisionTx(ctx context.Context, tx pgx.Tx, tenantID
 }
 
 // UpdateDecisionTx is the transactional variant of UpdateDecision for use
-// inside a caller-supplied tx. clock_timestamp() is the real wall clock:
-// now() freezes at transaction start, so a decision that began before the
-// deadline and waited on a row lock past the deadline would still see
-// now() < expires_at and land past it.
+// inside a caller-supplied tx. The row is locked BEFORE the deadline is
+// judged: PostgreSQL evaluates a volatile target-list expression (and an
+// UPDATE's WHERE) at the scan node BELOW LockRows — before the lock wait —
+// so a decision that waited on the lock past expires_at would still see
+// the pre-wait clock. The lock statement therefore carries no clock
+// expression, and the deadline judgement runs as its OWN statement on the
+// DB clock strictly after the lock round-trip returned.
 func (r *ApprovalRepo) UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error {
+	var expiresAt *time.Time
+	err := tx.QueryRow(ctx,
+		`SELECT expires_at FROM approvals WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+		tenantID, approvalID,
+	).Scan(&expiresAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("approval already decided, expired, or not found")
+		}
+		return err
+	}
+	var decidable bool
+	if err := tx.QueryRow(ctx,
+		`SELECT status = 'pending' AND (expires_at IS NULL OR expires_at > clock_timestamp())
+		 FROM approvals WHERE tenant_id = $1 AND id = $2`,
+		tenantID, approvalID,
+	).Scan(&decidable); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("approval already decided, expired, or not found")
+		}
+		return err
+	}
+	if !decidable {
+		return fmt.Errorf("approval already decided, expired, or not found")
+	}
+	// CAS backstop: the lock makes this race-free in practice; the status
+	// guard keeps the write correct even if the lock were dropped.
 	tag, err := tx.Exec(ctx,
 		`UPDATE approvals SET status = $1, decision = $1, approver = $2, reason = $3, decided_at = now()
-		 WHERE tenant_id = $4 AND id = $5 AND status = 'pending'
-		   AND (expires_at IS NULL OR expires_at > clock_timestamp())`,
+		 WHERE tenant_id = $4 AND id = $5 AND status = 'pending'`,
 		decision, approver, reason, tenantID, approvalID,
 	)
 	if err != nil {
