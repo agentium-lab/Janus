@@ -165,14 +165,15 @@ func (r *ApprovalRepo) ExpireDecisionTx(ctx context.Context, tx pgx.Tx, tenantID
 }
 
 // UpdateDecisionTx is the transactional variant of UpdateDecision for use
-// inside a caller-supplied tx (e.g. lifecycle.ApplyTx). The expires_at
-// predicate runs on the database clock so a decision cannot land past the
-// deadline even when the service-side pre-check raced it.
+// inside a caller-supplied tx. clock_timestamp() is the real wall clock:
+// now() freezes at transaction start, so a decision that began before the
+// deadline and waited on a row lock past the deadline would still see
+// now() < expires_at and land past it.
 func (r *ApprovalRepo) UpdateDecisionTx(ctx context.Context, tx pgx.Tx, tenantID, approvalID, decision, approver, reason string) error {
 	tag, err := tx.Exec(ctx,
 		`UPDATE approvals SET status = $1, decision = $1, approver = $2, reason = $3, decided_at = now()
 		 WHERE tenant_id = $4 AND id = $5 AND status = 'pending'
-		   AND (expires_at IS NULL OR expires_at > now())`,
+		   AND (expires_at IS NULL OR expires_at > clock_timestamp())`,
 		decision, approver, reason, tenantID, approvalID,
 	)
 	if err != nil {

@@ -82,7 +82,7 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 	// retry policy needed to decide retry vs DLQ.
 	rows, err := s.pool.Query(ctx,
 		`SELECT ta.tenant_id, ta.task_id, ta.attempt, ta.agent_id,
-		        t.mailbox_id, t.attempt_count, t.priority, t.envelope,
+		        t.mailbox_id, t.attempt_count, t.replay_count, t.priority, t.envelope,
 		        m.ack_wait_seconds, m.max_deliver, m.retry_policy
 		 FROM task_attempts ta
 		 JOIN tasks t ON ta.tenant_id = t.tenant_id AND ta.task_id = t.id
@@ -97,7 +97,7 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 
 	type expired struct {
 		TenantID, TaskID, AgentID, MailboxID string
-		Attempt, AttemptCount                int
+		Attempt, AttemptCount, ReplayCount   int
 		Priority                             core.Priority
 		Envelope                             []byte
 		AckWait, MaxDeliver                  int
@@ -108,7 +108,7 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 		var e expired
 		var retryJSON []byte
 		if err := rows.Scan(&e.TenantID, &e.TaskID, &e.Attempt, &e.AgentID,
-			&e.MailboxID, &e.AttemptCount, &e.Priority, &e.Envelope, &e.AckWait, &e.MaxDeliver, &retryJSON); err != nil {
+			&e.MailboxID, &e.AttemptCount, &e.ReplayCount, &e.Priority, &e.Envelope, &e.AckWait, &e.MaxDeliver, &retryJSON); err != nil {
 			return 0, fmt.Errorf("scan expired lease: %w", err)
 		}
 		if len(retryJSON) > 0 {
@@ -208,7 +208,7 @@ func (s *Scanner) ExpireLeases(ctx context.Context) (int, error) {
 					log.Printf("lease scanner: set dead_lettered %s/%s: %v", e.TenantID, e.TaskID, err)
 					return false
 				}
-				dlqHeaders := map[string]string{"attempt_count": fmt.Sprintf("%d", e.AttemptCount), "reason": "lease_expired"}
+				dlqHeaders := map[string]string{"attempt_count": fmt.Sprintf("%d", e.AttemptCount), "replay_count": fmt.Sprintf("%d", e.ReplayCount), "reason": "lease_expired"}
 				dlqPayload, _ := json.Marshal(core.TaskMessage{
 					TenantID: e.TenantID, MailboxID: e.MailboxID, TaskID: e.TaskID,
 					Priority: e.Priority, Payload: e.Envelope, Headers: dlqHeaders,

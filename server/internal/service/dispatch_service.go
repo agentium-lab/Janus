@@ -820,7 +820,7 @@ func (s *DispatchService) NackTaskAs(ctx context.Context, tenantID, taskID, leas
 			}
 			// dlq_publish + dead_lettered event outbox
 			envelopeJSON, _ := json.Marshal(task.Envelope)
-			dlqHeaders := map[string]string{"attempt_count": fmt.Sprintf("%d", task.AttemptCount)}
+			dlqHeaders := map[string]string{"attempt_count": fmt.Sprintf("%d", task.AttemptCount), "replay_count": fmt.Sprintf("%d", task.ReplayCount)}
 			if len(errJSON) > 0 {
 				dlqHeaders["error"] = string(errJSON)
 			}
