@@ -74,17 +74,31 @@ func TestA2A_TrailingJSONCannotBypassIdentityBinding(t *testing.T) {
 		t.Fatalf("trailing garbage: want 400, got %d", rec.Code)
 	}
 
-	// Foreign agent ID with clean JSON: service-layer GuardAgentIdentity rejects.
-	// (This path exercises the service layer; the gateway test uses the spy
-	// registrar so we verify the service check separately in the service package.)
+	// Stray closing brackets: dec.More() treats them as end-of-container,
+	// only a second Decode returning io.EOF catches them.
+	for _, body := range []string{
+		`{"id":"victim","name":"x"} ]`,
+		`{"id":"victim","name":"x"} }`,
+		`{"id":"victim","name":"x"} [1,2]`,
+	} {
+		reg.registered = nil
+		rec = mkReq(boundKey, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("bracket trailer %q: want 400, got %d", body, rec.Code)
+		}
+		if len(reg.registered) != 0 {
+			t.Fatalf("bracket trailer %q reached the repository", body)
+		}
+	}
+
+	// Foreign agent ID with clean JSON: the gateway alone forwards it —
+	// the SERVICE layer is the identity authority and rejects it before the
+	// repository (proven with the real AgentService in
+	// TestAgentService_Register_BoundKeyCannotRegisterForeignAgent).
 	reg.registered = nil
 	rec = mkReq(boundKey, `{"id":"victim","name":"x","url":"https://example.test"}`)
-	if rec.Code == http.StatusOK && len(reg.registered) > 0 && reg.registered[0].ID == "victim" {
-		// The spy registrar doesn't implement the service check; the real
-		// AgentService.Register does. This assertion documents that the
-		// gateway alone does NOT reject foreign IDs — the service layer is
-		// the authoritative check (tested in agent_service_test.go).
-		t.Log("gateway passes foreign ID to service (service layer is the authority)")
+	if rec.Code != http.StatusOK || len(reg.registered) != 1 || reg.registered[0].ID != "victim" {
+		t.Fatalf("gateway forwards clean-JSON registration to the service: code=%d forwarded=%+v", rec.Code, reg.registered)
 	}
 
 	// Unbound key can register any agent (backward compatibility).

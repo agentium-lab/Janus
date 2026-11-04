@@ -139,4 +139,27 @@ func TestAckNack_ReplayRoundReceipt(t *testing.T) {
 	if leaseUntil != nil {
 		t.Fatal("current-round ack failed to clear the lease")
 	}
+
+	// Given a LEGACY two-part ref (mid-rollout format, no replay round),
+	// Ack/Nack must be a bounded no-op — no SQL runs, so no param-mismatch
+	// error and no unguarded cross-round write; the lease recovers via its
+	// own 45s expiry.
+	if _, err := pool.Exec(ctx, `UPDATE tasks SET queue_lease_until = now() + interval '45 seconds' WHERE tenant_id=$1 AND id=$2`, tenant, task); err != nil {
+		t.Fatalf("reset lease for legacy case: %v", err)
+	}
+	legacy := core.DeliveryRef(task + ":0")
+	if err := d.AckTask(ctx, tenant, legacy); err != nil {
+		t.Fatalf("legacy ack must be a clean no-op, got: %v", err)
+	}
+	if err := d.NackTask(ctx, tenant, legacy, core.NackRetriable); err != nil {
+		t.Fatalf("legacy nack must be a clean no-op, got: %v", err)
+	}
+	if err := pool.QueryRow(ctx,
+		`SELECT queue_lease_until, retry_at FROM tasks WHERE tenant_id=$1 AND id=$2`, tenant, task).
+		Scan(&leaseUntil, &retryAt); err != nil {
+		t.Fatalf("read state after legacy no-ops: %v", err)
+	}
+	if leaseUntil == nil || retryAt != nil {
+		t.Fatal("legacy ref must not touch the live round's lease or retry_at")
+	}
 }

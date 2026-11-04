@@ -284,6 +284,18 @@ func (a *DLQServiceAdapter) DiscardDLQ(ctx context.Context, tenantID, taskID str
 				_ = tx.Rollback(ctx)
 			}
 		}()
+		// Lock order is task-row FIRST, then attempts — the same order Ack
+		// takes. Updating attempts before the task row inverts the order and
+		// can deadlock-rollback against a Replay that holds the task lock.
+		var status string
+		if lerr := tx.QueryRow(ctx,
+			`SELECT status FROM tasks WHERE tenant_id = $1 AND id = $2 FOR UPDATE`,
+			tenantID, taskID).Scan(&status); lerr != nil {
+			return fmt.Errorf("lock task for discard: %w", lerr)
+		}
+		if status != string(core.TaskStatusDeadLettered) {
+			return fmt.Errorf("task %s is no longer dead_lettered (now %s)", taskID, status)
+		}
 		if _, uerr := tx.Exec(ctx,
 			`UPDATE task_attempts SET status = 'cancelled', finished_at = now()
 			 WHERE tenant_id = $1 AND task_id = $2 AND status IN ('claimed', 'running')`,

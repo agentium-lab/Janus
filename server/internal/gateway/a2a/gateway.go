@@ -3,6 +3,7 @@ package a2a
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -47,11 +48,13 @@ func readJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}) error 
 	if err := dec.Decode(v); err != nil {
 		return err
 	}
-	// Reject trailing data after the first JSON value: a second object
-	// (…{} {}), trailing garbage, or a second document would otherwise be
-	// silently accepted here while the identity middleware's Unmarshal
-	// correctly rejects it — the two decoders disagreeing is the bypass.
-	if dec.More() {
+	// Strict single value: dec.More() treats a stray closing bracket as a
+	// legitimate "end of array/object" and accepts it — the definitive
+	// check is a second Decode, which must report io.EOF (nothing but
+	// whitespace remains). Anything else — a second object, garbage, or a
+	// dangling ] or } — is trailing data.
+	var extra json.RawMessage
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("trailing data after JSON value")
 	}
 	return nil
@@ -252,6 +255,18 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	if err := readJSONLimit(w, r, &req); err != nil {
 		writeA2AError(w, http.StatusBadRequest, "INVALID_ARGUMENT", "invalid json")
 		return
+	}
+
+	// Scope re-check with protocol-level detail: the middleware gates this
+	// multiplexed route at the task:read floor so read-only keys can reach
+	// tasks/get; every mutating method requires task:write HERE.
+	switch req.Method {
+	case "task/send", "message/send", "tasks/cancel":
+		if p, ok := auth.PrincipalFromContext(r.Context()); ok && !p.HasScope(auth.ScopeTaskWrite) {
+			writeA2AError(w, http.StatusForbidden, "PERMISSION_DENIED",
+				"method "+req.Method+" requires task:write scope")
+			return
+		}
 	}
 
 	switch req.Method {

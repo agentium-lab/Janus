@@ -281,6 +281,13 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 	if method == http.MethodGet || method == http.MethodHead {
 		return ScopeTaskRead, true
 	}
+	// The multiplexed JSON-RPC surface mixes read and write operations on
+	// one POST route: the middleware enforces only the task:read floor so
+	// read-only keys can call tasks/get; handleJSONRPC re-checks
+	// task:write per mutating method.
+	if path == "/a2a/jsonrpc" {
+		return ScopeTaskRead, true
+	}
 	return ScopeTaskWrite, true
 }
 

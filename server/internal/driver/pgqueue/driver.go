@@ -150,16 +150,10 @@ func jsonEnvelope(tenant, taskID, srcAgent, ctype string, payload []byte) ([]byt
 		taskID, tenant, srcAgent, ctype, payload), nil
 }
 
-// receiptGuard returns the replay-round CAS fragment and its argument:
-// refs minted with a replay round guard every delivery side effect against
-// acting on a different round's rows; legacy refs (replay=-1) keep the
-// attempt-only guard of the previous wire format.
-func receiptGuard(replay int) (string, any) {
-	if replay >= 0 {
-		return " AND replay_count = $4", replay
-	}
-	return "", nil
-}
+// Legacy two-part refs (replay=-1) minted by a mid-rollout process take a
+// bounded no-op: the cross-round CAS cannot be applied to them, and the
+// attempt-only write is the exact cross-round hazard the receipt closed.
+// The 45s queue lease expires on its own, so nothing is leaked.
 
 // AckTask finalizes the attempt row; authoritative task completion still runs
 // through DispatchService.AckTask's own guarded transaction.
@@ -168,15 +162,17 @@ func (d *Driver) AckTask(ctx context.Context, tenantID string, r core.DeliveryRe
 	if err != nil {
 		return err
 	}
+	if replay < 0 {
+		return nil
+	}
 	// Receipt guard: the ref carries the attempt_count seen at fetch (the
 	// claim incremented it by one) plus the replay round — a ref from a
 	// pre-Replay round no longer matches after the counter reset even when
 	// the new round reuses the same attempt number.
-	guard, guardArg := receiptGuard(replay)
 	_, err = d.pool.Exec(ctx,
 		`UPDATE tasks SET queue_lease_until = NULL
-		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
-		taskID, tenantID, attempt+1, guardArg)
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3 AND replay_count=$4`,
+		taskID, tenantID, attempt+1, replay)
 	return err
 }
 
@@ -185,26 +181,30 @@ func (d *Driver) NackTask(ctx context.Context, tenantID string, r core.DeliveryR
 	if err != nil {
 		return err
 	}
+	if replay < 0 {
+		return nil
+	}
 	d.clearLease(ctx, tenantID, taskID, attempt, replay)
 	// Task status transitions (dead_lettered etc.) belong to the service
 	// lifecycle transaction, NOT the queue driver — the driver previously
 	// wrote status='dead_letter' (a value the state machine/DLQ queries
 	// don't recognize) and corrupted the core state. The driver now only
 	// manages DELIVERY state: retry scheduling via retry_at.
-	guard, guardArg := receiptGuard(replay)
 	_, err = d.pool.Exec(ctx,
 		`UPDATE tasks SET retry_at = COALESCE(retry_at, now())
-		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
-		taskID, tenantID, attempt+1, guardArg)
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3 AND replay_count=$4`,
+		taskID, tenantID, attempt+1, replay)
 	return err
 }
 
 func (d *Driver) clearLease(ctx context.Context, tenantID, taskID string, attempt, replay int) {
-	guard, guardArg := receiptGuard(replay)
+	if replay < 0 {
+		return
+	}
 	_, _ = d.pool.Exec(ctx,
 		`UPDATE tasks SET queue_lease_until=NULL
-		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3`+guard,
-		taskID, tenantID, attempt+1, guardArg)
+		 WHERE id=$1 AND tenant_id=$2 AND attempt_count=$3 AND replay_count=$4`,
+		taskID, tenantID, attempt+1, replay)
 }
 
 func (d *Driver) PublishDLQ(ctx context.Context, msg core.TaskMessage, errPayload []byte) error {
