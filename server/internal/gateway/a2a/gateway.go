@@ -43,7 +43,18 @@ func readJSONLimit(w http.ResponseWriter, r *http.Request, v interface{}) error 
 	}
 	defer r.Body.Close()
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
-	return json.NewDecoder(r.Body).Decode(v)
+	dec := json.NewDecoder(r.Body)
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	// Reject trailing data after the first JSON value: a second object
+	// (…{} {}), trailing garbage, or a second document would otherwise be
+	// silently accepted here while the identity middleware's Unmarshal
+	// correctly rejects it — the two decoders disagreeing is the bypass.
+	if dec.More() {
+		return fmt.Errorf("trailing data after JSON value")
+	}
+	return nil
 }
 
 type AgentRegistrar interface {

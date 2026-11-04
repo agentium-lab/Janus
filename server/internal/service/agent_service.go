@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/nilguard"
 )
 
@@ -42,6 +43,14 @@ func (s *AgentService) Register(ctx context.Context, agent core.Agent) error {
 	}
 	if agent.DisplayName == "" {
 		return fmt.Errorf("display name is required")
+	}
+
+	// Identity authority: a bound key may only register the agent it is
+	// bound to, regardless of which gateway decoded the request — the
+	// middleware's body inspection can be bypassed by crafted JSON, but the
+	// service sees the decoded agent ID and is the last line of defense.
+	if err := auth.GuardAgentIdentity(ctx, agent.ID); err != nil {
+		return fmt.Errorf("agent registration identity: %w", err)
 	}
 
 	if agent.Status == "" {
