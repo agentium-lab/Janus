@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from janus_broker import JanusClient, JanusWorker, WorkerResult
+from janus_broker import JanusClient, JanusWorker
 
 
 def build_crew():
@@ -21,11 +21,13 @@ def main():
     client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
     crew_agent = build_crew()
 
-    def handler(task_id: str, content: str, agent_id: str) -> WorkerResult:
+    def handler(task, progress):
+        content = task.envelope.payload.content if task.envelope else ""
+        progress("running CrewAI agent", percent=50)
         if crew_agent is not None:
             result = crew_agent.execute_task(content)
-            return WorkerResult(result_ref=f"crewai://{result}")
-        return WorkerResult(result_ref=f"fallback://{content}")
+            return f"crewai://{result}", None
+        return f"fallback://{content}", None
 
     worker = JanusWorker(client=client, mailbox_id="crewai-mb", agent_id="crewai-agent")
     print("CrewAI worker started, polling for tasks...")

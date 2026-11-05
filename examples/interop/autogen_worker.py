@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from janus_broker import JanusClient, JanusWorker, WorkerResult
+from janus_broker import JanusClient, JanusWorker
 
 
 def build_team():
@@ -20,11 +20,13 @@ def main():
     client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
     assistant = build_team()
 
-    def handler(task_id: str, content: str, agent_id: str) -> WorkerResult:
+    def handler(task, progress):
+        content = task.envelope.payload.content if task.envelope else ""
+        progress("running AutoGen team", percent=50)
         if assistant is not None:
             reply = assistant.generate_reply(messages=[{"content": content, "role": "user"}])
-            return WorkerResult(result_ref=f"autogen://{reply}")
-        return WorkerResult(result_ref=f"fallback://{content}")
+            return f"autogen://{reply}", None
+        return f"fallback://{content}", None
 
     worker = JanusWorker(client=client, mailbox_id="autogen-mb", agent_id="autogen-agent")
     print("AutoGen worker started, polling for tasks...")

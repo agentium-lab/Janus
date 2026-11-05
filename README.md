@@ -75,48 +75,66 @@ and event fan-out at scale.
 **Send your first task** — natural language in, routed to the right agent:
 
 ```python
-from janus_broker import JanusClient
+from janus_broker import (
+    AckRequest,
+    AgentCapability,
+    JanusClient,
+    Payload,
+    PublishTaskRequest,
+    RegisterAgentRequest,
+    Target,
+    TaskEnvelope,
+)
 
 client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
 
-# Register an agent with its capabilities
-client.register_agent({
-    "id": "reviewer",
-    "display_name": "Code Reviewer",
-    "team": "eng",
-    "capabilities": [{"capability": "code_review", "description": "reviews source code"}],
-})
+# Register an agent with its capabilities (request models, not raw dicts)
+client.register_agent(RegisterAgentRequest(
+    id="reviewer",
+    display_name="Code Reviewer",
+    capabilities=[AgentCapability(capability="code_review", description="reviews source code")],
+))
 
-# Publish with intent routing — Janus resolves "review my PR" → code_review
-client.publish_task({
-    "id": "task-001",
-    "source_agent": "product",
-    "target_type": "intent",
-    "target_value": "review my PR for race conditions",
-    "envelope": { ... },
-})
+# Publish routed by capability — the A2A gateway's intent resolver can
+# also turn natural language into this shape server-side
+client.publish_task(PublishTaskRequest(
+    id="task-001",
+    source_agent="product",
+    target_type="capability",
+    target_value="code_review",
+    envelope=TaskEnvelope(
+        task_id="task-001",
+        tenant_id="acme",
+        source_agent="product",
+        target=Target(type="capability", value="code_review"),
+        payload=Payload(type="json", content="{}"),
+    ),
+))
 
 # Pull → process → ack (with lease protection)
 result = client.pull_task("review-mb", "reviewer")
-client.ack_task(result.task.id, {
-    "lease_id": result.lease.lease_id,
-    "result_ref": "s3://review-001.json",
-})
+client.ack_task(result.task.id, AckRequest(
+    lease_id=result.lease.lease_id,
+    result_ref="s3://review-001.json",
+))
 ```
 
-**Report live progress** — agents call `progress()` like a log statement (the Worker injects it):
+**Report live progress** — handlers receive `(task, progress)` and return a
+`(result_ref, token_usage)` tuple (`progress()` is injected by the Worker):
 
 ```python
 def process(task, progress):
     progress("Analyzing code...", percent=20)
     progress("Fixing issues...", percent=60)
-    return WorkerResult(output={"status": "done"})
+    return "s3://review-001.json", None  # (result_ref, token_usage)
 
-# Subscribe from any client — real-time SSE:
-for evt in client.stream_task("task-001"):
-    print(f'[{evt["payload"].get("percent")}%] {evt["payload"]["message"]}')
-# [20%] Analyzing code...
-# [60%] Fixing issues...
+from janus_broker import JanusWorker
+worker = JanusWorker(client, agent_id="reviewer", mailbox_id="review-mb")
+worker.run(process)
+
+# Read the task's event trail from any client (progress + lifecycle):
+for evt in client.get_task_events("task-001"):
+    print(evt["event_type"], evt.get("payload"))
 ```
 
 > 📖 **Full walkthrough:** the [Smart Customer Service tutorial](https://janusa2a.com/docs/quickstart.html#example-smart-service) builds a complete multi-agent exchange workflow — intent routing, crash recovery, parallel fan-out, and data flow between agents.

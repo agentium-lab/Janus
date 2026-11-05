@@ -49,9 +49,9 @@ GA 判定规则：
 | `make smoke-7-agents` | 7-agent 复杂场景、artifact ContextRef、capability lookup、fan-out/fan-in、异常 ACK/NACK/DLQ、audit、metrics | 生产近似业务流程验证。 |
 | `make smoke-security` | auth-enabled API key、rotation、HTTP/native gRPC/A2A/ACP/MCP/WebSocket tenant guard、revoked key、ContextRef/artifact cross-tenant deny、raw API key 和 Task Envelope 敏感内容 log redaction、API key rotation/auth failure/tenant guard audit events | Core 安全生产近似验证。 |
 | `make smoke-mtls` | HTTP/gRPC TLS+mTLS、grpc-gateway auth header propagation、native gRPC mTLS + API key | Core TLS/mTLS 生产近似验证。 |
-| `make verify-security` | `smoke-security` + `smoke-mtls` | 当前 Core 安全 gate；仍需补 NATS/Redis boundary 和 deep data-isolation chaos。 |
+| `make verify-security` | `make verify` + marker（单测门，非真实 smoke——Makefile 已注明） | 真实安全面由 `verify-reliability`/`verify-ops-chaos` 覆盖；本目标不运行任何真实依赖 case。 |
 | `make verify-protocol` | native gRPC、grpc-gateway、A2A、ACP、MCP 和 WebSocket lifecycle，包括 create、message/send/run/tool-call/resource、pull、start、ack、non-retriable nack、Audit task/trace query、DLQ query、ACP/MCP 错误 envelope、WebSocket event stream | 当前 Core 协议 gate。 |
-| `make verify-governance` | Policy Rule / Budget HTTP 管理 API、policy publish deny、policy route + data classification deny、approval approve/reject/expire、capacity/offline/budget/model-class route rejection、route explanation audit、ContextRef attach/detach/delete/cross-tenant deny、artifact upload/download/restart persistence、Redis-backed TPM budget throttle、policy/budget/routing metrics | 当前 Core 治理 gate。 |
+| `make verify-governance` | `make verify` + marker（单测门，非真实 smoke——Makefile 已注明）| 当前 Core 治理 gate。 |
 | `make verify-sdk-cli` | auth-enabled API 上的 Go/Python/TypeScript SDK real API lifecycle、高层 SDK worker helper、typed errors、Policy Rule / Policy Template / Budget SDK 方法、CLI agent/task/mailbox/DLQ/api-key/policy、global `--api-key`、API key revoke 和 tenant guard | 当前 Core SDK/CLI gate。 |
 | `make verify-reliability` | PostgreSQL/NATS/Redis 真实依赖上的 mailbox pause/resume/backlog、pull/start/heartbeat/ACK、重复 ACK 幂等、budget ledger dedupe、retriable NACK retry、retry exhausted DLQ、DLQ replay/discard、lease timeout recovery、inflight duplicate、old attempt rejection、outbox post-mark failure retry、event replay projection rebuild、ACK/PULL/NACK/retry/DLQ/lease/outbox/mailbox metrics | 当前 Core 可靠性语义 gate；dependency restart 和 bootstrap recovery 由 `make verify-ops-chaos` 覆盖。 |
 | `make verify-ops-chaos` | Redis/NATS/PostgreSQL stop/start、readiness 降级、Redis heartbeat restore、NATS outage accepted publish、outbox retry recovery、API restart tenant-stream bootstrap、lazy consumer verification、多 API 进程、多 outbox worker、exactly-once delivery、本地 rolling restart、outbox worker JSON error log | 当前 Core 真实依赖 chaos gate；后续继续扩展 load 和 soak。 |
@@ -62,7 +62,7 @@ GA 前需要新增或扩展的验证入口：
 | 目标入口 | 必须覆盖 |
 | --- | --- |
 | `make verify-protocol` 扩展 | 已接入 ACP、MCP、WebSocket 在真实 API 进程上的端到端验证；native gRPC、grpc-gateway 和 A2A lifecycle 继续作为协议基线。 |
-| `make verify-governance` 扩展 | 已接入 approval reject/expire、capacity/offline/budget/model-class rejection、route explanation audit、ContextRef detach/delete/cross-tenant deny、artifact restart persistence。 |
+| `make verify-governance` 扩展 | approval reject/expire、capacity/offline/budget/model-class rejection、route explanation audit、ContextRef detach/delete/cross-tenant deny 为单测断言；artifact restart persistence **无对应 case**（artifact 无公开 API，见 GOV-11）。 |
 | `make verify-security` | 已覆盖 API key、HTTP/native gRPC/A2A/ACP/MCP/WebSocket tenant guard、API key rotation、TLS/mTLS、secret/log redaction 和安全审计；仍需扩展底层 NATS/Redis/PostgreSQL 资源隔离验证。 |
 | `make verify-ops-chaos` | 已接入 Redis/NATS/PostgreSQL restart、readiness 降级、API restart tenant-stream bootstrap、lazy mailbox consumer bootstrap、outbox retry recovery、多实例 outbox 和本地 rolling restart。 |
 | `make verify-production` | `verify`、`smoke-prod`、`smoke-7-agents`、`verify-security`、`verify-protocol`、`verify-governance`、`verify-sdk-cli`、`verify-reliability`、`verify-ops-chaos` 和 `ga-readiness` 的总入口；后续继续接入 load/soak gates。 |
@@ -188,7 +188,7 @@ GA 前需要新增或扩展的验证入口：
 | OPS-12 | Multi-instance API/outbox worker 并发与 leaderless recovery | P0 | Covered | outbox worker lease unit tests、`make verify-ops-chaos` multi-instance API/outbox worker real dependency smoke | 新后台 worker 必须证明无 leader 也能并发安全。 |
 | OPS-13 | Load baseline：1k agents、10k mailboxes、100 task/s、500 event/s、p95 publish/pull < 100ms | P0 | Covered | `make verify-release-ops` real dependency load baseline; GA target run: 1000 agents、10000 mailboxes、1000 tasks、publish p95 23ms、pull p95 75ms、publish 2048/s、estimated events 1872/s | 基线区分 active mailbox prewarm 和 steady-state latency；新性能回归必须保存 JSON 输出。 |
 | OPS-14 | 7 天 soak | P0 | Covered | `make beta-soak` explicit long-run entry、`make verify-release-ops` soak profile preflight | 自动化门禁验证 soak profile 可显式运行；正式 release tag 前仍需在发布环境跑满 7 天并归档日志/metrics。 |
-| OPS-15 | Artifact persistence：local PVC / configured artifact dir survives restart | P1 | Covered | artifact service tests、Helm PVC config、`make verify-governance` API restart 后 artifact download 验证 | Kubernetes PVC install/rollback 仍归 OPS-07。 |
+| OPS-15 | Artifact persistence：local PVC / configured artifact dir survives restart | P1 | Partial | artifact 包单测、Helm PVC 配置存在；**无公开 API、无 restart download 验证 case** | Kubernetes PVC install/rollback 仍归 OPS-07。 |
 
 ---
 

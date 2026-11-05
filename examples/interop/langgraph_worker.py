@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from janus_broker import JanusClient, JanusWorker, WorkerResult
+from janus_broker import JanusClient, JanusWorker
 
 
 def build_graph():
@@ -34,11 +34,13 @@ def main():
 
     graph = build_graph()
 
-    def handler(task_id: str, content: str, agent_id: str) -> WorkerResult:
+    def handler(task, progress):
+        content = task.envelope.payload.content if task.envelope else ""
+        progress("running graph", percent=50)
         if graph is not None:
-            result = graph.invoke({"task_id": task_id, "content": content, "result": ""})
-            return WorkerResult(result_ref=f"langgraph://{result['result']}")
-        return WorkerResult(result_ref=f"fallback://{content}")
+            result = graph.invoke({"task_id": task.id, "content": content, "result": ""})
+            return f"langgraph://{result['result']}", None
+        return f"fallback://{content}", None
 
     worker = JanusWorker(
         client=client,
