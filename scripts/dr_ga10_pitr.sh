@@ -554,9 +554,22 @@ fi
 log "  business recovery proven: old + new tasks pull and settle on the restored cluster"
 
 # =================================================================== step 11 ==
-if [ "$pass" -eq "$total" ]; then
-    echo "GA10_PITR: PASS rto_seconds=$RTO_S objects=$pass/$total business_rto_additional_s=$BUSINESS_RTO_S"
+# UNIFIED business RTO: one clock from the disaster moment (step 7's
+# RTO_START = primary killed) to BOTH the WAL-era task and the new task
+# being pulled and settled on the restored cluster — not just to a
+# queryable DB or a ready endpoint.
+UNIFIED_RTO_END=$(date +%s.%3N)
+UNIFIED_RTO_S=$(awk "BEGIN { printf \"%.1f\", $UNIFIED_RTO_END - $RTO_START }")
+UNIFIED_RTO_BUDGET_S="${UNIFIED_RTO_BUDGET_S:-$(( RTO_BUDGET_S + 180 ))}"
+log "  unified business RTO = ${UNIFIED_RTO_S}s (disaster -> old+new settled; budget ${UNIFIED_RTO_BUDGET_S}s)"
+
+if [ "$pass" -eq "$total" ] && awk "BEGIN { exit !($UNIFIED_RTO_S <= $UNIFIED_RTO_BUDGET_S) }"; then
+    echo "GA10_PITR: PASS rto_seconds=$RTO_S unified_rto_seconds=$UNIFIED_RTO_S objects=$pass/$total business_rto_additional_s=$BUSINESS_RTO_S"
     exit 0
 fi
-echo "GA10_PITR: FAIL objects=$pass/$total reconciled (rto_seconds=$RTO_S business_rto_additional_s=$BUSINESS_RTO_S)"
+if [ "$pass" -ne "$total" ]; then
+    echo "GA10_PITR: FAIL objects=$pass/$total reconciled (rto_seconds=$RTO_S unified_rto_seconds=$UNIFIED_RTO_S)"
+    exit 1
+fi
+echo "GA10_PITR: FAIL unified_rto ${UNIFIED_RTO_S}s exceeds budget ${UNIFIED_RTO_BUDGET_S}s (db rto ${RTO_S}s was within ${RTO_BUDGET_S}s)"
 exit 1

@@ -427,6 +427,14 @@ func (d *Driver) ReconcileTenant(ctx context.Context, tenantID string) error {
 			}
 		}()
 	}
+	// A missing TASKS stream means its durable consumers were destroyed
+	// with it: evict the cached handles so EnsureConsumer recreates them on
+	// the rebuilt stream. Leaving stale handles cached made every later
+	// fetch target a dead consumer forever (B8: TASKS stream loss must
+	// rebuild consumption, not just the stream).
+	if _, serr := d.js.Stream(ctx, streamName(tenantID, "TASKS")); serr != nil {
+		ts.consumers = make(map[string]jetstream.Consumer)
+	}
 	fix := func(suffix string, cfg jetstream.StreamConfig) (jetstream.Stream, error) {
 		return d.ensureStream(ctx, tenantID, suffix, suffix, cfg)
 	}

@@ -144,9 +144,13 @@ func ga05dlqMigrationsDir() string {
 }
 
 func ga05dlqRigFor(t *testing.T, tenant, taskID string) (*ga05dlqRig, *ga05dlqQueue) {
+	return ga05dlqRigWithQueue(t, tenant, taskID, &ga05dlqQueue{})
+}
+
+func ga05dlqRigWithQueue(t *testing.T, tenant, taskID string, queue core.QueueEventDriver) (*ga05dlqRig, *ga05dlqQueue) {
 	t.Helper()
 	pool := ga05dlqOpenDB(t)
-	queue := &ga05dlqQueue{}
+	fake, _ := queue.(*ga05dlqQueue)
 
 	taskRepo := postgres.NewTaskRepository(pool)
 	attemptRepo := postgres.NewTaskAttemptRepository(pool)
@@ -178,7 +182,7 @@ func ga05dlqRigFor(t *testing.T, tenant, taskID string) (*ga05dlqRig, *ga05dlqQu
 	return &ga05dlqRig{
 		pool: pool, taskRepo: taskRepo, dlq: dlqSvc, taskSvc: taskSvc,
 		dispatch: dispatch, mbSvc: mbSvc, mailbox: mailbox, tenant: tenant, taskID: taskID,
-	}, queue
+	}, fake
 }
 
 type dlqGate struct{ inner interface{} }

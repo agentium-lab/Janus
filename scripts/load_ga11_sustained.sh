@@ -329,19 +329,26 @@ load_probe() {
       -d "{\"id\":\"$ptid\",\"source_agent\":\"$pagent\",\"target_type\":\"mailbox\",\"target_value\":\"$pmb\",\"envelope\":{\"janus_version\":\"1\",\"task_id\":\"$ptid\",\"tenant_id\":\"$TENANT\",\"source_agent\":\"$pagent\",\"target\":{\"type\":\"mailbox\",\"value\":\"$pmb\"},\"payload\":{\"type\":\"ga11-$tag-probe\",\"content\":\"$i\"},\"trace\":{\"trace_id\":\"probe-$ptid\"}}}")
     [ "$c" = "201" ] || [ "$c" = "200" ] || continue
     ok=""
-    for w in $(seq 1 100); do
+    # bounded outbox wait: under sustained load the publisher lags and a
+    # 5s cap starves the probe — cap at 1s and pull regardless; the pull's
+    # own long-poll window covers the remaining publish lag.
+    for w in $(seq 1 20); do
       n=$(pgq "SELECT count(*) FROM outbox_events WHERE tenant_id='$TENANT' AND kind='task_publish' AND payload->>'TaskID'='$ptid' AND status='published'")
       [ "$n" = "1" ] && { ok=1; break; }
       sleep 0.05
     done
-    [ -n "$ok" ] || continue
     ts=$(date +%s%N)
     body=$(curl -s --max-time 10 -w $'\n%{http_code}' -X POST \
       "$JANUS_URL/v1/tenants/$TENANT/mailboxes/$pmb/pull" \
       -H 'Content-Type: application/json' -d "{\"agent_id\":\"$pagent\"}" || echo $'\n000')
     te=$(date +%s%N)
     code="${body##*$'\n'}"; json="${body%$'\n'*}"
-    [ "$code" = "200" ] || continue
+    [ "$code" = "200" ] || { sleep 1; continue; }
+    # a 200 that hands back a DIFFERENT task (probe mailbox is exclusive,
+    # so this cannot happen) or a redelivery of an earlier probe would
+    # poison the sample — guard by id.
+    ptid2=$(jq -r '.task.id // empty' <<<"$json")
+    [ "$ptid2" = "$ptid" ] || { sleep 1; continue; }
     echo $(( (te - ts) / 1000000 )) >> "$out"
     lid=$(jq -r '.lease.lease_id // empty' <<<"$json")
     ptid2=$(jq -r '.task.id // empty' <<<"$json")
@@ -532,6 +539,8 @@ EXPECTED_EVENTS_PER_TASK=5
 EVENTS=$(pgq "SELECT count(*) FROM audit_event_projection WHERE tenant_id='$TENANT' AND occurred_at >= to_timestamp($WIN_START) AND occurred_at < to_timestamp($WIN_END)")
 EVENTS_ALL=$(pgq "SELECT count(*) FROM audit_event_projection WHERE tenant_id='$TENANT'")
 EVENT_RATE_GATE="${EVENT_RATE_GATE:-$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 8 / 10 ))}"
+# computed here so the NOTE below can reference it before the gates section
+EVENT_RATE_GATE_V2=$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 90 / 100 ))
 EVENTS_PER_S=$(awk -v e="$EVENTS" -v w="$WINDOW_SECONDS" 'BEGIN { printf "%.1f", e / w }')
 EVENTS_PER_TASK=$(awk -v e="$EVENTS_ALL" -v t="$PUBLISHED" 'BEGIN { if (t > 0) printf "%.2f", e / t; else print "n/a" }')
 EVENT_BREAKDOWN=$(pgq "SELECT event_type || '=' || count(*) FROM audit_event_projection WHERE tenant_id='$TENANT' GROUP BY event_type ORDER BY count(*) DESC" | tr '\n' ' ')
@@ -544,7 +553,7 @@ echo "  breakdown: $EVENT_BREAKDOWN"
 if [ "$PUBLISHED" -gt 0 ] && [ "$EVENTS_PER_TASK" != "$EXPECTED_EVENTS_PER_TASK" ]; then
   echo "  NOTE: measured events/task ($EVENTS_PER_TASK) differs from the source-derived"
   echo "  expectation ($EXPECTED_EVENTS_PER_TASK). The gate below uses the derived"
-  echo "  expectation (${TASK_RATE}/s x ${EXPECTED_EVENTS_PER_TASK} x 80% = ${EVENT_RATE_GATE}/s);"
+  echo "  expectation (${TASK_RATE}/s x ${EXPECTED_EVENTS_PER_TASK} x 90% = ${EVENT_RATE_GATE_V2}/s);"
   echo "  see the breakdown above for which lifecycle events the broker actually emitted."
 fi
 
@@ -598,8 +607,7 @@ gate "event_completeness_ge_90pct" "$EVENTS_ALL" ge "$EXPECTED_EVENTS_TOTAL" "(e
 
 ACTUAL_RATE=$(awk -v p="$PUBLISHED" -v w="$WINDOW_SECONDS" 'BEGIN { printf "%.1f", p / w }')
 gate "actual_rate_ge_$(( TASK_RATE * 95 / 100 ))tps" "$ACTUAL_RATE" ge "$(( TASK_RATE * 95 / 100 ))" "(actual=${ACTUAL_RATE}/s target=${TASK_RATE}/s x 95% over ${WINDOW_SECONDS}s)"
-EVENT_RATE_GATE_V2=$(( TASK_RATE * EXPECTED_EVENTS_PER_TASK * 90 / 100 ))
-gate "event_rate_ge_${EVENT_RATE_GATE_V2}ps" "$EVENTS_PER_S" ge "$EVENT_RATE_GATE_V2" "(events_per_s=${EVENTS_PER_S}/s gate=${EVENT_RATE_GATE_V2}/s = ${TASK_RATE}/s x $EXPECTED_EVENTS_PER_TASK x 70% — measured over the 120s window)"
+gate "event_rate_ge_${EVENT_RATE_GATE_V2}ps" "$EVENTS_PER_S" ge "$EVENT_RATE_GATE_V2" "(events_per_s=${EVENTS_PER_S}/s gate=${EVENT_RATE_GATE_V2}/s = ${TASK_RATE}/s x $EXPECTED_EVENTS_PER_TASK x 90% — measured over the ${WINDOW_SECONDS}s window)"
 
 echo ""
 if [ "$GATES_FAILED" -gt 0 ]; then
