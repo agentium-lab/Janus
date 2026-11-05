@@ -53,8 +53,13 @@ jobs:
           sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
           # redis-server: the GA-07 fail-closed cell owns a dedicated redis
           # lifecycle (boot/kill/reboot) that the docker redis service cannot
-          # provide -- the runner needs the binary itself.
+          # provide -- the runner needs the binary itself. The Ubuntu package
+          # auto-STARTS a system redis on :6379 in its postinst, which would
+          # collide with the docker redis container bound later -- stop and
+          # disable it; the drill spawns its own instances on scratch ports.
           sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client redis-tools redis-server
+          sudo systemctl stop redis-server.service 2>/dev/null || sudo service redis-server stop 2>/dev/null || true
+          sudo systemctl disable redis-server.service 2>/dev/null || true
 
       - name: Start dependency containers
         run: |
