@@ -251,11 +251,20 @@ jobs:
         with:
           go-version-file: go.work
 
-      - name: Install tooling (psql client + postgres server binaries for the DR drills)
+      - name: Install tooling (psql client + postgres/redis server binaries for the drills)
         run: |
           set -euo pipefail
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
+          # redis-server: the GA-07 fail-closed cell owns a dedicated redis
+          # lifecycle (boot/kill/reboot on scratch ports) that a docker
+          # service container cannot provide. Stop/disable the system
+          # instance the package postinst auto-starts on :6379 so it cannot
+          # collide with anything else binding that port.
+          sudo apt-get install -y -qq redis-tools redis-server
+          sudo systemctl stop redis-server.service 2>/dev/null || sudo service redis-server stop 2>/dev/null || true
+          sudo systemctl disable redis-server.service 2>/dev/null || true
+          command -v redis-server >/dev/null || { echo "::error::redis-server still missing after apt install"; exit 1; }
           # The versioned package name differs by Ubuntu release (postgresql-16
           # is absent on some runners); install whatever server major the
           # distro ships - the drills only need initdb/pg_ctl/pg_basebackup.
