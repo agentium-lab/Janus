@@ -92,7 +92,12 @@ class JanusClient:
         return f"{self._base_url}{self._prefix}{path}"
 
     def register_agent(self, req: RegisterAgentRequest) -> None:
-        resp = self._client.post(self._url("/agents"), json=req.model_dump(exclude_none=True))
+        # by_alias: capability objects serialize their server-side field name
+        # ("schema"), not the python attribute (capability_schema) — without
+        # it the server silently dropped every capability schema.
+        resp = self._client.post(
+            self._url("/agents"), json=req.model_dump(exclude_none=True, by_alias=True)
+        )
         self._check(resp)
 
     def publish_task(self, req: PublishTaskRequest) -> dict:

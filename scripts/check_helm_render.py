@@ -91,9 +91,11 @@ def check_common(label: str, job: str | None, rendered: str) -> None:
         tok in job for tok in ENCODING_TABLE
     )
     # The od-based encoder percent-encodes EVERY byte (always-valid userinfo,
-    # survives passwords the sed whitelist let through, e.g. p[ass]).
+    # survives passwords the sed whitelist let through, e.g. p[ass]). The -v
+    # flag is mandatory: without it od folds repeated 16-byte lines into
+    # "*" and corrupts 32/64-byte repeated-block passwords.
     has_od_encoder = (
-        'od -An -tx1' in job and 'tr -d' in job and 'JANUS_PG_PASSWORD' in job
+        'od -An -v -tx1' in job and 'tr -d' in job and 'JANUS_PG_PASSWORD' in job
     )
     has_auto_migration = ("janus-core" in job or "janus-api" in job) and "JANUS_MIGRATION_AUTO" in job
     if has_sed_chain or has_od_encoder or has_auto_migration:

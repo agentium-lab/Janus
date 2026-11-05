@@ -181,11 +181,15 @@ smoke-7-agents:
 smoke-grafana-panels:
 	@bash scripts/smoke_grafana_panels.sh
 
-## verify-security: API key / tenant guard / mTLS / audit security smoke tests.
+## verify-security: unit-test gate for auth surfaces (verify + marker). It is
+## NOT a live security smoke: no real dependency is exercised here — treat
+## live security coverage as coming from verify-reliability/verify-ops-chaos.
 verify-security: verify
 	@echo "verify-security: security checks passed"
 
-## verify-governance: Policy / budget / approval / routing / ContextRef / artifact smoke tests.
+## verify-governance: unit-test gate for policy/budget/approval/routing/
+## ContextRef surfaces (verify + marker). NOT a live governance smoke;
+## artifact upload/download has no public API yet (see ga-readiness GOV-11).
 verify-governance: verify
 	@echo "verify-governance: governance checks passed"
 

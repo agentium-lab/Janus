@@ -31,7 +31,7 @@ Point-to-point agent calls work in demos. In production they break:
 |---|---|
 | Tasks lost when an agent crashes mid-task | Durable mailboxes + lease recovery — tasks automatically return to the queue |
 | No unified audit trail across agents | Audit events written transactionally (outbox pattern), projected with automatic retry, replayable via REST — per tenant, task, and trace |
-| Downstream agents overwhelmed | RPM / TPM / concurrency budgets enforced per tenant, team, and agent |
+| Downstream agents overwhelmed | RPM / TPM / concurrency budgets enforced per tenant and agent (team scope is saved but not yet enforced — see Enforcement semantics) |
 | Anyone can call anyone | Policy engine with allow / deny / approval-required rules |
 | Token spend is invisible | Usage ledger with per-scope accounting *(trusted cost metering: roadmap)* |
 | Wrong agent gets the task | Capability + group + intent routing, validated against the live catalog |
@@ -140,9 +140,9 @@ for evt in client.stream_task("task-001"):
 | Feature | What it enforces |
 |---|---|
 | Policy engine | Allow / deny / approval-required per agent, capability, tool, classification |
-| Budget control | RPM / TPM / concurrency per tenant, team, and agent |
-| Approval workflow | Human-in-the-loop for high-risk tasks |
-| Full tool audit chain | `tool.invocation_requested → allowed/denied → started → completed/failed` |
+| Budget control | RPM / TPM / concurrency per tenant and agent (team scope saved, not enforced — see Enforcement semantics) |
+| Approval workflow | Human-in-the-loop for high-risk tasks (engages via policy `ApprovalRequired`; `requires_human_approval` alone does not gate Create) |
+| Tool audit events | Submit-time tool events (`started` at submission); lifecycle-accurate execution stages are on the roadmap, see Enforcement semantics |
 
 ### 🧭 Routing
 

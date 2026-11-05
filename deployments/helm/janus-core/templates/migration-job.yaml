@@ -36,8 +36,10 @@ spec:
               # a whitelist escape let legal passwords like p[ass] through
               # raw and Go's URI parser rejected the DSN. Encoding all bytes
               # is always-valid userinfo and round-trips in url.UserPassword.
+              # -v is REQUIRED: od folds repeated 16-byte lines into "*",
+              # silently corrupting 32/64-byte repeated-block passwords.
               ESCAPED_PASSWORD=$(printf '%s' "$JANUS_PG_PASSWORD" \
-                | od -An -tx1 | tr -d ' \n' | sed 's/\(..\)/%\1/g')
+                | od -An -v -tx1 | tr -d ' \n' | sed 's/\(..\)/%\1/g')
               exec /migrate \
                 -path {{ .Values.config.migration.path }} \
                 -database "postgres://{{ .Values.postgres.user }}:${ESCAPED_PASSWORD}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode={{ .Values.postgres.sslMode | default "disable" }}" \
