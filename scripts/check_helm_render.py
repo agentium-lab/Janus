@@ -90,15 +90,27 @@ def check_common(label: str, job: str | None, rendered: str) -> None:
     has_sed_chain = 'sed' in job and '"$JANUS_PG_PASSWORD"' in job and all(
         tok in job for tok in ENCODING_TABLE
     )
+    # The od-based encoder percent-encodes EVERY byte (always-valid userinfo,
+    # survives passwords the sed whitelist let through, e.g. p[ass]).
+    has_od_encoder = (
+        'od -An -tx1' in job and 'tr -d' in job and 'JANUS_PG_PASSWORD' in job
+    )
     has_auto_migration = ("janus-core" in job or "janus-api" in job) and "JANUS_MIGRATION_AUTO" in job
-    if has_sed_chain or has_auto_migration:
-        kind = "runtime sed percent-encoder" if has_sed_chain else "janus-api auto-migration"
+    if has_sed_chain or has_od_encoder or has_auto_migration:
+        kind = (
+            "runtime od percent-encoder"
+            if has_od_encoder
+            else "runtime sed percent-encoder"
+            if has_sed_chain
+            else "janus-api auto-migration"
+        )
         ok(f"escaping construct present ({kind})")
     else:
         fail(
             f"[{label}] no runtime percent-encoder found: expected /bin/sh script "
-            f"escaping $JANUS_PG_PASSWORD via sed ({ENCODING_TABLE}), or the "
-            "janus-api auto-migration path (JANUS_MIGRATION_AUTO)"
+            f"escaping $JANUS_PG_PASSWORD via od -An -tx1 (all bytes) or sed "
+            f"({ENCODING_TABLE}), or the janus-api auto-migration path "
+            "(JANUS_MIGRATION_AUTO)"
         )
 
     if re.search(r"secretKeyRef:\s*\n\s+name: \S+\s*\n\s+key: \S+", job):
