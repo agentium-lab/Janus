@@ -136,26 +136,27 @@ events_of() { # events_of <case> <event> <tid> -> matching JSONL lines (all
   grep "\"event\":\"$2\"" "$WORK/w-$1.jsonl" 2>/dev/null | grep "\"task\":\"$3\"" || true
 }
 
-start_worker() { # start_worker <case> <agent> <mb> [slow_s] [heartbeat_s]
-  local case="$1" agent="$2" mb="$3" slow_s="${4:-0}" hb_s="${5:-30}"
+start_worker() { # start_worker <case> <agent> <mb> [slow_s] [heartbeat_s] [stop_after_s]
+  local case="$1" agent="$2" mb="$3" slow_s="${4:-0}" hb_s="${5:-30}" stop_s="${6:-0}"
   : > "$WORK/w-$case.jsonl"
   case "$LANG_RUN" in
     go)
       ( cd "$WORK" && exec "$WORK/chaosworker" -url "$BASE" -tenant "$TENANT" \
           -agent "$agent" -mailbox "$mb" -events "$WORK/w-$case.jsonl" \
-          -slow "${slow_s}s" -heartbeat "${hb_s}s" -poll 200ms ) \
+          -slow "${slow_s}s" -heartbeat "${hb_s}s" -poll 200ms -stop-after "${stop_s}s" ) \
         > "$WORK/w-$case.log" 2>&1 &
       ;;
     py)
       ( cd "$WORK" && exec python3 "$WORK/chaosworker.py" --url "$BASE" --tenant "$TENANT" \
           --agent "$agent" --mailbox "$mb" --events "$WORK/w-$case.jsonl" \
-          --slow "$slow_s" --heartbeat "$hb_s" --poll 0.2 ) \
+          --slow "$slow_s" --heartbeat "$hb_s" --poll 0.2 --stop-after "$stop_s" ) \
         > "$WORK/w-$case.log" 2>&1 &
       ;;
     ts)
       ( cd "$WORK" && exec bun "$WORK/chaosworker.ts" --url "$BASE" --tenant "$TENANT" \
           --agent "$agent" --mailbox "$mb" --events "$WORK/w-$case.jsonl" \
-          --slow "$((slow_s * 1000))" --heartbeat "$((hb_s * 1000))" --poll 200 ) \
+          --slow "$((slow_s * 1000))" --heartbeat "$((hb_s * 1000))" --poll 200 \
+          --stop-after "$((stop_s * 1000))" ) \
         > "$WORK/w-$case.log" 2>&1 &
       ;;
     *) die "unknown WORKER_LANG: $LANG_RUN" ;;
@@ -267,6 +268,7 @@ func main() {
 	hb := flag.Duration("heartbeat", 30*time.Second, "task heartbeat interval")
 	ahb := flag.Duration("agent-hb", 3*time.Second, "agent heartbeat interval")
 	poll := flag.Duration("poll", 200*time.Millisecond, "empty-poll interval")
+	stopAfter := flag.Duration("stop-after", 0, "cancel Run after this duration (0=never)")
 	flag.Parse()
 
 	ef, err := os.OpenFile(*events, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -288,16 +290,25 @@ func main() {
 		Heartbeat: *hb, AgentHeartbeat: *ahb, PollInterval: *poll,
 	})
 	emit("worker_start", nil)
-	err = worker.Run(context.Background(), func(_ context.Context, task *core.Task, _ string, _ janus.ProgressFn) (string, *core.TokenUsage, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if *stopAfter > 0 {
+		time.AfterFunc(*stopAfter, cancel)
+	}
+	err = worker.Run(ctx, func(hctx context.Context, task *core.Task, _ string, _ janus.ProgressFn) (string, *core.TokenUsage, error) {
 		emit("handler_start", task)
 		select {
 		case <-time.After(*slow):
-		case <-context.Background().Done():
+		case <-hctx.Done():
 		}
 		emit("handler_done", task)
 		return "s3://sdk-chaos/" + task.ID, nil, nil
 	})
 	emit("worker_exit", nil)
+	if *stopAfter > 0 {
+		// requested stop: a clean exit is the expected outcome
+		os.Exit(0)
+	}
 	log.Fatalf("worker Run returned: %v", err)
 }
 EOF
@@ -326,6 +337,7 @@ ap.add_argument("--events", required=True)
 ap.add_argument("--slow", type=float, default=0.0)
 ap.add_argument("--heartbeat", type=float, default=30.0)
 ap.add_argument("--poll", type=float, default=0.2)
+ap.add_argument("--stop-after", type=float, default=0.0)
 a = ap.parse_args()
 
 ef = open(a.events, "a", encoding="utf-8")
@@ -344,6 +356,9 @@ worker = JanusWorker(client, agent_id=a.agent, mailbox_id=a.mailbox,
                      poll_interval=a.poll, heartbeat_interval=a.heartbeat,
                      agent_heartbeat_interval=3.0)
 emit("worker_start", None)
+import threading
+if a.stop_after > 0:
+    threading.Timer(a.stop_after, worker.stop).start()
 
 def handler(task, progress=None):
     emit("handler_start", task)
@@ -355,6 +370,9 @@ try:
     worker.run(handler)
 finally:
     emit("worker_exit", None)
+if a.stop_after > 0:
+    sys.exit(0)
+sys.exit(1)
 EOF
   ( cd "$WORK" && python3 -c "import sys; sys.path.insert(0, '$ROOT/sdk/python'); import chaosworker_check" 2>/dev/null ) || true
   python3 -c "import ast; ast.parse(open('$WORK/chaosworker.py').read())" || die "python chaos driver failed to parse"
@@ -372,7 +390,7 @@ function arg(name: string, dflt?: string): string {
   return i > 0 ? process.argv[i + 1] : (dflt ?? "");
 }
 const url = arg("url"), tenant = arg("tenant"), agentId = arg("agent"), mailbox = arg("mailbox"), events = arg("events");
-const slowMs = Number(arg("slow", "0")), hbMs = Number(arg("heartbeat", "30000")), pollMs = Number(arg("poll", "200"));
+const slowMs = Number(arg("slow", "0")), hbMs = Number(arg("heartbeat", "30000")), pollMs = Number(arg("poll", "200")), stopAfterMs = Number(arg("stop-after", "0"));
 if (!url || !tenant || !agentId || !mailbox || !events) { console.error("chaosworker.ts: missing flags"); process.exit(2); }
 
 openSync(events, "a");
@@ -389,6 +407,7 @@ const worker = new JanusWorker(client, {
   heartbeatIntervalMs: hbMs, pollIntervalMs: pollMs, agentHeartbeatIntervalMs: 3000,
 });
 emit("worker_start", null);
+if (stopAfterMs > 0) setTimeout(() => worker.stop(), stopAfterMs);
 worker.run(async (task: any, _agent: string, _progress: any, signal?: AbortSignal) => {
   emit("handler_start", task);
   await new Promise<void>((resolve) => {
@@ -397,6 +416,9 @@ worker.run(async (task: any, _agent: string, _progress: any, signal?: AbortSigna
   });
   emit("handler_done", task);
   return { resultRef: "s3://sdk-chaos/" + task.id };
+}).then(() => {
+  emit("worker_exit", null);
+  if (stopAfterMs > 0) process.exit(0);
 }).catch((e) => {
   console.error("janus worker:", e);
   emit("worker_exit", null);
@@ -435,6 +457,7 @@ run_lang_cases() { # run_lang_cases <lang>: the five cases against one SDK
   mk_agent a-ll-$L;   mk_mb mb-ll-$L   a-ll-$L "$ACK_WAIT_SHORT"
   mk_agent a-ack-$L;  mk_mb mb-ack-$L  a-ack-$L "$ACK_WAIT_ACKFAIL"
   mk_agent a-90-$L;   mk_mb mb-90-$L   a-90-$L
+  mk_agent a-stop-$L; mk_mb mb-stop-$L a-stop-$L "$ACK_WAIT_SHORT"
 
   # -------------------------------------------------------------- case: eof
   say "$L CASE eof: server killed between tasks; worker must survive + resettle"
@@ -552,6 +575,26 @@ run_lang_cases() { # run_lang_cases <lang>: the five cases against one SDK
   [ "$started" -eq 1 ] && [ "${dur:-0}" -ge 90 ] && [ "$(task_attempt task-90-$L)" = 1 ] \
     && pass "$L 90s: ${SLOW_90S_S}s end-to-end task completed on attempt 1 (handler ${dur}s, no redelivery)" \
     || fail "$L 90s: long-task guarantees not met (starts=$started dur=${dur}s attempt=$(task_attempt task-90-$L))"
+
+  # -------------------------------------------------------------- case: stop
+  say "$L CASE stop: mid-handler stop exits cleanly; in-flight work settles once"
+  # The stopped worker holds the task with no heartbeat (120s); stop fires
+  # 3s in, Run/stop() must return and the PROCESS must exit cleanly; the
+  # expired lease redelivers and a second fast worker settles exactly once.
+  start_worker stop a-stop-$L mb-stop-$L "$SLOW_LEASELOST_S" 120 3
+  publish a-stop-$L mb-stop-$L task-stop-$L
+  wait_until "$L stop: handler started" 30 '[ -n "$(events_of stop handler_start task-stop-'"$L"')" ]' \
+    || fail "$L stop: task-stop never delivered to the stopping worker"
+  start_worker stop2 a-stop-$L mb-stop-$L 0 2
+  stop_deadline=$((SLOW_LEASELOST_S + 40))
+  wait_until "$L stop: stopped worker's process exited cleanly" "$stop_deadline" '! worker_alive "$W_stop_PID"' \
+    && pass "$L stop: worker process exited after stop" \
+    || fail "$L stop: worker process still alive ${stop_deadline}s after stop"
+  wait_until "$L stop: redelivered task completed" "$stop_deadline" '[ "$(task_status task-stop-'"$L"')" = completed ]' \
+    || fail "$L stop: task-stop did not complete after the stop"
+  [ -n "$(task_completed_once task-stop-$L)" ] \
+    && pass "$L stop: in-flight work settled exactly once after the stop (attempt_count=$(task_attempt task-stop-$L), ledger 2 rows)" \
+    || fail "$L stop: settlement is not exactly-once after the stop"
 }
 
 for L in "${LANGS[@]}"; do

@@ -489,28 +489,52 @@ api_restored() {
     fi
 }
 
-old_queued=$(PSQL "$RESTORE_PORT" "SELECT id FROM tasks WHERE status='queued' LIMIT 1")
+old_queued=$(PSQL "$RESTORE_PORT" "SELECT id FROM tasks WHERE status='queued' AND id LIKE 'b2-%' ORDER BY id LIMIT 1")
+if [ -z "$old_queued" ]; then
+    # The WAL-only batch always leaves b2-queued queued; its absence means
+    # the fixture changed — that is a FAIL, not a note (the drill's core
+    # claim is that WAL-era pending work is deliverable after recovery).
+    echo "GA10_PITR: FAIL no WAL-only queued task (b2-*) found to settle after restore"
+    exit 1
+fi
 if [ -n "$old_queued" ]; then
     pull_body=$(api_restored POST "/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")
     old_lease=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
     old_tid=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('id',''))" 2>/dev/null || echo "")
-    if [ -n "$old_lease" ] && [ -n "$old_tid" ]; then
+    if [ "$old_tid" != "$old_queued" ]; then
+        # FIFO may hand back a different recovered row first (e.g. the
+        # retry-promoted b1-nack-r): settle it through the real API and
+        # pull again until the WAL-only row itself comes out.
+        for _ in $(seq 1 15); do
+            if [ -n "$old_tid" ] && [ -n "$old_lease" ]; then
+                api_restored POST "/v1/tenants/$TENANT/tasks/$old_tid/start" "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\"}" >/dev/null
+                curl -s -o /dev/null --max-time 10 -X POST -H 'Content-Type: application/json' \
+                  -d "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga10://restored/interim\"}" \
+                  "$RESTORED_URL/v1/tenants/$TENANT/tasks/$old_tid/ack" >/dev/null 2>&1 || true
+            fi
+            pull_body=$(api_restored POST "/v1/tenants/$TENANT/mailboxes/$MB/pull" "{\"agent_id\":\"$AGENT\"}")
+            old_tid=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task',{}).get('id',''))" 2>/dev/null || echo "")
+            old_lease=$(printf '%s' "$pull_body" | python3 -c "import sys,json; print(json.load(sys.stdin).get('lease',{}).get('lease_id',''))" 2>/dev/null || echo "")
+            [ "$old_tid" = "$old_queued" ] && break
+            sleep 1
+        done
+    fi
+    if [ "$old_tid" = "$old_queued" ] && [ -n "$old_lease" ]; then
         api_restored POST "/v1/tenants/$TENANT/tasks/$old_tid/start" "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\"}" >/dev/null
         ack_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -X POST \
             -H 'Content-Type: application/json' \
             -d "{\"lease_id\":\"$old_lease\",\"agent_id\":\"$AGENT\",\"result_ref\":\"ga10://restored/$old_tid\"}" \
             "$RESTORED_URL/v1/tenants/$TENANT/tasks/$old_tid/ack" 2>/dev/null || echo 000)
         old_status=$(PSQL "$RESTORE_PORT" "SELECT status FROM tasks WHERE tenant_id='$TENANT' AND id='$old_tid'")
-        log "  pre-disaster task $old_tid: pull+start+ack -> $ack_code, status=$old_status"
+        log "  WAL-only pre-disaster task $old_tid: pull+start+ack -> $ack_code, status=$old_status"
         if [ "$old_status" != "completed" ]; then
-            echo "GA10_PITR: FAIL pre-disaster task did not settle after restore (status=$old_status)"
+            echo "GA10_PITR: FAIL WAL-only pre-disaster task $old_tid did not settle after restore (status=$old_status)"
             exit 1
         fi
     else
-        log "  note: no queued pre-disaster task pullable (all terminal)"
+        echo "GA10_PITR: FAIL WAL-only pre-disaster task $old_queued never delivered via pull after restore"
+        exit 1
     fi
-else
-    log "  note: no queued pre-disaster tasks (all terminal)"
 fi
 
 new_tid="post-restore-$(date +%s%N)"

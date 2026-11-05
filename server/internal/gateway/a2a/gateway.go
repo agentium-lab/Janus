@@ -257,14 +257,22 @@ func (g *Gateway) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Scope re-check with protocol-level detail: the middleware gates this
-	// multiplexed route at the task:read floor so read-only keys can reach
-	// tasks/get; every mutating method requires task:write HERE.
+	// Per-method scope enforcement, strict: read methods require task:read,
+	// mutating methods require task:write. The outer ScopeGuard admits any
+	// one of the two scopes for this multiplexed route (see scopeAnyRoutes);
+	// the exact check happens HERE so a read-only key can reach tasks/get
+	// and a write-only key can reach task/send — and neither can cross.
+	var methodScope string
 	switch req.Method {
+	case "task/get", "tasks/get":
+		methodScope = auth.ScopeTaskRead
 	case "task/send", "message/send", "tasks/cancel":
-		if p, ok := auth.PrincipalFromContext(r.Context()); ok && !p.HasScope(auth.ScopeTaskWrite) {
+		methodScope = auth.ScopeTaskWrite
+	}
+	if methodScope != "" {
+		if p, ok := auth.PrincipalFromContext(r.Context()); ok && !p.HasScope(methodScope) {
 			writeA2AError(w, http.StatusForbidden, "PERMISSION_DENIED",
-				"method "+req.Method+" requires task:write scope")
+				"method "+req.Method+" requires "+methodScope+" scope")
 			return
 		}
 	}

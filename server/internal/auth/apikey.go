@@ -282,13 +282,32 @@ func RequiredScope(method, path string) (scope string, ok bool) {
 		return ScopeTaskRead, true
 	}
 	// The multiplexed JSON-RPC surface mixes read and write operations on
-	// one POST route: the middleware enforces only the task:read floor so
-	// read-only keys can call tasks/get; handleJSONRPC re-checks
-	// task:write per mutating method.
+	// one POST route; the returned scope is only the FLOOR — ScopeGuard
+	// actually accepts any scope listed in scopeAnyRoutes for it, and
+	// handleJSONRPC enforces the exact per-method scope behind it.
 	if path == "/a2a/jsonrpc" {
 		return ScopeTaskRead, true
 	}
 	return ScopeTaskWrite, true
+}
+
+// scopeAnyRoutes: routes whose operations span multiple scopes. The outer
+// ScopeGuard accepts ANY listed scope — the multiplexed /a2a/jsonrpc route
+// serves tasks/get to read-only keys AND task/send to write-only keys —
+// while the gateway behind it enforces the exact per-method scope. Without
+// this, a write-only key was 403'd at the outer guard before its own
+// methods could pass the handler's stricter check.
+var scopeAnyRoutes = map[string][]string{
+	"/a2a/jsonrpc": {ScopeTaskRead, ScopeTaskWrite},
+}
+
+func hasAnyScope(p Principal, scopes []string) bool {
+	for _, s := range scopes {
+		if p.HasScope(s) {
+			return true
+		}
+	}
+	return false
 }
 
 type APIKeyValidator struct {
@@ -398,9 +417,11 @@ func ScopeGuard(next http.Handler) http.Handler {
 		if ok {
 			scope, required := RequiredScope(r.Method, r.URL.Path)
 			if required && !principal.HasScope(scope) {
-				w.Header().Set("Content-Type", "application/json")
-				http.Error(w, fmt.Sprintf(`{"error":"missing required scope %q"}`, scope), http.StatusForbidden)
-				return
+				if any, isAny := scopeAnyRoutes[r.URL.Path]; !isAny || !hasAnyScope(principal, any) {
+					w.Header().Set("Content-Type", "application/json")
+					http.Error(w, fmt.Sprintf(`{"error":"missing required scope %q"}`, scope), http.StatusForbidden)
+					return
+				}
 			}
 		}
 		next.ServeHTTP(w, r)
