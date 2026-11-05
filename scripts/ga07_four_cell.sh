@@ -573,7 +573,7 @@ run_failclosed_cell() {
     return 1
   }
   if ! start_fc_redis; then
-    check "dedicated redis booted" "[ 1 -eq 2 ]" "redis never answered PONG on port $FC_REDIS_PORT"
+    check "dedicated redis booted" "[ 1 -eq 2 ]" "redis never answered PONG on port $FC_REDIS_PORT (see $rdir/redis.log)"
     cell_result; drop_cell_db; return
   fi
   REDIS_PIDS+=("$FC_REDIS_PID")
@@ -710,6 +710,13 @@ cell_result() {
 # ==================================================================== matrix
 # GA07_CELLS (comma list of cell names, e.g. "ga07-nats-1r") runs a subset.
 want_cell() { case ",${GA07_CELLS:-}," in *",$1,"*|",,") return 0 ;; *) return 1 ;; esac; }
+if want_cell "ga07-fc-pg"; then
+  # the fail-closed cell owns a dedicated redis lifecycle; the four base
+  # cells only point at a dead address. Missing tooling here is a FATAL
+  # (unreachable dependency), never a green skip or a confusing timeout.
+  command -v redis-server >/dev/null || { echo "GA07_FOUR_CELL: FATAL ga07-fc-pg needs redis-server on PATH (apt-get install redis-server)"; exit 2; }
+  command -v redis-cli >/dev/null || { echo "GA07_FOUR_CELL: FATAL ga07-fc-pg needs redis-cli on PATH (apt-get install redis-tools)"; exit 2; }
+fi
 want_cell "ga07-pg-1r"   && run_cell "ga07-pg-1r"   "pg"   1 "$DEAD_REDIS_ADDR"
 want_cell "ga07-pg-2r"   && run_cell "ga07-pg-2r"   "pg"   2 "$DEAD_REDIS_ADDR"
 want_cell "ga07-nats-1r" && run_cell "ga07-nats-1r" "nats" 1 "-"

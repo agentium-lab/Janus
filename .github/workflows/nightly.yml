@@ -44,14 +44,17 @@ jobs:
         with:
           go-version-file: go.work
 
-      - name: Install tooling (helm, psql, redis-cli)
+      - name: Install tooling (helm, psql, redis-cli, redis-server)
         run: |
           # Pinned download with checksum verification (no curl | bash).
           curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
           echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
           tar -xzf /tmp/helm.tar.gz -C /tmp
           sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client redis-tools
+          # redis-server: the GA-07 fail-closed cell owns a dedicated redis
+          # lifecycle (boot/kill/reboot) that the docker redis service cannot
+          # provide -- the runner needs the binary itself.
+          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client redis-tools redis-server
 
       - name: Start dependency containers
         run: |
