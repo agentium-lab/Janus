@@ -1,116 +1,946 @@
-name: Nightly Production Gates
-
-# P2-3: chaos / load / release-ops gates run on a schedule so main carries
-# continuous evidence instead of relying on manual runs. Core gates
-# (build/test/coverage/staticcheck/reliability/contract) stay enforced on
-# every push in ci.yml; this workflow covers the gates that need a
-# long-running full stack.
-on:
-  schedule:
-    - cron: "17 3 * * *" # daily, off-peak UTC
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
-
-concurrency:
-  group: nightly-production-gates
-  cancel-in-progress: false
-
-jobs:
-  production-gates:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      JANUS_PG_HOST: localhost
-      JANUS_PG_PORT: "5432"
-      JANUS_PG_USER: janus
-      JANUS_PG_PASSWORD: janus
-      JANUS_PG_DATABASE: janus_test
-      JANUS_PG_SSLMODE: disable
-      JANUS_PG_DSN: postgres://janus:janus@localhost:5432/janus_test?sslmode=disable
-      JANUS_NATS_URL: nats://localhost:4222
-      JANUS_REDIS_ADDR: 127.0.0.1:6379
-      JANUS_URL: http://localhost:8080
-      # psql probes in the smoke scripts authenticate over TCP with this.
-      PGPASSWORD: janus
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # The mixed-version gate builds OLD binaries from release tags.
-          fetch-depth: 0
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version-file: go.work
-
-      - name: Install tooling (helm, psql, redis-cli, redis-server)
-        run: |
-          # Pinned download with checksum verification (no curl | bash).
-          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
-          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/helm.tar.gz -C /tmp
-          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          # redis-server: the GA-07 fail-closed cell owns a dedicated redis
-          # lifecycle (boot/kill/reboot) that the docker redis service cannot
-          # provide -- the runner needs the binary itself. The Ubuntu package
-          # auto-STARTS a system redis on :6379 in its postinst, which would
-          # collide with the docker redis container bound later -- stop and
-          # disable it; the drill spawns its own instances on scratch ports.
-          sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client redis-tools redis-server
-          sudo systemctl stop redis-server.service 2>/dev/null || sudo service redis-server stop 2>/dev/null || true
-          sudo systemctl disable redis-server.service 2>/dev/null || true
-
-      - name: Start dependency containers
-        run: |
+# Single-file replacement draft for .github/workflows/nightly.yml.
+# Generated against main 155201547db8e8c32e94ade7676cb6daef45c11e.
+# Daily 11:17 Asia/Shanghai: functional; Sunday 12:47: isolated full performance.
+# Runtime helpers are embedded; no additional repository files are required.
+"name": "Nightly Production Gates"
+"on":
+  "schedule":
+    -
+      "cron": "17 3 * * *"
+    -
+      "cron": "47 4 * * 0"
+  "workflow_dispatch":
+    "inputs":
+      "profile":
+        "description": "nightly=functional; full=functional+performance; performance=load only"
+        "required": true
+        "type": "choice"
+        "options":
+          - "full"
+          - "nightly"
+          - "performance"
+        "default": "full"
+      "candidate_ref":
+        "description": "Candidate ref; frozen to one SHA before any tests"
+        "required": true
+        "type": "string"
+        "default": "main"
+      "baseline_ref":
+        "description": "Optional upgrade baseline; blank selects latest distinct stable tag"
+        "required": false
+        "type": "string"
+        "default": ""
+"permissions":
+  "contents": "read"
+"concurrency":
+  "group": "janus-nightly-${{ github.event_name == 'schedule' && github.event.schedule || github.run_id }}"
+  "cancel-in-progress": "${{ github.event_name == 'schedule' }}"
+"defaults":
+  "run":
+    "shell": "bash"
+"env":
+  "JANUS_DIST": "/tmp/janus-candidate"
+  "EVIDENCE_DIR": "/tmp/janus-evidence"
+  "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+  "JANUS_PG_HOST": "127.0.0.1"
+  "JANUS_PG_PORT": "5432"
+  "JANUS_PG_USER": "janus"
+  "JANUS_PG_PASSWORD": "janus"
+  "JANUS_PG_DATABASE": "janus_test"
+  "JANUS_PG_DBNAME": "janus_test"
+  "JANUS_PG_SSLMODE": "disable"
+  "JANUS_PG_DSN": "postgres://janus:janus@127.0.0.1:5432/janus_test?sslmode=disable"
+  "PGPASSWORD": "janus"
+  "JANUS_NATS_URL": "nats://127.0.0.1:4222"
+  "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+  "JANUS_URL": "http://127.0.0.1:8080"
+  "KEEP_WORK": "1"
+  "GOTOOLCHAIN": "local"
+"jobs":
+  "prepare":
+    "name": "Freeze candidate, baseline and dependencies"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 25
+    "outputs":
+      "sha": "${{ steps.plan.outputs.sha }}"
+      "baseline_ref": "${{ steps.plan.outputs.baseline_ref }}"
+      "baseline_sha": "${{ steps.plan.outputs.baseline_sha }}"
+      "mode": "${{ steps.plan.outputs.mode }}"
+      "functional": "${{ steps.plan.outputs.functional }}"
+      "performance": "${{ steps.plan.outputs.performance }}"
+      "go_version": "${{ steps.plan.outputs.go_version }}"
+      "manifest": "${{ steps.plan.outputs.manifest }}"
+    "steps":
+      -
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ inputs.candidate_ref || github.sha }}"
+          "fetch-depth": 0
+      -
+        "name": "Resolve immutable run plan"
+        "id": "plan"
+        "env":
+          "REQUESTED_PROFILE": "${{ inputs.profile }}"
+          "REQUESTED_BASELINE": "${{ inputs.baseline_ref }}"
+          "CRITICAL_CASE_IDS_JSON": "[\"retry-race-loser-connection-return\",\"latency-writer-preserves-streaming\",\"a2a-stream-rejects-before-create\",\"a2a-jsonrpc-scopes\",\"sse-hostile-id-serialization\",\"dlq-two-replay-real-queue\",\"grpc-mailbox-owner-identity\",\"pg-scanner-restores-lost-message\",\"tasks-stream-rebuild-consumption\",\"http-cross-tenant-denial\",\"http-bound-identity-surface\",\"grpc-identity-method-declaration\",\"grpc-bound-identity-denial\",\"grpc-scope-parity\",\"grpc-denial-surfaces\"]"
+          "AUTH_CASE_IDS_JSON": "[\"auth.setup\",\"auth.rest-read\",\"auth.gateway-native-read\",\"auth.rest-sse\",\"auth.a2a-sse\",\"auth.websocket-upgrade\",\"auth.rest-cross-tenant-denied\",\"auth.gateway-cross-tenant-denied\",\"auth.missing-key-denied\",\"auth.gateway-missing-scope-denied\",\"auth.cleanup\"]"
+        "run": |
+          cat > /tmp/janus-plan.py <<'JANUS_EMBED_PLAN_PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import time
+          
+          out = pathlib.Path('/tmp/nightly-plan')
+          out.mkdir(parents=True, exist_ok=True)
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          def resolve(ref):
+              sha = git('rev-parse', '--verify', '--end-of-options', ref + '^{commit}')
+              if not re.fullmatch(r'[0-9a-f]{40}', sha):
+                  raise RuntimeError('invalid commit: ' + ref)
+              return sha
+          sha = resolve('HEAD')
+          event = json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
+          mode = os.environ.get('REQUESTED_PROFILE') or ('performance' if event.get('schedule') == '47 4 * * 0' else 'nightly')
+          if mode not in ('nightly', 'full', 'performance'):
+              raise RuntimeError('unsupported profile')
+          functional = mode != 'performance'
+          performance = mode != 'nightly'
+          baseline_ref = os.environ.get('REQUESTED_BASELINE', '').strip()
+          if not baseline_ref and functional:
+              tags = [tag for tag in git('tag', '--list').splitlines() if re.fullmatch(r'v\d+\.\d+\.\d+', tag)]
+              tags.sort(key=lambda s: tuple(map(int, s[1:].split('.'))), reverse=True)
+              baseline_ref = next((tag for tag in tags if resolve(tag) != sha), '')
+          baseline_sha = resolve(baseline_ref) if baseline_ref else ''
+          if functional and (not baseline_sha or baseline_sha == sha):
+              raise RuntimeError('cross-version verification requires a different, resolvable baseline commit')
+          go_version = re.search(r'^go\s+(\S+)', pathlib.Path('go.work').read_text(), re.M)[1]
+          logical_images = ['postgres:16-alpine', 'nats:2-alpine', 'redis:7-alpine',
+                            'migrate/migrate:v4.19.1', 'golang:' + go_version + '-alpine', 'alpine:3.21']
+          
+          def image_ref(logical):
+              official = '/' not in logical
+              sources = ['docker.io/' + ('library/' if official else '') + logical]
+              if official:
+                  sources.append('public.ecr.aws/docker/library/' + logical)
+              for source in sources:
+                  for attempt in range(3):
+                      try:
+                          raw = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', '--raw', source], text=True, timeout=120)
+                          obj = json.loads(raw)
+                          if 'manifests' in obj:
+                              candidates = [m['digest'] for m in obj['manifests'] if m.get('platform', {}).get('os') == 'linux' and m.get('platform', {}).get('architecture') == 'amd64']
+                              if len(candidates) != 1:
+                                  raise RuntimeError('no unique linux/amd64 manifest')
+                              digest = candidates[0]
+                          else:
+                              if obj.get('mediaType') not in ('application/vnd.oci.image.manifest.v1+json', 'application/vnd.docker.distribution.manifest.v2+json'):
+                                  raise RuntimeError('unrecognized image manifest')
+                              info = subprocess.check_output(['docker', 'buildx', 'imagetools', 'inspect', source], text=True, timeout=120)
+                              digest = re.search(r'^Digest:\s+(sha256:[0-9a-f]{64})\s*$', info, re.M)[1]
+                          if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+                              raise RuntimeError('invalid image digest')
+                          return source + '@' + digest
+                      except (subprocess.SubprocessError, ValueError, RuntimeError, TypeError) as exc:
+                          print('image resolution retry:', source, str(exc), flush=True)
+                          time.sleep((attempt + 1) * 2)
+              raise RuntimeError('unable to resolve immutable dependency: ' + logical)
+          images = {logical: image_ref(logical) for logical in logical_images}
+          functional_jobs = ['production-gates', 'deployment-cells', 'dr-failover', 'dr-pitr', 'sdk-chaos', 'critical-regressions', 'chart-install-upgrade', 'chart-upgrade-rollback']
+          suites = ['production-gates', 'deployment-cells', 'dr-failover', 'dr-pitr', 'sdk-chaos-go', 'sdk-chaos-py', 'sdk-chaos-ts', 'critical-regressions', 'chart-install-upgrade', 'chart-upgrade-rollback'] if functional else []
+          if performance:
+              suites.append('full-performance')
+          case_ids = json.loads(os.environ['CRITICAL_CASE_IDS_JSON'])
+          auth_ids = json.loads(os.environ['AUTH_CASE_IDS_JSON'])
+          manifest = dict(schema_version=1, candidate_sha=sha, baseline_ref=baseline_ref, baseline_sha=baseline_sha,
+                          mode=mode, go_version=go_version, images=images, expected_suites=suites,
+                          optional_jobs=(functional_jobs if not functional else []) + ([] if performance else ['full-performance']),
+                          critical_case_ids=case_ids, auth_case_ids=auth_ids, performance_exception=True,
+                          run_id=os.environ['GITHUB_RUN_ID'], run_attempt=os.environ['GITHUB_RUN_ATTEMPT'])
+          (out / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              for key, value in dict(sha=sha, baseline_ref=baseline_ref, baseline_sha=baseline_sha, mode=mode,
+                                     functional=str(functional).lower(), performance=str(performance).lower(),
+                                     go_version=go_version, manifest=json.dumps(manifest, separators=(',', ':'))).items():
+                  f.write(key + '=' + value + '\n')
+          print(json.dumps(manifest, indent=2))
+          JANUS_EMBED_PLAN_PY
+          python3 /tmp/janus-plan.py
+      -
+        "name": "Upload janus-plan-${{ github.run_id }}-${{ github.run_attempt }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "janus-plan-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/nightly-plan"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+  "build":
+    "needs":
+      - "prepare"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 35
+    "outputs":
+      "image_id": "${{ steps.candidate.outputs.image_id }}"
+    "steps":
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-plan-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/nightly-plan"
+      -
+        "name": "Build candidate image once and extract its runtime"
+        "id": "candidate"
+        "run": |
           set -euo pipefail
-          pull() {
-            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
-              for attempt in 1 2 3; do
-                # --platform linux/amd64: docker-hub images now ship
-                # attestation/SBOM sub-manifests whose content a plain
-                # pull does not fetch, and kind's ctr import then dies
-                # on "content digest not found"; a single-platform pull
-                # sidesteps the attestation manifest entirely.
-                # Pull by the linux/amd64 MANIFEST DIGEST when the source
-                # is an index: a tag pull stores the whole multi-platform
-                # index (even with --platform) and kind's ctr import
-                # (--all-platforms) then demands every digest the index
-                # references - including attestation manifests whose blobs
-                # were never fetched ("content digest ... not found"). A
-                # digest pull leaves only the single-platform manifest.
-                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
-                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
-                  docker tag "$src@$plat_digest" "$1"; return 0
-                fi
-                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
-                sleep $((attempt * 10))
-              done
+          mkdir -p "$JANUS_DIST"/{bin,tools,image}
+          cp /tmp/nightly-plan/manifest.json "$JANUS_DIST/manifest.json"
+          python3 - <<'JANUS_DOCKERFILE'
+          import json, os, pathlib
+          m = json.loads(pathlib.Path('/tmp/nightly-plan/manifest.json').read_text())
+          s = pathlib.Path('Dockerfile').read_text()
+          s = s.replace('FROM golang:1.25-alpine AS builder', 'FROM ' + m['images']['golang:' + m['go_version'] + '-alpine'] + ' AS builder')
+          s = s.replace('FROM alpine:3.21', 'FROM ' + m['images']['alpine:3.21'])
+          s = s.replace('ENV GOPROXY=https://goproxy.cn,direct', 'ENV GOPROXY=https://proxy.golang.org,direct')
+          if s == pathlib.Path('Dockerfile').read_text() or 'FROM golang:' in s or 'FROM alpine:' in s:
+              raise SystemExit('Dockerfile contract changed; explicit review required')
+          pathlib.Path('/tmp/Dockerfile.nightly').write_text(s)
+          JANUS_DOCKERFILE
+          docker build --provenance=false --sbom=false --platform linux/amd64 -f /tmp/Dockerfile.nightly -t janus-core:candidate .
+          id="$(docker create janus-core:candidate)"
+          trap 'docker rm -f "$id" >/dev/null 2>&1 || true' EXIT
+          docker cp "$id:/usr/local/bin/janus-api" "$JANUS_DIST/bin/janus-api"
+          docker cp "$id:/usr/local/bin/janus-healthcheck" "$JANUS_DIST/bin/janus-healthcheck"
+          docker rm "$id"
+          trap - EXIT
+          docker save janus-core:candidate -o "$JANUS_DIST/image/candidate.tar"
+          docker image inspect janus-core:candidate > "$JANUS_DIST/image-inspect.json"
+          cp /tmp/Dockerfile.nightly "$JANUS_DIST/Dockerfile.nightly"
+          cat > "$JANUS_DIST/tools/ci.sh" <<'JANUS_EMBED_CI_SH'
+          #!/usr/bin/env bash
+          # Shared runner tooling. No credentials or entire PG data directories are archived.
+          set -Eeuo pipefail
+          JANUS_DIST="${JANUS_DIST:-/tmp/janus-candidate}"
+          EVIDENCE_DIR="${EVIDENCE_DIR:-/tmp/janus-evidence}"
+          mkdir -p "$EVIDENCE_DIR"
+          
+          ci_wait() {
+            local label="$1" seconds="$2"; shift 2
+            local end=$((SECONDS + seconds))
+            until "$@"; do
+              if (( SECONDS >= end )); then
+                echo "::error::preflight timed out: $label (${seconds}s)"
+                docker ps -a || true
+                sudo ss -ltnp || true
+                return 1
+              fi
+              sleep 2
             done
-            echo "::error::unable to pull $1"; return 1
           }
-          pull postgres:16-alpine
-          pull nats:2-alpine
-          pull redis:7-alpine
-          docker run -d --name pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
-            -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
-          # -m 8222 enables the monitoring endpoint the smoke/chaos scripts
-          # probe via /jsz.
-          docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
-          docker run -d --name redis -p 6379:6379 redis:7-alpine
-          for i in $(seq 1 90); do
-            docker exec pg pg_isready -h 127.0.0.1 -U janus >/dev/null 2>&1 && break
-            sleep 2
-          done
-          # Loop exhausted: fail here with the probe visible instead of
-          # limping on into the migrate step against a half-started PG.
-          docker exec pg pg_isready -h 127.0.0.1 -U janus
-          until (echo > /dev/tcp/127.0.0.1/4222) 2>/dev/null; do sleep 1; done
-          until [ "$(docker exec redis redis-cli ping)" = "PONG" ]; do sleep 1; done
-
-      - name: Migrate + start Janus API (two replicas)
-        run: |
-          go build -o /tmp/janus-api ./server/cmd/janus-api
+          
+          ci_stop_system_services() {
+            # Ubuntu packages may auto-start system instances during postinst.
+            # These jobs own their fresh runner, not a shared/production host.
+            sudo systemctl stop postgresql.service redis-server.service 2>/dev/null || true
+            sudo service postgresql stop 2>/dev/null || true
+            sudo service redis-server stop 2>/dev/null || true
+            if command -v pg_lsclusters >/dev/null; then
+              while read -r version cluster _; do
+                sudo pg_ctlcluster "$version" "$cluster" stop 2>/dev/null || true
+              done < <(pg_lsclusters --no-header)
+            fi
+          }
+          
+          install_tools() {
+            local mode="${1:-basic}"
+            sudo apt-get -o Acquire::Retries=3 update -qq
+            local packages=(postgresql-client-16 redis-tools redis-server python3-venv jq)
+            if [[ "$mode" == dr ]]; then packages+=(postgresql-16); fi
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=3 install -y -qq "${packages[@]}"
+            ci_stop_system_services
+            if ! command -v helm >/dev/null || [[ "$(helm version --short 2>/dev/null)" != v3.16.4+* ]]; then
+              local dir
+              dir="$(mktemp -d)"
+              curl --fail --show-error --location --retry 3 --max-time 120 \
+                https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz -o "$dir/helm.tar.gz"
+              echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  $dir/helm.tar.gz" | sha256sum -c -
+              tar -xzf "$dir/helm.tar.gz" -C "$dir"
+              sudo install -m 0755 "$dir/linux-amd64/helm" /usr/local/bin/helm
+              rm -rf "$dir"
+            fi
+            if [[ "$mode" == dr ]]; then
+              export PG_BINDIR=/usr/lib/postgresql/16/bin
+              export PG_BIN="$PG_BINDIR"
+              export PATH="$PG_BINDIR:$PATH"
+              if [[ -n "${GITHUB_ENV:-}" ]]; then
+                echo "PG_BINDIR=$PG_BINDIR" >> "$GITHUB_ENV"
+                echo "PG_BIN=$PG_BIN" >> "$GITHUB_ENV"
+                echo "$PG_BINDIR" >> "$GITHUB_PATH"
+              fi
+              "$PG_BINDIR/initdb" --version
+            fi
+            {
+              go version
+              python3 --version
+              docker version
+              if command -v node >/dev/null; then node --version; fi
+              if command -v npm >/dev/null; then npm --version; fi
+              if command -v kind >/dev/null; then kind version; fi
+              psql --version
+              redis-server --version
+              helm version --short
+              uname -a
+              lscpu
+              free -m
+              df -h /tmp
+            } > "$EVIDENCE_DIR/runner-versions.txt" 2>&1
+          }
+          
+          resolved_image() {
+            python3 - "$JANUS_DIST/manifest.json" "$1" <<'PY'
+          import json, sys
+          manifest = json.load(open(sys.argv[1]))
+          print(manifest["images"][sys.argv[2]])
+          PY
+          }
+          
+          pull_image() {
+            local logical="$1" ref attempt
+            ref="$(resolved_image "$logical")"
+            for attempt in 1 2 3; do
+              if timeout 180s docker pull --platform linux/amd64 "$ref"; then
+                docker tag "$ref" "$logical"
+                docker image inspect "$logical" >> "$EVIDENCE_DIR/dependency-images.jsonl"
+                return 0
+              fi
+              sleep $((attempt * 3))
+            done
+            echo "::error::dependency pull failed: $logical (resolved ref recorded in manifest)"
+            return 1
+          }
+          
+          start_dependencies() {
+            local port
+            ci_stop_system_services
+            for port in 5432 4222 6379 8222; do
+              if python3 - "$port" <<'PY'
+          import socket, sys
+          s = socket.socket()
+          try:
+              s.bind(("0.0.0.0", int(sys.argv[1])))
+          finally:
+              s.close()
+          PY
+              then :; else
+                echo "::error::runner port $port is already occupied"
+                sudo ss -ltnp || true
+                return 1
+              fi
+            done
+            pull_image postgres:16-alpine
+            pull_image nats:2-alpine
+            pull_image redis:7-alpine
+            docker run -d --name pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
+              -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
+            docker run -d --name nats -p 4222:4222 -p 8222:8222 nats:2-alpine -js -m 8222
+            docker run -d --name redis -p 6379:6379 redis:7-alpine
+            ci_wait postgres 90 docker exec pg pg_isready -h 127.0.0.1 -U janus -d janus_test
+            ci_wait nats 60 curl -fsS --max-time 2 http://127.0.0.1:8222/healthz
+            ci_wait redis 60 bash -c '[[ "$(docker exec redis redis-cli ping)" == PONG ]]'
+            # Probe using the SAME password/env that all Go PG helpers inherit.
+            PGPASSWORD=janus psql -h 127.0.0.1 -p 5432 -U janus -d janus_test -v ON_ERROR_STOP=1 -c 'SELECT 1'
+          }
+          
+          kind_import_deps() {
+            local cluster="$1" node logical ref attempt ok
+            node="$(kind get nodes --name "$cluster" | head -1)"
+            for logical in postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
+              ref="$(resolved_image "$logical")"
+              ok=0
+              for attempt in 1 2 3; do
+                if timeout 180s docker exec "$node" ctr -n k8s.io images pull --platform linux/amd64 "$ref"; then
+                  ok=1; break
+                fi
+                sleep $((attempt * 3))
+              done
+              [[ "$ok" == 1 ]] || { echo "::error::kind pull failed: $logical"; return 1; }
+              # Existing manifests use these tags; tag them to the resolved immutable object.
+              local target="docker.io/$logical"
+              if [[ "$logical" != */* ]]; then target="docker.io/library/$logical"; fi
+              docker exec "$node" ctr -n k8s.io images tag --force "$ref" "$target"
+            done
+          }
+          
+          collect_evidence() {
+            mkdir -p "$EVIDENCE_DIR/logs"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+            sudo ss -ltnp > "$EVIDENCE_DIR/ports.txt" 2>&1 || true
+            local container
+            for container in pg nats redis; do
+              if docker inspect "$container" >/dev/null 2>&1; then
+                docker logs --timestamps "$container" > "$EVIDENCE_DIR/logs/docker-$container.log" 2>&1 || true
+              fi
+            done
+            python3 - "$EVIDENCE_DIR" <<'PY'
+          import glob, pathlib, shutil, sys
+          dest = pathlib.Path(sys.argv[1]) / "logs"
+          dest.mkdir(parents=True, exist_ok=True)
+          patterns = ["/tmp/janus-api*.log", "/tmp/load-baseline.log", "/tmp/ga09-*.txt",
+                      "/tmp/ga09-*.log", "/tmp/ga09-*.json", "/tmp/ga09-*.jsonl",
+                      "/tmp/helm-upgrade.log", "/tmp/port-forward.log", "/tmp/ga07-fourcell.*/*",
+                      "/tmp/ga10-failover.*/*", "/tmp/janus-ga10-pitr.*/*", "/tmp/sdk-chaos.*/*"]
+          for pattern in patterns:
+              for name in glob.glob(pattern):
+                  path = pathlib.Path(name)
+                  if not path.is_file() or path.suffix not in {".log", ".json", ".jsonl", ".txt"}:
+                      continue
+                  # No PGDATA, backup archives, private keys, environment dump, or source trees.
+                  try:
+                      shutil.copy2(path, dest / (path.parent.name + "--" + path.name))
+                  except OSError as exc:
+                      print("evidence-copy:", path.name, str(exc), file=sys.stderr)
+          PY
+          }
+          JANUS_EMBED_CI_SH
+          cat > "$JANUS_DIST/tools/finalize.py" <<'JANUS_EMBED_FINALIZE_PY'
+          import datetime
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+          import time
+          
+          out = pathlib.Path(os.environ.get("EVIDENCE_DIR", "/tmp/janus-evidence"))
+          out.mkdir(parents=True, exist_ok=True)
+          dist = pathlib.Path(os.environ.get("JANUS_DIST", "/tmp/janus-candidate"))
+          manifest = json.loads((dist / "manifest.json").read_text())
+          steps = json.loads(os.environ.get("STEPS_JSON", "{}"))
+          required = json.loads(os.environ.get("EXPECTED_STEP_IDS_JSON", "[]"))
+          case_id = os.environ["SUITE_ID"]
+          problems = []
+          for name in required:
+              if steps.get(name, {}).get("outcome") != "success":
+                  problems.append("required step did not succeed: " + name)
+          
+          cases = []
+          for name in ("critical-cases.json", "auth-smoke-cases.json", "performance-report.json"):
+              p = out / name
+              if p.exists():
+                  data = json.loads(p.read_text())
+                  cases.extend(data.get("cases", []))
+          
+          if case_id == "critical-regressions":
+              expected = manifest["critical_case_ids"] + manifest["auth_case_ids"]
+              actual = [c.get("id") for c in cases]
+              if sorted(actual) != sorted(expected):
+                  problems.append("named critical/auth case set is missing, duplicated, or changed")
+              for case in cases:
+                  if case.get("status") != "PASS":
+                      problems.append("critical/auth assertion did not pass: " + str(case.get("id")))
+          
+          if case_id.startswith("sdk-chaos-"):
+              lang = case_id.removeprefix("sdk-chaos-")
+              log = out / ("sdk-chaos-" + lang + ".log")
+              text = log.read_text(errors="replace") if log.exists() else ""
+              text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+              expected_faults = ["eof", "network-cut", "lease-lost", "ack-failure", "90s", "stop"]
+              complete = bool(re.search(r"^SDK_CHAOS_PASS=1\s*$", text, re.M))
+              complete &= bool(re.search(r"SDK_CHAOS_METRICS langs=" + re.escape(lang) + r" cases=6(?:\s|$)", text))
+              counts = re.search(r"cases: PASS=(\d+) FAIL=(\d+)", text)
+              complete &= bool(counts and int(counts[1]) >= 6 and int(counts[2]) == 0)
+              for fault in expected_faults:
+                  ran = bool(re.search(re.escape(lang + " CASE " + fault) + r":", text))
+                  ok = bool(complete and ran)
+                  cases.append({"id": "sdk." + lang + "." + fault,
+                                "status": "PASS" if ok else "FAIL", "executed": ran,
+                                "reason": "all script assertions passed" if ok else "missing case or nonpassing script summary"})
+                  if not ok:
+                      problems.append("SDK fault not proven: " + fault)
+          
+          if case_id == "full-performance":
+              if len(cases) != 1 or cases[0].get("id") != "performance.sustained":
+                  problems.append("exact sustained-performance report is missing or duplicated")
+              elif cases[0].get("status") not in ("PASS", "WAIVED"):
+                  problems.append("sustained performance has functional/setup/data failure")
+              elif cases[0].get("status") == "WAIVED" and not manifest.get("performance_exception"):
+                  problems.append("performance waiver was not declared in run plan")
+          
+          waived = [c for c in cases if c.get("status") == "WAIVED"]
+          if waived and case_id != "full-performance":
+              problems.append("waiver outside the declared performance suite")
+          
+          started_file = out / "suite-started.txt"
+          try:
+              elapsed = round(time.time() - float(started_file.read_text()), 3)
+          except (ValueError, OSError):
+              elapsed = None
+          job_status = os.environ.get("JOB_STATUS", "failure")
+          status = "PASS" if job_status == "success" and not problems else "FAIL"
+          if status == "PASS" and waived:
+              status = "WAIVED"
+          record = {
+              "schema_version": 1, "suite_id": case_id, "status": status,
+              "candidate_sha": manifest["candidate_sha"],
+              "candidate_image_id": manifest["candidate_image_id"],
+              "baseline_sha": manifest.get("baseline_sha", ""),
+              "mode": manifest["mode"], "elapsed_seconds": elapsed,
+              "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "run_id": os.environ.get("GITHUB_RUN_ID"),
+              "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
+              "job_status": job_status, "required_step_ids": required,
+              "steps": steps, "cases": cases, "problems": problems,
+              "binary_mode": os.environ.get("BINARY_MODE", "shared-candidate"),
+              "artifact_name": os.environ.get("EVIDENCE_ARTIFACT", ""),
+          }
+          (out / "result.json").write_text(json.dumps(record, indent=2) + "\n")
+          (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print(case_id + ": " + status)
+          for problem in problems:
+              print("::error::" + problem)
+          sys.exit(0 if status in ("PASS", "WAIVED") else 1)
+          JANUS_EMBED_FINALIZE_PY
+          cat > "$JANUS_DIST/tools/critical_regressions.py" <<'JANUS_EMBED_CRITICAL_REGRESSIONS_PY'
+          #!/usr/bin/env python3
+          """Run only the existing critical Go regressions, rejecting absent or skipped cases."""
+          import collections, json, os, pathlib, re, signal, subprocess, sys, time
+          CASES = [{'id': 'retry-race-loser-connection-return', 'package': './server/internal/retry', 'test': 'TestProcessReadyRetries_RaceLoserReturnsConnection'}, {'id': 'latency-writer-preserves-streaming', 'package': './server/internal/observability', 'test': 'TestRequestLatencyMiddleware_PreservesFlusherAndHijacker'}, {'id': 'a2a-stream-rejects-before-create', 'package': './server/internal/gateway/a2a', 'test': 'TestA2A_V1StreamMessage_NoFlusher_RejectsBeforeCreate'}, {'id': 'a2a-jsonrpc-scopes', 'package': './server/internal/gateway/a2a', 'test': 'TestA2A_JSONRPC_ScopeGuardAnyOf_HandlerStrictPerMethod'}, {'id': 'sse-hostile-id-serialization', 'package': './server/internal/handler', 'test': 'TestConstructSSEData_HostileIDsStayDecodable'}, {'id': 'dlq-two-replay-real-queue', 'package': './server/internal/handler', 'test': 'TestGA05_T2c_RealQueueReplayDeliveryChain_PG'}, {'id': 'grpc-mailbox-owner-identity', 'package': './server/internal/auth', 'test': 'TestCheckGRPCAgentIdentity_CreateMailboxOwner'}, {'id': 'pg-scanner-restores-lost-message', 'package': './server/internal/recovery', 'test': 'TestTaskScanner_RecoveryAfterMessageLoss_RealNATS_PG'}, {'id': 'tasks-stream-rebuild-consumption', 'package': './server/internal/driver/nats', 'test': 'TestB8_TasksStreamLoss_RebuildRestoresConsumption'}, {'id': 'http-cross-tenant-denial', 'package': './server/tests/invariants', 'test': 'TestSecurity_CrossTenantAccessDenied'}, {'id': 'http-bound-identity-surface', 'package': './server/tests/invariants', 'test': 'TestIdentityInvariant_HTTP_AllEntrypoints'}, {'id': 'grpc-identity-method-declaration', 'package': './server/tests/invariants', 'test': 'TestIdentityInvariant_GRPC_EveryMethodDeclared'}, {'id': 'grpc-bound-identity-denial', 'package': './server/tests/invariants', 'test': 'TestIdentityInvariant_GRPC_SpoofRejected'}, {'id': 'grpc-scope-parity', 'package': './server/internal/grpc', 'test': 'TestCrossProtocolScopeParity'}, {'id': 'grpc-denial-surfaces', 'package': './server/internal/grpc', 'test': 'TestCrossProtocolDenialSurfaces'}]
+          
+          def main():
+              evidence = pathlib.Path(os.environ.get("EVIDENCE_DIR", "/tmp/janus-evidence"))
+              evidence.mkdir(parents=True, exist_ok=True)
+              groups = collections.OrderedDict()
+              for case in CASES:
+                  groups.setdefault(case["package"], []).append(case)
+              results = []
+              env = dict(os.environ, CGO_ENABLED="1")
+              for package, expected in groups.items():
+                  log = evidence / ("critical-" + package.replace("./", "").replace("/", "-") + ".jsonl")
+                  pattern = "^(?:" + "|".join(re.escape(x["test"]) for x in expected) + ")$"
+                  command = ["go", "test", "-json", "-race", "-count=1", "-timeout=180s", "-run", pattern, package]
+                  started = time.monotonic()
+                  timed_out = False
+                  with log.open("wb") as stream:
+                      proc = subprocess.Popen(command, stdout=stream, stderr=subprocess.STDOUT, env=env, start_new_session=True)
+                      try:
+                          code = proc.wait(timeout=480)
+                      except subprocess.TimeoutExpired:
+                          timed_out = True
+                          os.killpg(proc.pid, signal.SIGTERM)
+                          try:
+                              code = proc.wait(timeout=10)
+                          except subprocess.TimeoutExpired:
+                              os.killpg(proc.pid, signal.SIGKILL)
+                              code = proc.wait()
+                  events = []
+                  for line in log.read_text(errors="replace").splitlines():
+                      try:
+                          events.append(json.loads(line))
+                      except json.JSONDecodeError:
+                          pass
+                  for case in expected:
+                      name = case["test"]
+                      own = [e for e in events if e.get("Test") == name]
+                      related = [e for e in events if e.get("Test", "") == name or e.get("Test", "").startswith(name + "/")]
+                      ran = any(e.get("Action") == "run" for e in own)
+                      terminal = [e["Action"] for e in own if e.get("Action") in ("pass", "fail", "skip")]
+                      skipped = sorted({e["Test"] for e in related if e.get("Action") == "skip"})
+                      failed = sorted({e["Test"] for e in related if e.get("Action") == "fail"})
+                      ok = ran and terminal == ["pass"] and not skipped and not failed and code == 0 and not timed_out
+                      reason = ""
+                      if timed_out:
+                          reason = "package wall-clock timeout"
+                      elif not ran:
+                          reason = "required named case did not execute (missing, build failure, or zero match)"
+                      elif skipped:
+                          reason = "required case or subcase skipped: " + ", ".join(skipped)
+                      elif failed or terminal != ["pass"] or code != 0:
+                          reason = "test/package did not pass"
+                      results.append(dict(case, required=True, status="PASS" if ok else "FAIL", executed=ran,
+                                          skipped=skipped, failed=failed, reason=reason, command=command,
+                                          exit_code=code, elapsed_seconds=round(time.monotonic()-started, 3), log=log.name))
+                      print(("PASS " if ok else "FAIL ") + case["id"] + (": " + reason if reason else ""), flush=True)
+              summary = {"suite":"critical-regressions", "candidate_sha":os.environ.get("CANDIDATE_SHA", ""),
+                         "expected":len(CASES), "passed":sum(r["status"] == "PASS" for r in results),
+                         "failed":sum(r["status"] != "PASS" for r in results), "cases":results}
+              (evidence / "critical-cases.json").write_text(json.dumps(summary, indent=2) + "\n")
+              return 0 if summary["passed"] == len(CASES) and summary["failed"] == 0 else 1
+          if __name__ == "__main__":
+              sys.exit(main())
+          JANUS_EMBED_CRITICAL_REGRESSIONS_PY
+          cat > "$JANUS_DIST/tools/auth_smoke.py" <<'JANUS_EMBED_AUTH_SMOKE_PY'
+          #!/usr/bin/env python3
+          """Real auth-on candidate smoke; SQL is fixture setup, assertions use HTTP/gateway/SSE/WS."""
+          import base64, hashlib, json, os, pathlib, signal, socket, subprocess, sys, time, urllib.error, urllib.request
+          EVIDENCE = pathlib.Path(os.environ.get("EVIDENCE_DIR", "/tmp/janus-evidence"))
+          EVIDENCE.mkdir(parents=True, exist_ok=True)
+          RESULTS = []
+          WORKSPACE = pathlib.Path(os.environ.get("GITHUB_WORKSPACE", os.getcwd())).resolve()
+          DIST = pathlib.Path(os.environ.get("JANUS_DIST", "/tmp/janus-candidate")).resolve()
+          DB = "janus_nightly_auth_" + str(os.getpid()) + "_" + str(time.time_ns() % 100000000)
+          PORT = int(os.environ.get("AUTH_SMOKE_HTTP_PORT", "18490"))
+          GRPC_PORT = int(os.environ.get("AUTH_SMOKE_GRPC_PORT", "19490"))
+          URL = "http://127.0.0.1:" + str(PORT)
+          TENANT = "nightly-auth-a"
+          FOREIGN = "nightly-auth-b"
+          READ_KEY = "janus_nightly_read_" + os.urandom(12).hex()
+          AUDIT_KEY = "janus_nightly_audit_" + os.urandom(12).hex()
+          proc = None
+          created = False
+          log_handle = None
+          
+          def psql(sql, database=None):
+              cmd = ["psql", "-X", "-v", "ON_ERROR_STOP=1", "-h", os.environ.get("JANUS_PG_HOST", "127.0.0.1"),
+                     "-p", os.environ.get("JANUS_PG_PORT", "5432"), "-U", os.environ.get("JANUS_PG_USER", "janus"),
+                     "-d", database or os.environ.get("JANUS_PG_DATABASE", "janus_test"), "-c", sql]
+              e = dict(os.environ, PGPASSWORD=os.environ.get("JANUS_PG_PASSWORD", "janus"))
+              completed = subprocess.run(cmd, env=e, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+              if completed.returncode:
+                  raise RuntimeError("fixture SQL failed: " + completed.stderr[-1000:])
+          
+          def record(case, fn):
+              started = time.monotonic()
+              try:
+                  fn()
+                  result = {"id":case, "required":True, "status":"PASS", "elapsed_seconds":round(time.monotonic()-started, 3)}
+              except Exception as exc:
+                  result = {"id":case, "required":True, "status":"FAIL", "elapsed_seconds":round(time.monotonic()-started, 3),
+                            "reason":str(exc)[:1500]}
+              RESULTS.append(result)
+              print(result["status"] + " " + case + (": " + result.get("reason", "") if result.get("reason") else ""), flush=True)
+          
+          def request(path, key=READ_KEY, expected=200):
+              headers = {"x-api-key":key} if key else {}
+              r = urllib.request.Request(URL+path, headers=headers)
+              try:
+                  resp = urllib.request.urlopen(r, timeout=10)
+              except urllib.error.HTTPError as exc:
+                  resp = exc
+              with resp:
+                  body = resp.read(1048576)
+                  assert resp.status == expected, "{} returned {}, expected {}: {}".format(path, resp.status, expected, body[:200])
+                  return json.loads(body) if body and expected == 200 else body
+          
+          def get_self(path):
+              data = request(path)
+              assert data.get("id") == "auth-completed", "authoritative task ID mismatch"
+          
+          def sse(path, expected_key, expected_task=None, expected_event=None):
+              req = urllib.request.Request(URL+path, headers={"x-api-key":READ_KEY, "Accept":"text/event-stream"})
+              with urllib.request.urlopen(req, timeout=10) as response:
+                  assert response.status == 200
+                  assert response.headers.get("Content-Type", "").startswith("text/event-stream")
+                  event_name = None
+                  for _ in range(30):
+                      line = response.readline(65537)
+                      assert len(line) <= 65536, "unbounded SSE line"
+                      if not line:
+                          break
+                      if line.startswith(b"event:"):
+                          event_name = line.split(b":", 1)[1].strip().decode()
+                      if line.startswith(b"data:"):
+                          data = json.loads(line.split(b":", 1)[1].strip())
+                          assert expected_key in data, "SSE frame schema mismatch"
+                          if expected_event is not None:
+                              assert event_name == expected_event, "SSE event type mismatch"
+                              assert data[expected_key] == "completed", "SSE terminal status mismatch"
+                          if expected_task is not None:
+                              assert data[expected_key].get("id") == expected_task, "SSE task identity mismatch"
+                          return
+                  raise AssertionError("no usable SSE data frame")
+          
+          def websocket():
+              key = base64.b64encode(os.urandom(16)).decode()
+              headers = ("GET /ws HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n"
+                         "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                         "Sec-WebSocket-Version: 13\r\nx-api-key: {api}\r\n\r\n").format(port=PORT,key=key,api=READ_KEY)
+              with socket.create_connection(("127.0.0.1", PORT), timeout=10) as conn:
+                  conn.settimeout(10)
+                  conn.sendall(headers.encode())
+                  data = b""
+                  while b"\r\n\r\n" not in data and len(data) < 16384:
+                      part = conn.recv(4096)
+                      if not part:
+                          break
+                      data += part
+                  head = data.split(b"\r\n\r\n", 1)[0].decode("latin-1")
+                  assert head.split("\r\n",1)[0].startswith("HTTP/1.1 101 "), "WebSocket did not upgrade: " + head[:500]
+                  values = {line.split(":",1)[0].lower():line.split(":",1)[1].strip() for line in head.split("\r\n")[1:] if ":" in line}
+                  expected = base64.b64encode(hashlib.sha1((key+"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+                  assert values.get("sec-websocket-accept") == expected, "WebSocket accept proof mismatch"
+                  conn.sendall(b"\x88\x80" + os.urandom(4))
+          
+          def setup():
+              global proc, created, log_handle
+              assert 1024 <= PORT <= 65535 and 1024 <= GRPC_PORT <= 65535 and PORT != GRPC_PORT, "invalid isolated smoke ports"
+              # Refuse an occupied port rather than accidentally probing a pre-existing process.
+              for port in (PORT, GRPC_PORT):
+                  with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                      probe.bind(("127.0.0.1", port))
+              migrations = WORKSPACE / "migrations"
+              assert (migrations / "000001_initial_schema.up.sql").is_file(), "candidate checkout migrations missing"
+              psql("CREATE DATABASE " + DB)
+              created = True
+              env = dict(os.environ, JANUS_QUEUE_DRIVER="pg", JANUS_AUTH_ENABLED="true", JANUS_PG_DATABASE=DB,
+                         JANUS_MIGRATION_AUTO="true", JANUS_MIGRATION_PATH=str(migrations),
+                         JANUS_HTTP_HOST="127.0.0.1", JANUS_HTTP_PORT=str(PORT), JANUS_GRPC_PORT=str(GRPC_PORT),
+                         JANUS_TRACING_ENABLED="false", JANUS_LLM_ENABLED="false", JANUS_TLS_ENABLED="false",
+                         JANUS_CONFIG_FILE=os.devnull)
+              log_handle = (EVIDENCE/"auth-smoke-api.log").open("wb")
+              binary = str(pathlib.Path(os.environ.get("JANUS_API_BIN", str(DIST/"bin/janus-api"))).resolve())
+              assert pathlib.Path(binary).is_file() and os.access(binary, os.X_OK), "candidate binary missing or not executable"
+              proc = subprocess.Popen([binary], env=env, stdout=log_handle, stderr=subprocess.STDOUT, start_new_session=True, cwd=WORKSPACE)
+              deadline = time.monotonic()+90
+              ready = False
+              while time.monotonic() < deadline:
+                  if proc.poll() is not None:
+                      raise RuntimeError("auth-on candidate exited during boot; see auth-smoke-api.log")
+                  try:
+                      with urllib.request.urlopen(URL+"/readyz", timeout=2) as response:
+                          if response.status == 200:
+                              ready = True
+                              break
+                  except (urllib.error.URLError, TimeoutError):
+                      pass
+                  time.sleep(0.5)
+              if not ready:
+                  raise RuntimeError("auth-on candidate readiness deadline exceeded; see auth-smoke-api.log")
+              sql = "INSERT INTO tenants(id,name) VALUES ('"+TENANT+"','nightly auth A'), ('"+FOREIGN+"','nightly auth B');\n"
+              for raw,scope in [(READ_KEY,"task:read"),(AUDIT_KEY,"audit:read")]:
+                  sql += "INSERT INTO api_keys(tenant_id,key_hash,name,prefix,scopes) VALUES ('{}','{}','nightly-auth','{}',ARRAY['{}']);\n".format(TENANT,hashlib.sha256(raw.encode()).hexdigest(),raw[:8],scope)
+              for tenant,tid,status in [(TENANT,"auth-completed","completed"),(TENANT,"auth-queued","queued"),(FOREIGN,"auth-completed","completed")]:
+                  envelope = {"janus_version":"0.3","task_id":tid,"tenant_id":tenant,"source_agent":"worker",
+                              "target":{"type":"mailbox","value":"auth-mb"},"payload":{"type":"json","content":"auth smoke"},
+                              "trace":{"trace_id":"nightly-auth-"+tid}}
+                  content = json.dumps(envelope).replace("'","''")
+                  sql += "INSERT INTO tasks(tenant_id,id,source_agent,target_type,target_value,mailbox_id,status,priority,envelope) VALUES ('{}','{}','worker','mailbox','auth-mb','auth-mb','{}','normal','{}'::jsonb);\n".format(tenant,tid,status,content)
+              psql(sql, DB)
+          
+          def cleanup():
+              errors=[]
+              if proc is not None and proc.poll() is None:
+                  try:
+                      if proc.pid <= 1 or os.getpgid(proc.pid) != proc.pid:
+                          raise RuntimeError("candidate process group ownership mismatch")
+                      os.killpg(proc.pid, signal.SIGTERM)
+                      try:
+                          proc.wait(timeout=40)
+                      except subprocess.TimeoutExpired:
+                          os.killpg(proc.pid, signal.SIGKILL)
+                          proc.wait(timeout=10)
+                          errors.append("candidate exceeded graceful shutdown budget")
+                  except ProcessLookupError:
+                      proc.wait(timeout=10)
+                  except Exception as exc:
+                      errors.append("candidate cleanup: " + str(exc))
+              if proc is not None and proc.poll() is not None and proc.returncode != 0:
+                  errors.append("candidate exited nonzero: " + str(proc.returncode))
+              if log_handle is not None:
+                  log_handle.close()
+              if created:
+                  try:
+                      psql("DROP DATABASE IF EXISTS " + DB + " WITH (FORCE)")
+                  except Exception as exc:
+                      errors.append(str(exc))
+              if errors:
+                  raise RuntimeError("; ".join(errors))
+          
+          def main():
+              setup_ok = False
+              try:
+                  record("auth.setup", setup)
+                  setup_ok = RESULTS[-1]["status"] == "PASS"
+                  if setup_ok:
+                      record("auth.rest-read", lambda: get_self("/v1/tenants/"+TENANT+"/tasks/auth-completed"))
+                      record("auth.gateway-native-read", lambda: get_self("/grpc/v1/tenants/"+TENANT+"/tasks/auth-completed"))
+                      record("auth.rest-sse", lambda: sse("/v1/tenants/"+TENANT+"/tasks/auth-completed/stream", "status", expected_event="task.completed"))
+                      record("auth.a2a-sse", lambda: sse("/a2a/tasks/auth-queued:subscribe", "task", expected_task="auth-queued"))
+                      record("auth.websocket-upgrade", websocket)
+                      record("auth.rest-cross-tenant-denied", lambda: request("/v1/tenants/"+FOREIGN+"/tasks/auth-completed", expected=403))
+                      record("auth.gateway-cross-tenant-denied", lambda: request("/grpc/v1/tenants/"+FOREIGN+"/tasks/auth-completed", expected=403))
+                      record("auth.missing-key-denied", lambda: request("/v1/tenants/"+TENANT+"/tasks/auth-completed", key=None, expected=401))
+                      record("auth.gateway-missing-scope-denied", lambda: request("/grpc/v1/tenants/"+TENANT+"/tasks/auth-completed", key=AUDIT_KEY, expected=403))
+              finally:
+                  record("auth.cleanup", cleanup)
+                  expected = 11
+                  payload={"suite":"auth-on-production-smoke", "candidate_sha":os.environ.get("CANDIDATE_SHA", ""),
+                           "expected":expected,"executed":len(RESULTS),"passed":sum(r["status"]=="PASS" for r in RESULTS),
+                           "failed":sum(r["status"]!="PASS" for r in RESULTS),"cases":RESULTS,
+                           "scope":"real candidate main auth-on PG mode: REST/A2A SSE, WebSocket upgrade, HTTP/gRPC gateway reads and denial; native identity/scope variants separately covered by named Go cases"}
+                  (EVIDENCE/"auth-smoke-cases.json").write_text(json.dumps(payload,indent=2)+"\n")
+              return 0 if setup_ok and len(RESULTS)==11 and all(r["status"]=="PASS" for r in RESULTS) else 1
+          if __name__ == "__main__":
+              sys.exit(main())
+          JANUS_EMBED_AUTH_SMOKE_PY
+          cat > "$JANUS_DIST/tools/performance.py" <<'JANUS_EMBED_PERFORMANCE_PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+          import sys
+          
+          evidence = pathlib.Path(os.environ.get("EVIDENCE_DIR", "/tmp/janus-evidence"))
+          evidence.mkdir(parents=True, exist_ok=True)
+          log = evidence / "full-performance.log"
+          env = dict(os.environ, SCALE_PROFILE="full", P95_GATE_MS="100", KEEP_WORK="1")
+          with log.open("w") as stream:
+              process = subprocess.Popen(["bash", "scripts/load_ga11_sustained.sh"], env=env,
+                                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+              for line in process.stdout:
+                  stream.write(line)
+                  stream.flush()
+                  print(line, end="", flush=True)
+              code = process.wait()
+          text = re.sub(r"\x1b\[[0-9;]*m", "", log.read_text(errors="replace"))
+          failed = re.findall(r"^\s*FAIL\s+([^:]+):", text, re.M)
+          allowed = re.compile(r"^(?:publish_p95_lt_100ms|warm_handoff_p95_lt_100ms|load_handoff_p95_lt_100ms|actual_rate_ge_\d+tps|event_rate_ge_\d+ps)$")
+          waivable = bool(code == 1 and failed and all(allowed.fullmatch(name) for name in failed)
+                           and "SUSTAINED_PASS=0" in text and "SUSTAINED_METRICS " in text)
+          status = "PASS" if code == 0 and "SUSTAINED_PASS=1" in text else "WAIVED" if waivable else "FAIL"
+          payload = {"cases": [{"id": "performance.sustained", "status": status, "executed": True,
+                                 "exit_code": code, "failed_gates": failed,
+                                 "metrics_lines": [line for line in text.splitlines() if line.startswith("SUSTAINED_METRICS ")],
+                                 "reason": "owner-accepted performance-only target gaps" if waivable else ""}],
+                     "note": "Functional/data-reconciliation/setup failures cannot use the performance exception."}
+          (evidence / "performance-report.json").write_text(json.dumps(payload, indent=2) + "\n")
+          print("Full performance outcome:", status)
+          sys.exit(0 if status in ("PASS", "WAIVED") else 1)
+          JANUS_EMBED_PERFORMANCE_PY
+          python3 - <<'JANUS_MANIFEST'
+          import hashlib, json, os, pathlib, subprocess
+          p = pathlib.Path(os.environ['JANUS_DIST'])
+          m = json.loads((p / 'manifest.json').read_text())
+          m['candidate_image_id'] = subprocess.check_output(['docker', 'image', 'inspect', 'janus-core:candidate', '--format', '{{.Id}}'], text=True).strip()
+          m['binaries'] = {q.name: hashlib.sha256(q.read_bytes()).hexdigest() for q in (p / 'bin').iterdir()}
+          m['build'] = {'source_sha': m['candidate_sha'], 'platform': 'linux/amd64', 'dockerfile_sha256': hashlib.sha256((p / 'Dockerfile.nightly').read_bytes()).hexdigest(), 'runtime_source': 'extracted-from-candidate-image', 'script_owned_rebuilds': ['dr_ga10_pitr.sh', 'smoke_mixed_version_locks.sh']}
+          (p / 'manifest.json').write_text(json.dumps(m, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write('image_id=' + m['candidate_image_id'] + '\n')
+          JANUS_MANIFEST
+          (cd "$JANUS_DIST" && find bin tools -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum manifest.json image-inspect.json Dockerfile.nightly >> SHA256SUMS)
+          (cd "$JANUS_DIST/image" && sha256sum candidate.tar > SHA256SUMS)
+      -
+        "name": "Upload janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": |-
+            /tmp/janus-candidate/bin
+            /tmp/janus-candidate/tools
+            /tmp/janus-candidate/manifest.json
+            /tmp/janus-candidate/image-inspect.json
+            /tmp/janus-candidate/Dockerfile.nightly
+            /tmp/janus-candidate/SHA256SUMS
+          "retention-days": 90
+          "if-no-files-found": "error"
+      -
+        "name": "Upload janus-image-${{ github.run_id }}-${{ github.run_attempt }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "janus-image-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate/image"
+          "retention-days": 90
+          "if-no-files-found": "error"
+  "production-gates":
+    "name": "Business, compatibility, chaos and smoke load"
+    "needs":
+      - "prepare"
+      - "build"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "JANUS_PG_HOST": "localhost"
+      "JANUS_PG_PORT": "5432"
+      "JANUS_PG_USER": "janus"
+      "JANUS_PG_PASSWORD": "janus"
+      "JANUS_PG_DATABASE": "janus_test"
+      "JANUS_PG_DBNAME": "janus_test"
+      "JANUS_PG_SSLMODE": "disable"
+      "JANUS_PG_DSN": "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
+      "JANUS_NATS_URL": "nats://localhost:4222"
+      "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+      "PGPASSWORD": "janus"
+      "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+      "JANUS_ALLOW_REQUIRED_SKIP": "0"
+      "JANUS_URL": "http://localhost:8080"
+      "SUITE_ID": "production-gates"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-production-gates-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate-plus-script-owned-mixed-version-build"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"boot_api\", \"dependency_smoke\", \"seven_agents\", \"replica_convergence\", \"acceptance\", \"mixed_version\", \"ops_chaos\", \"release_ops\", \"smoke_load\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
+        "with":
+          "node-version": "22"
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "id": "setup"
+        "name": "Prepare isolated runtime dependencies"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools basic
+          start_dependencies
+          python3 -m venv /tmp/janus-runtime-python
+          printf '%s\n' /tmp/janus-runtime-python/bin >> "$GITHUB_PATH"
+          } 2>&1 | tee "$EVIDENCE_DIR/setup.log"
+      -
+        "id": "boot_api"
+        "name": "Migrate + start Janus API (two replicas)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
           JANUS_QUEUE_DRIVER=nats \
             JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
             JANUS_PG_DATABASE=janus_test JANUS_PG_SSLMODE=disable \
@@ -119,7 +949,7 @@ jobs:
             JANUS_MIGRATION_AUTO=true JANUS_MIGRATION_PATH=migrations \
             JANUS_AUTH_ENABLED=false \
             JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8080 \
-            /tmp/janus-api > /tmp/janus-api.log 2>&1 &
+            "$JANUS_API_BIN" > /tmp/janus-api.log 2>&1 &
           echo $! > /tmp/janus-api.pid
           for i in $(seq 1 60); do
             curl -sf "$JANUS_URL/readyz" >/dev/null 2>&1 && break
@@ -139,302 +969,817 @@ jobs:
             JANUS_AUTH_ENABLED=false \
             JANUS_HTTP_HOST=localhost JANUS_HTTP_PORT=8081 \
             JANUS_GRPC_PORT=9091 \
-            /tmp/janus-api > /tmp/janus-api-b.log 2>&1 &
+            "$JANUS_API_BIN" > /tmp/janus-api-b.log 2>&1 &
           echo $! > /tmp/janus-api-b.pid
           for i in $(seq 1 60); do
             curl -sf http://localhost:8081/readyz >/dev/null 2>&1 && break
             sleep 1
           done
           curl -sf http://localhost:8081/readyz
-
-      - name: Dependency smoke (API/PG/NATS/Redis + metrics)
-        run: JANUS_URL=$JANUS_URL bash scripts/smoke_api_dependencies.sh
-
-      - name: Seven-agent scenario (lifecycle + fanout + idempotency)
-        run: JANUS_URL=$JANUS_URL bash scripts/smoke_7_agents.sh
-
-      - name: Two-replica convergence (advisory locks + config version)
-        run: |
+          } 2>&1 | tee "$EVIDENCE_DIR/boot_api.log"
+      -
+        "id": "dependency_smoke"
+        "name": "Dependency smoke (API/PG/NATS/Redis + metrics)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          JANUS_URL=$JANUS_URL bash scripts/smoke_api_dependencies.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/dependency_smoke.log"
+      -
+        "id": "seven_agents"
+        "name": "Seven-agent scenario (lifecycle + fanout + idempotency)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          JANUS_URL=$JANUS_URL bash scripts/smoke_7_agents.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/seven_agents.log"
+      -
+        "id": "replica_convergence"
+        "name": "Two-replica convergence (advisory locks + config version)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
           JANUS_URL_A=http://localhost:8080 JANUS_URL_B=http://localhost:8081 \
           JANUS_PG_HOST=localhost JANUS_PG_USER=janus PGPASSWORD=janus JANUS_PG_DBNAME=janus_test \
           bash scripts/smoke_two_replica_convergence.sh
-
-      - name: T01-T13 acceptance matrix (audit 2026-10-12)
-        run: |
+          } 2>&1 | tee "$EVIDENCE_DIR/replica_convergence.log"
+      -
+        "id": "acceptance"
+        "name": "T01-T15 and A1/A2 acceptance matrix"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
           # The matrix executes the Python and TS SDK test suites, not just
           # type checks — their runner deps must be present.
           (cd sdk/python && python3 -m pip install --quiet -e '.[dev]')
           (cd sdk/typescript && npm ci --silent)
           bash scripts/acceptance_matrix.sh
-
-      - name: Mixed-version lock contention (v1.9.0 + HEAD)
-        run: |
+          } 2>&1 | tee "$EVIDENCE_DIR/acceptance.log"
+      -
+        "id": "mixed_version"
+        "name": "Mixed-version lock contention (v1.9.0 + HEAD)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
           python3 -m pip install --quiet nats-py
           JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_PASSWORD=janus \
           bash scripts/smoke_mixed_version_locks.sh
-
-      - name: Ops chaos (dependency restarts + state persistence)
-        env:
-          JANUS_PG_DBNAME: janus_test
-          JANUS_REDIS_RESTART_CMD: "docker restart redis"
-          JANUS_NATS_STOP_CMD: "docker stop nats"
-          JANUS_NATS_RESTART_CMD: "docker start nats"
-          JANUS_PG_RESTART_CMD: "docker restart pg && sleep 3"
-        run: JANUS_URL=$JANUS_URL bash scripts/smoke_ops_chaos.sh
-
-      - name: Release ops (helm lint + migration rollback drill)
-        env:
-          JANUS_PG_DBNAME: janus_test
-        run: bash scripts/smoke_release_ops.sh
-
-      - name: Load baseline (1000 agents / 1000 tasks, p95 gate)
-        env:
-          # Shared-runner budget: a healthy local run sits at ~20-30ms, but
-          # bursty neighbors move the p95 tail by hundreds of ms; the gate
-          # exists to catch order-of-magnitude regressions (seconds), so the
-          # nightly budget is 1s.
-          LOAD_BASELINE_P95_MS: "1000"
-        run: |
+          } 2>&1 | tee "$EVIDENCE_DIR/mixed_version.log"
+        "env":
+          "MIX_KEEP_LOGS": "1"
+      -
+        "id": "ops_chaos"
+        "name": "Ops chaos (dependency restarts + state persistence)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          JANUS_URL=$JANUS_URL bash scripts/smoke_ops_chaos.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/ops_chaos.log"
+        "env":
+          "JANUS_PG_DBNAME": "janus_test"
+          "JANUS_REDIS_RESTART_CMD": "docker restart redis"
+          "JANUS_NATS_STOP_CMD": "docker stop nats"
+          "JANUS_NATS_RESTART_CMD": "docker start nats"
+          "JANUS_PG_RESTART_CMD": "docker restart pg && sleep 3"
+      -
+        "id": "release_ops"
+        "name": "Release ops (helm lint + migration rollback drill)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          bash scripts/smoke_release_ops.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/release_ops.log"
+        "env":
+          "JANUS_PG_DBNAME": "janus_test"
+      -
+        "id": "smoke_load"
+        "name": "Load baseline (1000 agents / 1000 tasks, p95 gate)"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
           set -o pipefail
           NUM_AGENTS=1000 NUM_MAILBOXES=1000 NUM_TASKS=1000 bash scripts/load_baseline.sh | tee /tmp/load-baseline.log
           echo "## Load baseline trend" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat /tmp/load-baseline.log >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload evidence artifacts
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: nightly-evidence-${{ github.run_id }}
-          retention-days: 90
-          path: |
-            /tmp/janus-api.log
-            /tmp/janus-api-b.log
-            /tmp/load-baseline.log
-
-      - name: Dump dependency logs on failure
-        if: failure()
-        run: |
-          echo "::group::postgres"; docker logs --tail 100 pg; echo "::endgroup::"
-          echo "::group::nats"; docker logs --tail 100 nats; echo "::endgroup::"
-          echo "::group::redis"; docker logs --tail 100 redis; echo "::endgroup::"
-
-      - name: Stop Janus API replicas
-        if: always()
-        run: |
-          kill "$(cat /tmp/janus-api.pid)" 2>/dev/null || true
-          kill "$(cat /tmp/janus-api-b.pid)" 2>/dev/null || true
-
-  evidence-drills:
-    # GA evidence drills proven locally 2026-11-01, wired here per owner
-    # decision: GA-07 four-cell deployment matrix (needs the shared PG + a
-    # JetStream NATS), GA-10 failover and PITR drills (own throwaway PG
-    # clusters via initdb/pg_basebackup, so the runner needs PostgreSQL
-    # SERVER binaries, not just the client). The GA-11 load and SDK-chaos
-    # drills stay manual for now (15-25 min each; revisit with the nightly
-    # time budget).
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      JANUS_PG_HOST: localhost
-      JANUS_PG_PORT: "5432"
-      JANUS_PG_USER: janus
-      JANUS_PG_PASSWORD: janus
-      JANUS_PG_DBNAME: janus_test
-      JANUS_PG_SSLMODE: disable
-      JANUS_NATS_URL: nats://localhost:4222
-      PGPASSWORD: janus
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version-file: go.work
-
-      - name: Install tooling (psql client + postgres/redis server binaries for the drills)
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql-client
-          # redis-server: the GA-07 fail-closed cell owns a dedicated redis
-          # lifecycle (boot/kill/reboot on scratch ports) that a docker
-          # service container cannot provide. Stop/disable the system
-          # instance the package postinst auto-starts on :6379 so it cannot
-          # collide with anything else binding that port.
-          sudo apt-get install -y -qq redis-tools redis-server
-          sudo systemctl stop redis-server.service 2>/dev/null || sudo service redis-server stop 2>/dev/null || true
-          sudo systemctl disable redis-server.service 2>/dev/null || true
-          command -v redis-server >/dev/null || { echo "::error::redis-server still missing after apt install"; exit 1; }
-          # The versioned package name differs by Ubuntu release (postgresql-16
-          # is absent on some runners); install whatever server major the
-          # distro ships - the drills only need initdb/pg_ctl/pg_basebackup.
-          PKG="$(apt-cache search --names-only '^postgresql-1[0-9]$' | sort -V | tail -1 | cut -d' ' -f1)"
-          [ -n "$PKG" ] || { echo "::error::no postgresql-1x server package in apt"; exit 1; }
-          echo "installing $PKG"
-          sudo apt-get install -y -qq "$PKG"
-
-      - name: Start dependency containers (postgres / nats)
-        run: |
-          set -euo pipefail
-          pull() {
-            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
-              for attempt in 1 2 3; do
-                # --platform linux/amd64: docker-hub images now ship
-                # attestation/SBOM sub-manifests whose content a plain
-                # pull does not fetch, and kind's ctr import then dies
-                # on "content digest not found"; a single-platform pull
-                # sidesteps the attestation manifest entirely.
-                # Pull by the linux/amd64 MANIFEST DIGEST when the source
-                # is an index: a tag pull stores the whole multi-platform
-                # index (even with --platform) and kind's ctr import
-                # (--all-platforms) then demands every digest the index
-                # references - including attestation manifests whose blobs
-                # were never fetched ("content digest ... not found"). A
-                # digest pull leaves only the single-platform manifest.
-                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
-                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
-                  docker tag "$src@$plat_digest" "$1"; return 0
-                fi
-                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
-                sleep $((attempt * 10))
-              done
-            done
-            echo "::error::unable to pull $1"; return 1
-          }
-          pull postgres:16-alpine
-          pull nats:2-alpine
-          docker run -d --name janus-pg -e POSTGRES_USER=janus -e POSTGRES_PASSWORD=janus \
-            -e POSTGRES_DB=janus_test -p 5432:5432 postgres:16-alpine
-          docker run -d --name janus-nats -p 4222:4222 nats:2-alpine -js -m 8222
-          for i in $(seq 1 30); do
-            docker exec janus-pg pg_isready -U janus -d janus_test >/dev/null 2>&1 && break
-            sleep 2
+          } 2>&1 | tee "$EVIDENCE_DIR/smoke_load.log"
+        "env":
+          "LOAD_BASELINE_P95_MS": "1000"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "id": "stop_api"
+        "name": "Stop Janus API replicas"
+        "if": "always()"
+        "run": |
+          for file in /tmp/janus-api.pid /tmp/janus-api-b.pid; do
+            if [ -s "$file" ]; then kill "$(cat "$file")" 2>/dev/null || true; fi
           done
-          docker exec janus-pg pg_isready -U janus -d janus_test
-
-      - name: GA-07 four-cell deployment matrix ({pg,pg+nats} x {1,2} replicas)
-        env:
-          KEEP_WORK: "1"
-        run: bash scripts/ga07_four_cell.sh
-
-      - name: GA-10 failover drill (RPO=0 + RTO budget)
-        env:
-          KEEP_WORK: "1"
-        run: bash scripts/dr_ga10_failover.sh
-
-      - name: GA-10 PITR drill (WAL replay to recovery target)
-        env:
-          KEEP_WORK: "1"
-        run: bash scripts/dr_ga10_pitr.sh
-
-      - name: Dump drill artifacts on failure
-        if: failure()
-        run: |
-          ls -la /tmp/ga07-fourcell.* /tmp/ga10-failover.* /tmp/janus-ga10-pitr.* 2>/dev/null || true
-          found=0
-          for f in /tmp/ga07-fourcell.*/*.log /tmp/ga10-failover.*/*.log /tmp/janus-ga10-pitr.*/*.log; do
-            if [ -f "$f" ]; then
-              found=1
-              echo "::group::$f"; tail -80 "$f"; echo "::endgroup::"
-            fi
-          done
-          [ "$found" = "1" ] || echo "no drill logs retained (drill cleanup removed them)"
-          true
-
-  chart-install-upgrade:
-    # Real-chart proof on a kind cluster: helm install -> helm upgrade with
-    # a changed value, asserting the pre-upgrade migration hook Job runs
-    # successfully AND is idempotent (schema_migrations keeps the same
-    # version, never dirty). The postgres password is deliberately full of
-    # URI delimiters to exercise the chart's DSN escaping (C1 fix) end to
-    # end. The janus-api image is built from THIS commit and side-loaded
-    # into kind, so a stale published image can never satisfy the gate.
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      NS: janus-e2e
-      RELEASE: janus-core
-      PG_PASSWORD: "p@ss#w?rd/x"
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Create kind cluster
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
-        with:
-          version: v0.26.0
-          # Node image digest from the kind v0.26.0 release notes.
-          node_image: kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30
-          kubectl_version: v1.31.4
-          cluster_name: janus
-          wait: 120s
-
-      - name: Install tooling (helm)
-        run: |
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
           set -euo pipefail
-          # Pinned download with checksum verification (no curl | bash).
-          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
-          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/helm.tar.gz -C /tmp
-          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "deployment-cells":
+    "name": "Deployment cells and Redis fail-closed"
+    "needs":
+      - "prepare"
+      - "build"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "JANUS_PG_HOST": "localhost"
+      "JANUS_PG_PORT": "5432"
+      "JANUS_PG_USER": "janus"
+      "JANUS_PG_PASSWORD": "janus"
+      "JANUS_PG_DATABASE": "janus_test"
+      "JANUS_PG_DBNAME": "janus_test"
+      "JANUS_PG_SSLMODE": "disable"
+      "JANUS_PG_DSN": "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
+      "JANUS_NATS_URL": "nats://localhost:4222"
+      "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+      "PGPASSWORD": "janus"
+      "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+      "JANUS_ALLOW_REQUIRED_SKIP": "0"
+      "KEEP_WORK": "1"
+      "SUITE_ID": "deployment-cells"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-deployment-cells-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"deployment_cells\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "id": "setup"
+        "name": "Prepare isolated deployment dependencies"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools basic
+          start_dependencies
+          } 2>&1 | tee "$EVIDENCE_DIR/setup.log"
+      -
+        "id": "deployment_cells"
+        "name": "PG / PG+NATS x one / two replicas, plus fail-closed"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          bash scripts/ga07_four_cell.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/deployment_cells.log"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "dr-failover":
+    "name": "Primary failover and business recovery"
+    "needs":
+      - "prepare"
+      - "build"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "JANUS_PG_HOST": "localhost"
+      "JANUS_PG_PORT": "5432"
+      "JANUS_PG_USER": "janus"
+      "JANUS_PG_PASSWORD": "janus"
+      "JANUS_PG_DATABASE": "janus_test"
+      "JANUS_PG_DBNAME": "janus_test"
+      "JANUS_PG_SSLMODE": "disable"
+      "JANUS_PG_DSN": "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
+      "JANUS_NATS_URL": "nats://localhost:4222"
+      "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+      "PGPASSWORD": "janus"
+      "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+      "JANUS_ALLOW_REQUIRED_SKIP": "0"
+      "KEEP_WORK": "1"
+      "PG_BINDIR": "/usr/lib/postgresql/16/bin"
+      "SUITE_ID": "dr-failover"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-dr-failover-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"drill\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "id": "setup"
+        "name": "Prepare local PostgreSQL 16 drill tools"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools dr
+          # These drills own their temporary PG clusters. Do not start Docker PG.
+          test -x "$PG_BINDIR/initdb"
+          test -x "$PG_BINDIR/pg_ctl"
+          } 2>&1 | tee "$EVIDENCE_DIR/setup.log"
+      -
+        "id": "drill"
+        "name": "Primary failover and business recovery"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          bash scripts/dr_ga10_failover.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/drill.log"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "dr-pitr":
+    "name": "PITR and WAL-era task recovery"
+    "needs":
+      - "prepare"
+      - "build"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "JANUS_PG_HOST": "localhost"
+      "JANUS_PG_PORT": "5432"
+      "JANUS_PG_USER": "janus"
+      "JANUS_PG_PASSWORD": "janus"
+      "JANUS_PG_DATABASE": "janus_test"
+      "JANUS_PG_DBNAME": "janus_test"
+      "JANUS_PG_SSLMODE": "disable"
+      "JANUS_PG_DSN": "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
+      "JANUS_NATS_URL": "nats://localhost:4222"
+      "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+      "PGPASSWORD": "janus"
+      "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+      "JANUS_ALLOW_REQUIRED_SKIP": "0"
+      "KEEP_WORK": "1"
+      "PG_BINDIR": "/usr/lib/postgresql/16/bin"
+      "SUITE_ID": "dr-pitr"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-dr-pitr-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "script-owned-same-sha-rebuild"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"drill\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "id": "setup"
+        "name": "Prepare local PostgreSQL 16 drill tools"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools dr
+          # These drills own their temporary PG clusters. Do not start Docker PG.
+          test -x "$PG_BINDIR/initdb"
+          test -x "$PG_BINDIR/pg_ctl"
+          } 2>&1 | tee "$EVIDENCE_DIR/setup.log"
+      -
+        "id": "drill"
+        "name": "PITR and WAL-era task recovery"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          bash scripts/dr_ga10_pitr.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/drill.log"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "sdk-chaos":
+    "name": "SDK fault matrix (${{ matrix.lang }})"
+    "needs":
+      - "prepare"
+      - "build"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "JANUS_PG_HOST": "localhost"
+      "JANUS_PG_PORT": "5432"
+      "JANUS_PG_USER": "janus"
+      "JANUS_PG_PASSWORD": "janus"
+      "JANUS_PG_DATABASE": "janus_test"
+      "JANUS_PG_DBNAME": "janus_test"
+      "JANUS_PG_SSLMODE": "disable"
+      "JANUS_PG_DSN": "postgres://janus:janus@localhost:5432/janus_test?sslmode=disable"
+      "JANUS_NATS_URL": "nats://localhost:4222"
+      "JANUS_REDIS_ADDR": "127.0.0.1:6379"
+      "PGPASSWORD": "janus"
+      "JANUS_API_BIN": "/tmp/janus-candidate/bin/janus-api"
+      "JANUS_ALLOW_REQUIRED_SKIP": "0"
+      "KEEP_WORK": "1"
+      "WORKER_LANGS": "${{ matrix.lang }}"
+      "SUITE_ID": "sdk-chaos-${{ matrix.lang }}"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-sdk-chaos-${{ matrix.lang }}-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate"
+      "EXPECTED_STEP_IDS_JSON": "${{ matrix.lang == 'go' && '[\"artifact_verify\",\"setup\",\"go_runtime\",\"sdk_chaos\"]' || matrix.lang == 'py' && '[\"artifact_verify\",\"setup\",\"python_runtime\",\"sdk_chaos\"]' || '[\"artifact_verify\",\"setup\",\"typescript_runtime\",\"sdk_chaos\"]' }}"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "uses": "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"
+        "with":
+          "node-version": "22"
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "id": "setup"
+        "name": "Prepare an isolated broker for this SDK"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools basic
+          start_dependencies
+          } 2>&1 | tee "$EVIDENCE_DIR/setup.log"
+      -
+        "id": "go_runtime"
+        "name": "Prime Go driver dependencies before its offline build"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          GOWORK=off go -C core mod download
+          GOWORK=off go -C sdk/go mod download
+          } 2>&1 | tee "$EVIDENCE_DIR/go_runtime.log"
+        "if": "${{ matrix.lang == 'go' }}"
+      -
+        "id": "python_runtime"
+        "name": "Install Python SDK into an isolated venv"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          python3 -m venv /tmp/janus-sdk-python
+          /tmp/janus-sdk-python/bin/python -m pip install --disable-pip-version-check -e './sdk/python[dev]'
+          printf '%s\n' /tmp/janus-sdk-python/bin >> "$GITHUB_PATH"
+          } 2>&1 | tee "$EVIDENCE_DIR/python_runtime.log"
+        "if": "${{ matrix.lang == 'py' }}"
+      -
+        "id": "typescript_runtime"
+        "name": "Install pinned Bun for the TypeScript worker"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          npm install --prefix /tmp/janus-bun --no-audit --no-fund bun@1.2.22
+          /tmp/janus-bun/node_modules/.bin/bun --version
+          printf '%s\n' /tmp/janus-bun/node_modules/.bin >> "$GITHUB_PATH"
+          } 2>&1 | tee "$EVIDENCE_DIR/typescript_runtime.log"
+        "if": "${{ matrix.lang == 'ts' }}"
+      -
+        "id": "sdk_chaos"
+        "name": "Run all six real SDK fault cases"
+        "run": |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE_DIR"
+          {
+          bash scripts/sdk_chaos_matrix.sh
+          } 2>&1 | tee "$EVIDENCE_DIR/sdk-chaos-${{ matrix.lang }}.log"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "strategy":
+      "fail-fast": false
+      "max-parallel": 3
+      "matrix":
+        "lang":
+          - "go"
+          - "py"
+          - "ts"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "chart-install-upgrade":
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 30
+    "env":
+      "NS": "janus-e2e"
+      "RELEASE": "janus-core"
+      "PG_PASSWORD": "p@ss#w?rd/x"
+      "SUITE_ID": "chart-install-upgrade"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-chart-install-upgrade-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"image_verify\", \"create_cluster\", \"install_tools\", \"load_images\", \"start_dependencies\", \"helm_install\", \"install_schema\", \"helm_upgrade\", \"upgrade_schema\", \"health\", \"tls\", \"tls_negative\", \"mtls\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "name": "Download shared candidate image"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-image-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate/image"
+      -
+        "name": "Verify candidate image archive"
+        "id": "image_verify"
+        "run": |
+          cd "$JANUS_DIST/image"
+          sha256sum -c SHA256SUMS
+      -
+        "name": "Create kind cluster"
+        "uses": "helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa"
+        "with":
+          "version": "v0.26.0"
+          "node_image": "kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30"
+          "kubectl_version": "v1.31.4"
+          "cluster_name": "janus"
+          "wait": "120s"
+        "id": "create_cluster"
+      -
+        "name": "Install tooling (helm)"
+        "run": |
+          set -euo pipefail
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools basic
           helm version
-
-      - name: Build janus-api image (this commit) + load into kind
-        run: |
+        "id": "install_tools"
+      -
+        "name": "Load shared candidate image and dependencies into kind"
+        "run": |
           set -euo pipefail
-          # --provenance=false --sbom=false: newer BuildKit defaults emit
-          # attestation sub-manifests, and kind's ctr import
-          # (--all-platforms) then dies on the unpushed attestation
-          # digest; plain single-platform images load cleanly.
-          docker build --provenance=false --sbom=false -t janus-core:e2e .
-          # Dependency images are pulled here (docker.io with an ECR mirror
-          # fallback, same as production-gates) and side-loaded into the
-          # node so kubelet never hits Docker Hub rate limits mid-run.
-          pull() {
-            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
-              for attempt in 1 2 3; do
-                # --platform linux/amd64: docker-hub images now ship
-                # attestation/SBOM sub-manifests whose content a plain
-                # pull does not fetch, and kind's ctr import then dies
-                # on "content digest not found"; a single-platform pull
-                # sidesteps the attestation manifest entirely.
-                # Pull by the linux/amd64 MANIFEST DIGEST when the source
-                # is an index: a tag pull stores the whole multi-platform
-                # index (even with --platform) and kind's ctr import
-                # (--all-platforms) then demands every digest the index
-                # references - including attestation manifests whose blobs
-                # were never fetched ("content digest ... not found"). A
-                # digest pull leaves only the single-platform manifest.
-                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
-                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
-                  docker tag "$src@$plat_digest" "$1"; return 0
-                fi
-                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
-                sleep $((attempt * 10))
-              done
-            done
-            echo "::error::unable to pull $1"; return 1
-          }
-          pull postgres:16-alpine
-          pull nats:2-alpine
-          pull redis:7-alpine
-          # The migration hook Job image is pinned by the chart itself.
-          pull migrate/migrate:v4.19.1
-          # Registry images are pulled INSIDE the kind node with ctr:
-          # containerd fetches only the linux/amd64 manifest, so the
-          # attestation sub-manifests that break kind's docker-image import
-          # ("content digest not found" under ctr import --all-platforms)
-          # never enter the node. The locally built janus-core image
-          # (single-platform, --provenance=false) still goes through
-          # kind load.
-          NODE="$(kind get nodes --name janus | head -1)"
-          for img in postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
-            docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "docker.io/$img" \
-              || docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "public.ecr.aws/docker/library/$img"
-          done
+          source /tmp/janus-candidate/tools/ci.sh
+          docker load -i /tmp/janus-candidate/image/candidate.tar
+          docker image inspect janus-core:candidate --format '{{.Id}}' | tee /tmp/candidate-image-id.txt
+          docker tag janus-core:candidate janus-core:e2e
+          kind_import_deps janus
           kind load docker-image janus-core:e2e --name janus
-
-      - name: Start in-cluster dependencies (postgres / nats / redis)
-        run: |
+        "id": "load_images"
+      -
+        "name": "Start in-cluster dependencies (postgres / nats / redis)"
+        "run": |
           set -euo pipefail
           kubectl create namespace "$NS"
           # Chart defaults point at host names postgres / nats / redis, so
@@ -570,9 +1915,10 @@ jobs:
             exit 1
           fi
           kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus
-
-      - name: Helm install (special-char postgres password)
-        run: |
+        "id": "start_dependencies"
+      -
+        "name": "Helm install (special-char postgres password)"
+        "run": |
           set -euo pipefail
           helm install "$RELEASE" deployments/helm/janus-core \
             --namespace "$NS" \
@@ -585,18 +1931,20 @@ jobs:
           # --wait already gates on pods Ready; assert them explicitly too.
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
           "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
-
-      - name: Capture schema_migrations state after install
-        run: |
+        "id": "helm_install"
+      -
+        "name": "Capture schema_migrations state after install"
+        "run": |
           set -euo pipefail
           PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
           kubectl -n "$NS" exec "$PG_POD" -- \
             psql -U janus -d janus -tAc "SELECT version, dirty FROM schema_migrations" | tee /tmp/mig-install.txt
           # golang-migrate must land on a clean version row: one integer, dirty=f.
           grep -qE '^[0-9]+\|f$' /tmp/mig-install.txt
-
-      - name: Helm upgrade with changed value (pre-upgrade migration hook)
-        run: |
+        "id": "install_schema"
+      -
+        "name": "Helm upgrade with changed value (pre-upgrade migration hook)"
+        "run": |
           set -euo pipefail
           helm upgrade "$RELEASE" deployments/helm/janus-core \
             --namespace "$NS" \
@@ -618,9 +1966,10 @@ jobs:
           kubectl -n "$NS" wait --for=condition=complete job/janus-core-migration --timeout=300s
           wait "$UPGRADE_PID"
           cat /tmp/helm-upgrade.log
-
-      - name: Assert idempotent migrations + Deployment Ready after upgrade
-        run: |
+        "id": "helm_upgrade"
+      -
+        "name": "Assert idempotent migrations + Deployment Ready after upgrade"
+        "run": |
           set -euo pipefail
           kubectl -n "$NS" wait --for=condition=available deployment/janus-core --timeout=180s
           "$GITHUB_WORKSPACE/scripts/wait_pods_ready.sh" "$NS" 180s
@@ -633,9 +1982,10 @@ jobs:
           grep -qE '^[0-9]+\|f$' /tmp/mig-upgrade.txt
           diff /tmp/mig-install.txt /tmp/mig-upgrade.txt
           echo "schema_migrations unchanged across install -> upgrade (migrations idempotent)"
-
-      - name: Port-forward + probe health endpoints
-        run: |
+        "id": "upgrade_schema"
+      -
+        "name": "Port-forward + probe health endpoints"
+        "run": |
           set -euo pipefail
           # /healthz and /readyz live on the public (unauthenticated) mux in
           # server/cmd/janus-api/main.go, so chart-default auth stays on.
@@ -652,9 +2002,10 @@ jobs:
             [ "$CODE" = "200" ]
           done
           curl -sf http://127.0.0.1:18080/readyz
-
-      - name: TLS-mode upgrade (verified gateway + HTTPS endpoints)
-        run: |
+        "id": "health"
+      -
+        "name": "TLS-mode upgrade (verified gateway + HTTPS endpoints)"
+        "run": |
           set -euo pipefail
           # Self-signed CA + CA-signed server certificate. The SANs cover
           # "localhost" — the in-process grpc-gateway dials its own gRPC
@@ -723,9 +2074,10 @@ jobs:
             "https://127.0.0.1:18443/grpc/v1/tenants/t0/agents")
           echo "TLS /grpc/v1/tenants/t0/agents -> $CODE $(cat /tmp/grpc-probe.json)"
           [ "$CODE" = "200" ]
-
-      - name: TLS-mode negative (wrong gateway CA must break /grpc/)
-        run: |
+        "id": "tls"
+      -
+        "name": "TLS-mode negative (wrong gateway CA must break /grpc/)"
+        "run": |
           set -euo pipefail
           # A second, unrelated CA wired as the gateway CA: the gateway must
           # FAIL to verify the gRPC server, so /grpc/ returns 503 while the
@@ -768,9 +2120,10 @@ jobs:
           CODE=$(curl -s -o /dev/null -w '%{http_code}' --cacert /tmp/tls/ca.crt "https://127.0.0.1:18443/healthz")
           echo "wrong-CA /healthz -> $CODE (health must stay up)"
           [ "$CODE" = "200" ]
-
-      - name: mTLS-mode upgrade (client CA + exec probes + client-cert round trip)
-        run: |
+        "id": "tls_negative"
+      -
+        "name": "mTLS-mode upgrade (client CA + exec probes + client-cert round trip)"
+        "run": |
           set -euo pipefail
           # eval-6 4B: a clientCaSecret deployment must stay operable. The
           # server now requires client certificates on HTTP and gRPC, so:
@@ -885,10 +2238,11 @@ jobs:
           else
             echo "no-client-cert rejected at TLS handshake (curl exit $?)"
           fi
-
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
+        "id": "mtls"
+      -
+        "name": "Dump cluster state on failure"
+        "if": "failure()"
+        "run": |
           set -euo pipefail
           kubectl -n "$NS" get all 2>/dev/null || true
           for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
@@ -899,161 +2253,198 @@ jobs:
           done
           helm -n "$NS" status "$RELEASE" 2>/dev/null || true
           cat /tmp/helm-upgrade.log /tmp/port-forward.log 2>/dev/null || true
-
-      - name: Delete kind cluster
-        if: always()
-        run: |
+        "id": "dump_failure"
+      -
+        "name": "Snapshot Kubernetes evidence before cleanup"
+        "id": "kind_snapshot"
+        "if": "${{ always() }}"
+        "env":
+          "KIND_CLUSTER": "janus"
+        "run": |
+          set -uo pipefail
+          out="${EVIDENCE_DIR:-/tmp/janus-evidence}/kubernetes-$KIND_CLUSTER"
+          mkdir -p "$out"
+          # Do not dump Secrets or the runner environment into artifacts.
+          kubectl version --client -o yaml > "$out/kubectl-version.yml" 2>&1 || true
+          kubectl -n "$NS" get deployments,services,pods,jobs,pvc -o yaml > "$out/resources.yml" 2>&1 || true
+          kubectl -n "$NS" get events --sort-by=.metadata.creationTimestamp > "$out/events.txt" 2>&1 || true
+          helm -n "$NS" history "$RELEASE" -o json > "$out/helm-history.json" 2>&1 || true
+          kubectl -n "$NS" get pods -o name > "$out/pods.txt" 2>/dev/null || true
+          while IFS= read -r pod; do
+            [ -n "$pod" ] || continue
+            name="${pod#pod/}"
+            kubectl -n "$NS" describe "$pod" > "$out/$name.describe.txt" 2>&1 || true
+            kubectl -n "$NS" logs "$pod" --all-containers=true --timestamps=true > "$out/$name.log" 2>&1 || true
+          done < "$out/pods.txt"
+      -
+        "name": "Delete kind cluster"
+        "if": "always()"
+        "run": |
           set -euo pipefail
           kind delete cluster --name janus
-
-  chart-upgrade-rollback:
-    # GA-09: real cross-version upgrade/rollback on a kind cluster. The
-    # PREVIOUS release (the LATEST vX tag's image, built from the tag in a
-    # throwaway worktree so $GITHUB_WORKSPACE stays on the commit under
-    # test) runs under the CURRENT chart, gets in-flight business state
-    # seeded through its own API (a lease held and NOT acked, one
-    # completed task, projected audit rows), is upgraded to the candidate
-    # image built from this commit, then helm-rolled-back to the old
-    # image.
-    # Every leg asserts the durable rows survived in postgres; the held
-    # lease is finally ACKed through the NEW binary (cross-version lease
-    # compatibility) and a fresh pull works through the rolled-back OLD
-    # binary. Migrations since the release baseline are additive or schema-neutral
-    # (000019 ADD COLUMN IF NOT EXISTS; 000020 is a SELECT 1 whose
-    # comment documents that the five-column ledger PK exists precisely
-    # so the OLD binaries survive the migrate-then-restart window), and
-    # smoke_mixed_version_locks.sh boots an older binary on the
-    # schema-at-HEAD nightly — so rolling the app back while the schema
-    # stays forward is the repo's tested posture, and this job does the
-    # true old-image rollback. helm rollback runs no migration hook
-    # (the chart annotates pre-install,pre-upgrade only): the schema is
-    # never down-migrated.
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    env:
-      NS: janus-e2e
-      RELEASE: janus-core
-      # Plain password ON PURPOSE for older baselines: a tag whose
-      # PostgresConfig.DSN() predates the userinfo-escaping fix
-      # (f606056) — a delimiter-soup password (the "p@ss#w?rd/x" the
-      # chart-install-upgrade job proves nightly) makes the URL-form DSN
-      # unparseable, pgxpool.ParseConfig log.Fatalfs in mustOpenPool and
-      # that baseline's image CrashLoops before its first readiness
-      # probe. The end-to-end DSN-escaping proof stays in
-      # chart-install-upgrade, which runs the fixed candidate image.
-      PG_PASSWORD: "ga09_v190_plain_pw"
-      TENANT: ga09
-      AGENT: ga09-agent
-      MAILBOX: ga09-mb
-      API_KEY: janus_ga09_upgrade_probe
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          # All release tags must be present: the OLD image is built from
-          # the latest one.
-          fetch-depth: 0
-
-      - name: Create kind cluster
-        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
-        with:
-          version: v0.26.0
-          # Node image digest from the kind v0.26.0 release notes.
-          node_image: kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30
-          kubectl_version: v1.31.4
-          cluster_name: janus-ga09
-          wait: 120s
-
-      - name: Install tooling (helm)
-        run: |
-          set -euo pipefail
-          # Pinned download with checksum verification (no curl | bash).
-          curl -fsSL -o /tmp/helm.tar.gz https://get.helm.sh/helm-v3.16.4-linux-amd64.tar.gz
-          echo "fc307327959aa38ed8f9f7e66d45492bb022a66c3e5da6063958254b9767d179  /tmp/helm.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/helm.tar.gz -C /tmp
-          sudo mv /tmp/linux-amd64/helm /usr/local/bin/helm
-          helm version
-
-      - name: Build OLD (latest release tag) + candidate images, load into kind
-        run: |
-          set -euo pipefail
-          # The OLD baseline is the LATEST release tag, not a pinned major:
-          # the upgrade under test is "previous release -> this commit".
-          OLD_TAG="$(git tag -l 'v[0-9]*' | sort -V | tail -1)"
-          [ -n "$OLD_TAG" ] || { echo "::error::no release tags found - cannot build the OLD image"; exit 1; }
-          OLD_COMMIT="$(git rev-parse "${OLD_TAG}^{commit}")"
-          if [ "$OLD_COMMIT" = "$(git rev-parse HEAD)" ]; then
-            echo "::warning::latest tag $OLD_TAG points at the commit under test - the upgrade leg degenerates to same-image (chart upgrade/rollback still proven)"
+        "id": "delete_cluster"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
           fi
-          echo "OLD_TAG=$OLD_TAG" >> "$GITHUB_ENV"
-          # The OLD release image is built from the tag in a separate
-          # worktree: the checkout itself must NEVER move off the commit
-          # under test, so every chart path below stays valid.
-          git worktree add --detach /tmp/janus-old "$OLD_TAG"
-          # --provenance=false --sbom=false: newer BuildKit defaults emit
-          # attestation sub-manifests, and kind's ctr import
-          # (--all-platforms) then dies on the unpushed attestation
-          # digest; plain single-platform images load cleanly.
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "needs":
+      - "prepare"
+      - "build"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "chart-upgrade-rollback":
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 40
+    "env":
+      "NS": "janus-e2e"
+      "RELEASE": "janus-core"
+      "PG_PASSWORD": "ga09_v190_plain_pw"
+      "TENANT": "ga09"
+      "AGENT": "ga09-agent"
+      "MAILBOX": "ga09-mb"
+      "API_KEY": "janus_ga09_upgrade_probe"
+      "OLD_TAG": "${{ needs.prepare.outputs.baseline_ref }}"
+      "OLD_COMMIT": "${{ needs.prepare.outputs.baseline_sha }}"
+      "SUITE_ID": "chart-upgrade-rollback"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-chart-upgrade-rollback-${{ github.run_id }}-${{ github.run_attempt }}"
+      "BINARY_MODE": "shared-candidate"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"image_verify\", \"create_cluster\", \"install_tools\", \"load_images\", \"start_dependencies\", \"helm_install_old\", \"seed_old_state\", \"helm_upgrade\", \"assert_upgrade\", \"helm_rollback\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "name": "Download shared candidate image"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-image-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate/image"
+      -
+        "name": "Verify candidate image archive"
+        "id": "image_verify"
+        "run": |
+          cd "$JANUS_DIST/image"
+          sha256sum -c SHA256SUMS
+      -
+        "name": "Create kind cluster"
+        "uses": "helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa"
+        "with":
+          "version": "v0.26.0"
+          "node_image": "kindest/node:v1.31.4@sha256:2cb39f7295fe7eafee0842b1052a599a4fb0f8bcf3f83d96c7f4864c357c6c30"
+          "kubectl_version": "v1.31.4"
+          "cluster_name": "janus-ga09"
+          "wait": "120s"
+        "id": "create_cluster"
+      -
+        "name": "Install tooling (helm)"
+        "run": |
+          set -euo pipefail
+          source /tmp/janus-candidate/tools/ci.sh
+          install_tools basic
+          helm version
+        "id": "install_tools"
+      -
+        "name": "Build frozen OLD baseline and load shared candidate"
+        "run": |
+          set -euo pipefail
+          source /tmp/janus-candidate/tools/ci.sh
+          : "${OLD_TAG:?prepare must provide the frozen baseline ref}"
+          : "${OLD_COMMIT:?prepare must provide the frozen baseline SHA}"
+          OLD_RESOLVED=$(git rev-parse --verify "${OLD_COMMIT}^{commit}")
+          CANDIDATE_COMMIT=$(git rev-parse HEAD)
+          [ "$OLD_RESOLVED" = "$OLD_COMMIT" ] || { echo "::error::baseline SHA did not resolve exactly"; exit 1; }
+          [ "$OLD_RESOLVED" != "$CANDIDATE_COMMIT" ] || { echo "::error::cross-version baseline equals candidate; upgrade proof is invalid"; exit 1; }
+          # Build only the OLD source. Every candidate consumer loads the same image
+          # produced by the build job; do not rebuild it in a scenario job.
+          git worktree add --detach /tmp/janus-old "$OLD_COMMIT"
+          trap 'git worktree remove --force /tmp/janus-old >/dev/null 2>&1 || true' EXIT
           docker build --provenance=false --sbom=false -t janus-core:old /tmp/janus-old
           git worktree remove /tmp/janus-old
-          # --provenance=false --sbom=false: newer BuildKit defaults emit
-          # attestation sub-manifests, and kind's ctr import
-          # (--all-platforms) then dies on the unpushed attestation
-          # digest; plain single-platform images load cleanly.
-          docker build --provenance=false --sbom=false -t janus-core:candidate "$GITHUB_WORKSPACE"
-          # Locally built images carry an image ID, not a registry digest;
-          # record the tag commit + both IDs so a failing leg can be
-          # tied back to the exact build.
+          trap - EXIT
+          docker load -i /tmp/janus-candidate/image/candidate.tar
           {
-            echo "$OLD_TAG tag commit      = $OLD_COMMIT"
-            echo "janus-core:old         = $(docker image inspect janus-core:old --format '{{.Id}}')"
-            echo "janus-core:candidate   = $(docker image inspect janus-core:candidate --format '{{.Id}}')"
+            echo "$OLD_TAG baseline commit = $OLD_RESOLVED"
+            echo "candidate commit = $CANDIDATE_COMMIT"
+            echo "janus-core:old = $(docker image inspect janus-core:old --format '{{.Id}}')"
+            echo "janus-core:candidate = $(docker image inspect janus-core:candidate --format '{{.Id}}')"
           } | tee /tmp/ga09-images.txt
-          # Dependency images are pulled here (docker.io with an ECR mirror
-          # fallback, same as the other nightly jobs) and side-loaded into
-          # the node so kubelet never hits Docker Hub rate limits mid-run.
-          pull() {
-            for src in "docker.io/$1" "public.ecr.aws/docker/library/$1"; do
-              for attempt in 1 2 3; do
-                # --platform linux/amd64: docker-hub images now ship
-                # attestation/SBOM sub-manifests whose content a plain
-                # pull does not fetch, and kind's ctr import then dies
-                # on "content digest not found"; a single-platform pull
-                # sidesteps the attestation manifest entirely.
-                # Pull by the linux/amd64 MANIFEST DIGEST when the source
-                # is an index: a tag pull stores the whole multi-platform
-                # index (even with --platform) and kind's ctr import
-                # (--all-platforms) then demands every digest the index
-                # references - including attestation manifests whose blobs
-                # were never fetched ("content digest ... not found"). A
-                # digest pull leaves only the single-platform manifest.
-                plat_digest="$(docker buildx imagetools inspect "$src" --format '{{range .Manifests}}{{if (and (eq .Platform.OS "linux") (eq .Platform.Architecture "amd64"))}}{{.Digest}}{{end}}{{end}}' 2>/dev/null || true)"
-                if [ -n "$plat_digest" ] && docker pull "$src@$plat_digest"; then
-                  docker tag "$src@$plat_digest" "$1"; return 0
-                fi
-                docker pull --platform linux/amd64 "$src" && { docker tag "$src" "$1"; return 0; }
-                sleep $((attempt * 10))
-              done
-            done
-            echo "::error::unable to pull $1"; return 1
-          }
-          pull postgres:16-alpine
-          pull nats:2-alpine
-          pull redis:7-alpine
-          # The migration hook Job image is pinned by the chart itself.
-          pull migrate/migrate:v4.19.1
-          # Registry images are pulled INSIDE the kind node with ctr
-          # (single linux/amd64 manifest - see the chart-install-upgrade
-          # job for why kind's import of hub indexes breaks); the locally
-          # built janus-core images still go through kind load.
-          NODE="$(kind get nodes --name janus-ga09 | head -1)"
-          for img in postgres:16-alpine nats:2-alpine redis:7-alpine migrate/migrate:v4.19.1; do
-            docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "docker.io/$img" \
-              || docker exec -i "$NODE" ctr -n k8s.io images pull --platform linux/amd64 "public.ecr.aws/docker/library/$img"
-          done
+          kind_import_deps janus-ga09
           kind load docker-image janus-core:old janus-core:candidate --name janus-ga09
-
-      - name: Start in-cluster dependencies (postgres / nats / redis)
-        run: |
+        "id": "load_images"
+      -
+        "name": "Start in-cluster dependencies (postgres / nats / redis)"
+        "run": |
           set -euo pipefail
           kubectl create namespace "$NS"
           # Chart defaults point at host names postgres / nats / redis, so
@@ -1189,9 +2580,10 @@ jobs:
             exit 1
           fi
           kubectl -n "$NS" exec "$PG_POD" -- pg_isready -h 127.0.0.1 -U janus -d janus
-
-      - name: Helm install with the OLD (latest release) image
-        run: |
+        "id": "start_dependencies"
+      -
+        "name": "Helm install with the frozen OLD baseline image"
+        "run": |
           set -euo pipefail
           helm install "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
             --namespace "$NS" \
@@ -1211,9 +2603,10 @@ jobs:
           IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "image after install: $IMAGE"
           [ "$IMAGE" = "janus-core:old" ] || { echo "::error::install did not land the OLD image ($IMAGE)"; exit 1; }
-
-      - name: Seed in-flight business state through the OLD API
-        run: |
+        "id": "helm_install_old"
+      -
+        "name": "Seed in-flight business state through the OLD API"
+        "run": |
           set -euo pipefail
           PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
           psqlq() { kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc "$1"; }
@@ -1331,9 +2724,10 @@ jobs:
           ) >>/tmp/ga09-hb.log 2>&1 &
           echo $! > /tmp/ga09-hb.pid
           echo "lease keeper started: pid $(cat /tmp/ga09-hb.pid)"
-
-      - name: Helm upgrade to the candidate image
-        run: |
+        "id": "seed_old_state"
+      -
+        "name": "Helm upgrade to the candidate image"
+        "run": |
           set -euo pipefail
           helm upgrade "$RELEASE" "$GITHUB_WORKSPACE/deployments/helm/janus-core" \
             --namespace "$NS" \
@@ -1360,9 +2754,10 @@ jobs:
           IMAGE=$(kubectl -n "$NS" get deployment janus-core -o jsonpath='{.spec.template.spec.containers[0].image}')
           echo "image after upgrade: $IMAGE"
           [ "$IMAGE" = "janus-core:candidate" ] || { echo "::error::upgrade did not land the candidate image ($IMAGE)"; exit 1; }
-
-      - name: Assert in-flight state survived the upgrade
-        run: |
+        "id": "helm_upgrade"
+      -
+        "name": "Assert in-flight state survived the upgrade"
+        "run": |
           set -euo pipefail
           PG_POD=$(kubectl -n "$NS" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
           psqlq() { kubectl -n "$NS" exec "$PG_POD" -- psql -U janus -d janus -tAc "$1"; }
@@ -1404,9 +2799,10 @@ jobs:
           OPEN=$(psqlq "SELECT count(*) FROM task_attempts WHERE tenant_id='$TENANT' AND lease_id='$GA09_HELD_LEASE' AND finished_at IS NULL")
           [ "$OPEN" = "0" ] || { echo "::error::ack left the attempt row open (finished_at set required)"; exit 1; }
           touch /tmp/ga09-hb.stop
-
-      - name: Helm rollback to the previous revision (OLD image) + re-assert
-        run: |
+        "id": "assert_upgrade"
+      -
+        "name": "Helm rollback to the previous revision (OLD image) + re-assert"
+        "run": |
           set -euo pipefail
           # Roll back to revision 0 == the previous release (the
           # install). No migration hook fires on rollback (the chart
@@ -1462,18 +2858,20 @@ jobs:
           done
           [ "$GOT" = "ga09-post-rollback-1" ] || { echo "::error::rolled-back OLD binary never delivered the new task via pull"; exit 1; }
           echo "post-rollback pull delivered ga09-post-rollback-1"
-
-      - name: Stop the lease keeper
-        if: always()
-        run: |
+        "id": "helm_rollback"
+      -
+        "name": "Stop the lease keeper"
+        "if": "always()"
+        "run": |
           touch /tmp/ga09-hb.stop 2>/dev/null || true
           if [ -f /tmp/ga09-hb.pid ]; then
             kill "$(cat /tmp/ga09-hb.pid)" 2>/dev/null || true
           fi
-
-      - name: Dump cluster state on failure
-        if: failure()
-        run: |
+        "id": "stop_keeper"
+      -
+        "name": "Dump cluster state on failure"
+        "if": "failure()"
+        "run": |
           set -euo pipefail
           kubectl -n "$NS" get all 2>/dev/null || true
           for p in $(kubectl -n "$NS" get pods -o name 2>/dev/null); do
@@ -1486,9 +2884,441 @@ jobs:
           helm -n "$NS" history "$RELEASE" 2>/dev/null || true
           cat /tmp/ga09-images.txt /tmp/ga09-helm-history.txt 2>/dev/null || true
           tail -n 30 /tmp/ga09-hb.log /tmp/ga09-pf-seed.log /tmp/ga09-pf-candidate.log /tmp/ga09-pf-rollback.log /tmp/ga09-body.json 2>/dev/null || true
-
-      - name: Delete kind cluster
-        if: always()
-        run: |
+        "id": "dump_failure"
+      -
+        "name": "Snapshot Kubernetes evidence before cleanup"
+        "id": "kind_snapshot"
+        "if": "${{ always() }}"
+        "env":
+          "KIND_CLUSTER": "janus-ga09"
+        "run": |
+          set -uo pipefail
+          out="${EVIDENCE_DIR:-/tmp/janus-evidence}/kubernetes-$KIND_CLUSTER"
+          mkdir -p "$out"
+          # Do not dump Secrets or the runner environment into artifacts.
+          kubectl version --client -o yaml > "$out/kubectl-version.yml" 2>&1 || true
+          kubectl -n "$NS" get deployments,services,pods,jobs,pvc -o yaml > "$out/resources.yml" 2>&1 || true
+          kubectl -n "$NS" get events --sort-by=.metadata.creationTimestamp > "$out/events.txt" 2>&1 || true
+          helm -n "$NS" history "$RELEASE" -o json > "$out/helm-history.json" 2>&1 || true
+          kubectl -n "$NS" get pods -o name > "$out/pods.txt" 2>/dev/null || true
+          while IFS= read -r pod; do
+            [ -n "$pod" ] || continue
+            name="${pod#pod/}"
+            kubectl -n "$NS" describe "$pod" > "$out/$name.describe.txt" 2>&1 || true
+            kubectl -n "$NS" logs "$pod" --all-containers=true --timestamps=true > "$out/$name.log" 2>&1 || true
+          done < "$out/pods.txt"
+      -
+        "name": "Delete kind cluster"
+        "if": "always()"
+        "run": |
           set -euo pipefail
           kind delete cluster --name janus-ga09
+        "id": "delete_cluster"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+    "needs":
+      - "prepare"
+      - "build"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+  "critical-regressions":
+    "needs":
+      - "prepare"
+      - "build"
+    "if": "${{ needs.prepare.outputs.functional == 'true' }}"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 45
+    "env":
+      "SUITE_ID": "critical-regressions"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-critical-regressions-${{ github.run_id }}-${{ github.run_attempt }}"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"dependencies\", \"critical_go\", \"auth_on\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "name": "Start real regression dependencies"
+        "id": "dependencies"
+        "run": |
+          set -euo pipefail
+          source "$JANUS_DIST/tools/ci.sh"
+          install_tools basic
+          start_dependencies
+      -
+        "name": "Run named regressions; SKIP and zero-match are failures"
+        "id": "critical_go"
+        "if": "${{ always() && steps.dependencies.outcome == 'success' }}"
+        "run": |
+          python3 "$JANUS_DIST/tools/critical_regressions.py"
+      -
+        "name": "Probe real Auth.Enabled HTTP, gateway, SSE and WebSocket paths"
+        "id": "auth_on"
+        "if": "${{ always() && steps.dependencies.outcome == 'success' }}"
+        "run": |
+          python3 "$JANUS_DIST/tools/auth_smoke.py"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+  "full-performance":
+    "needs":
+      - "prepare"
+      - "build"
+    "if": "${{ needs.prepare.outputs.performance == 'true' }}"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 40
+    "env":
+      "SUITE_ID": "full-performance"
+      "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
+      "EVIDENCE_ARTIFACT": "nightly-evidence-full-performance-${{ github.run_id }}-${{ github.run_attempt }}"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"boot_api\", \"performance\"]"
+    "steps":
+      -
+        "name": "Record suite start"
+        "run": |
+          mkdir -p "$EVIDENCE_DIR"
+          date +%s > "$EVIDENCE_DIR/suite-started.txt"
+      -
+        "name": "Checkout frozen candidate"
+        "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        "with":
+          "ref": "${{ needs.prepare.outputs.sha }}"
+          "fetch-depth": 0
+      -
+        "uses": "actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff"
+        "with":
+          "go-version-file": "go.work"
+          "cache-dependency-path": |-
+            go.work.sum
+            core/go.sum
+            proto/go.sum
+            server/go.sum
+            cli/go.sum
+            sdk/go/go.sum
+      -
+        "name": "Download shared candidate runtime"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "name": "janus-runtime-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/janus-candidate"
+      -
+        "name": "Verify candidate runtime"
+        "id": "artifact_verify"
+        "run": |
+          set -euo pipefail
+          cd "$JANUS_DIST"
+          sha256sum -c SHA256SUMS
+          chmod +x bin/* tools/ci.sh
+      -
+        "name": "Start isolated sustained-load dependencies"
+        "id": "setup"
+        "run": |
+          set -euo pipefail
+          source "$JANUS_DIST/tools/ci.sh"
+          install_tools basic
+          start_dependencies
+      -
+        "name": "Boot candidate for the public full-load profile"
+        "id": "boot_api"
+        "run": |
+          set -euo pipefail
+          JANUS_QUEUE_DRIVER=nats JANUS_MIGRATION_AUTO=true JANUS_MIGRATION_PATH=migrations \
+          JANUS_AUTH_ENABLED=false JANUS_HTTP_HOST=127.0.0.1 JANUS_HTTP_PORT=8080 \
+          JANUS_OUTBOX_BATCH_SIZE=1000 "$JANUS_API_BIN" > /tmp/janus-api-performance.log 2>&1 &
+          echo $! > /tmp/janus-api-performance.pid
+          source "$JANUS_DIST/tools/ci.sh"
+          ci_wait performance-api 90 curl -fsS --max-time 2 "$JANUS_URL/readyz"
+      -
+        "name": "Measure full profile; retain approved performance exceptions"
+        "id": "performance"
+        "run": |
+          python3 "$JANUS_DIST/tools/performance.py"
+      -
+        "name": "Collect logs before runner cleanup"
+        "id": "collect"
+        "if": "${{ always() }}"
+        "run": |
+          set -uo pipefail
+          if [[ -f "$JANUS_DIST/tools/ci.sh" ]]; then
+            source "$JANUS_DIST/tools/ci.sh"
+            collect_evidence
+          else
+            mkdir -p "$EVIDENCE_DIR"
+            docker ps -a > "$EVIDENCE_DIR/docker-ps.txt" 2>&1 || true
+          fi
+      -
+        "name": "Stop performance API"
+        "if": "${{ always() }}"
+        "run": |
+          if [[ -s /tmp/janus-api-performance.pid ]]; then kill "$(cat /tmp/janus-api-performance.pid)" 2>/dev/null || true; fi
+      -
+        "name": "Write machine-readable suite result"
+        "id": "result"
+        "if": "${{ always() }}"
+        "env":
+          "STEPS_JSON": "${{ toJSON(steps) }}"
+          "JOB_STATUS": "${{ job.status }}"
+        "run": |
+          set -euo pipefail
+          if [[ -f "$JANUS_DIST/tools/finalize.py" && -f "$JANUS_DIST/manifest.json" ]]; then
+            python3 "$JANUS_DIST/tools/finalize.py"
+          else
+            python3 - <<'JANUS_FALLBACK'
+          import json, os, pathlib
+          p = pathlib.Path(os.environ['EVIDENCE_DIR']); p.mkdir(parents=True, exist_ok=True)
+          r = dict(suite_id=os.environ['SUITE_ID'], status='FAIL', candidate_sha=os.environ.get('CANDIDATE_SHA', ''), candidate_image_id='', problems=['candidate runtime unavailable; suite not proven'], artifact_name=os.environ['EVIDENCE_ARTIFACT'])
+          (p / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
+          raise SystemExit(1)
+          JANUS_FALLBACK
+          fi
+      -
+        "name": "Upload ${{ env.EVIDENCE_ARTIFACT }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "${{ env.EVIDENCE_ARTIFACT }}"
+          "path": "/tmp/janus-evidence"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
+  "summarize":
+    "name": "Verify evidence completeness"
+    "needs":
+      - "prepare"
+      - "build"
+      - "production-gates"
+      - "deployment-cells"
+      - "dr-failover"
+      - "dr-pitr"
+      - "sdk-chaos"
+      - "chart-install-upgrade"
+      - "chart-upgrade-rollback"
+      - "critical-regressions"
+      - "full-performance"
+    "if": "${{ always() }}"
+    "runs-on": "ubuntu-24.04"
+    "timeout-minutes": 10
+    "steps":
+      -
+        "name": "Download this attempt evidence"
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"
+        "with":
+          "pattern": "nightly-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/nightly-reports"
+          "merge-multiple": false
+      -
+        "name": "Fail on missing, skipped, failed or mismatched evidence"
+        "if": "${{ always() }}"
+        "env":
+          "NEEDS_JSON": "${{ toJSON(needs) }}"
+          "PLAN_MANIFEST": "${{ needs.prepare.outputs.manifest }}"
+          "BUILD_IMAGE_ID": "${{ needs.build.outputs.image_id }}"
+        "run": |
+          cat > /tmp/summarize-nightly.py <<'JANUS_EMBED_SUMMARIZE_PY'
+          import json
+          import os
+          import pathlib
+          import sys
+          
+          root = pathlib.Path(os.environ.get("REPORTS_DIR", "/tmp/nightly-reports"))
+          out = pathlib.Path(os.environ.get("SUMMARY_DIR", "/tmp/nightly-summary"))
+          out.mkdir(parents=True, exist_ok=True)
+          needs = json.loads(os.environ.get("NEEDS_JSON", "{}"))
+          errors = []
+          try:
+              manifest = json.loads(os.environ["PLAN_MANIFEST"])
+          except (KeyError, ValueError):
+              manifest = {"candidate_sha": "UNKNOWN", "expected_suites": []}
+              errors.append("plan did not publish a valid manifest")
+          expected = manifest["expected_suites"]
+          for name in ("prepare", "build"):
+              if needs.get(name, {}).get("result") != "success":
+                  errors.append(name + " did not succeed")
+          
+          records = {}
+          for path in root.glob("**/result.json"):
+              try:
+                  data = json.loads(path.read_text())
+                  suite = data["suite_id"]
+                  if suite in records:
+                      errors.append("duplicate result: " + suite)
+                  records[suite] = data
+              except (OSError, ValueError, KeyError) as exc:
+                  errors.append("invalid result file: " + str(path) + ": " + str(exc))
+          
+          image_id = os.environ.get("BUILD_IMAGE_ID", "")
+          rows = []
+          for suite in expected:
+              data = records.get(suite)
+              if not data:
+                  errors.append("required suite has no artifact/result: " + suite)
+                  rows.append((suite, "MISSING", "", ""))
+                  continue
+              if data.get("candidate_sha") != manifest["candidate_sha"]:
+                  errors.append("candidate SHA mismatch: " + suite)
+              if not image_id or data.get("candidate_image_id") != image_id:
+                  errors.append("candidate image mismatch: " + suite)
+              status = data.get("status", "INVALID")
+              if status == "WAIVED":
+                  if suite != "full-performance" or not manifest.get("performance_exception"):
+                      errors.append("undeclared waiver: " + suite)
+              elif status != "PASS":
+                  errors.append("required suite did not pass: " + suite)
+              rows.append((suite, status, data.get("elapsed_seconds", ""), data.get("artifact_name", "")))
+          
+          allowed_skips = set(manifest.get("optional_jobs", []))
+          for name, value in needs.items():
+              if name in ("prepare", "build"):
+                  continue
+              result = value.get("result")
+              if result == "skipped" and name in allowed_skips:
+                  continue
+              if result != "success":
+                  errors.append("GitHub job " + name + " result=" + str(result))
+          
+          extra = sorted(set(records) - set(expected))
+          if extra:
+              errors.append("unexpected suite results: " + ", ".join(extra))
+          passed = not errors
+          lines = ["# Janus validation evidence", "", "Candidate: `" + manifest["candidate_sha"] + "`",
+                   "Baseline: `" + manifest.get("baseline_sha", "") + "`",
+                   "Mode: `" + manifest.get("mode", "unknown") + "`", "",
+                   "| Suite | Result | Seconds | Artifact |", "|---|---|---:|---|"]
+          for suite, status, elapsed, artifact in rows:
+              lines.append("| " + suite + " | " + status + " | " + str(elapsed) + " | " + artifact + " |")
+          lines += ["", "Artifacts: " + os.environ.get("GITHUB_SERVER_URL", "https://github.com") + "/" +
+                    os.environ.get("GITHUB_REPOSITORY", "") + "/actions/runs/" + os.environ.get("GITHUB_RUN_ID", "") + "#artifacts"]
+          if manifest.get("performance_exception"):
+              lines += ["", "Performance target gaps are an owner-accepted nonblocking exception. WAIVED is not target attainment."]
+          lines += ["", "Result: **" + ("PASS" if passed else "FAIL") + "**"]
+          lines += ["- " + error for error in errors]
+          summary = "\n".join(lines) + "\n"
+          (out / "summary.md").write_text(summary)
+          (out / "aggregate.json").write_text(json.dumps({"passed": passed, "errors": errors,
+                                                         "manifest": manifest, "results": records}, indent=2) + "\n")
+          if os.environ.get("GITHUB_STEP_SUMMARY"):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+                  f.write(summary)
+          print(summary)
+          sys.exit(0 if passed else 1)
+          JANUS_EMBED_SUMMARIZE_PY
+          python3 /tmp/summarize-nightly.py
+      -
+        "name": "Upload nightly-summary-${{ github.run_id }}-${{ github.run_attempt }}"
+        "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+        "with":
+          "name": "nightly-summary-${{ github.run_id }}-${{ github.run_attempt }}"
+          "path": "/tmp/nightly-summary"
+          "retention-days": 90
+          "if-no-files-found": "error"
+        "if": "${{ always() }}"
