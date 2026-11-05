@@ -115,7 +115,11 @@ func (s *Scheduler) processReadyRetries(ctx context.Context) {
 				return
 			}
 			if tag.RowsAffected() == 0 {
-				committed = true
+				// Race loser: another replica promoted the task between our
+				// SELECT and this CAS. Just return — the deferred Rollback runs
+				// and RETURNS the pooled connection. (Setting committed=true
+				// here skipped both Commit and Rollback and leaked one pool
+				// connection per lost race until the replica starved.)
 				return
 			}
 

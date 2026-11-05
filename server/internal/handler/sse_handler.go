@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/agentium-lab/Janus/core"
@@ -111,25 +110,29 @@ func isTerminalTaskEvent(t core.EventType) bool {
 	return false
 }
 
+// sseEvent is the wire shape of one SSE data frame; json.Marshal escapes
+// task ids and agent names (a hand-built string let quotes/newlines in an
+// id break the frame — the client's JSON.parse died mid-stream).
+type sseEvent struct {
+	EventType  string          `json:"event_type"`
+	TaskID     string          `json:"task_id,omitempty"`
+	SourceAgent string         `json:"source_agent,omitempty"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+}
+
 func constructSSEData(evt core.JanusEvent) string {
-	var b strings.Builder
-	b.WriteString(`{"event_type":"`)
-	b.WriteString(string(evt.EventType))
-	b.WriteString(`"`)
-	if evt.TaskID != "" {
-		b.WriteString(`,"task_id":"`)
-		b.WriteString(evt.TaskID)
-		b.WriteString(`"`)
-	}
-	if evt.SourceAgent != "" {
-		b.WriteString(`,"source_agent":"`)
-		b.WriteString(evt.SourceAgent)
-		b.WriteString(`"`)
+	ev := sseEvent{
+		EventType:   string(evt.EventType),
+		TaskID:      evt.TaskID,
+		SourceAgent: evt.SourceAgent,
 	}
 	if len(evt.Payload) > 0 {
-		b.WriteString(`,"payload":`)
-		b.Write(evt.Payload)
+		ev.Payload = json.RawMessage(evt.Payload)
 	}
-	b.WriteString(`}`)
-	return b.String()
+	b, err := json.Marshal(ev)
+	if err != nil {
+		// marshal of plain strings cannot fail; keep a valid frame regardless
+		return `{"event_type":"` + string(evt.EventType) + `"}`
+	}
+	return string(b)
 }

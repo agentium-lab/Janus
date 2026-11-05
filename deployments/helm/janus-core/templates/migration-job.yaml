@@ -32,13 +32,12 @@ spec:
             - /bin/sh
             - -ec
             - |
-              ESCAPED_PASSWORD=$(printf '%s' "$JANUS_PG_PASSWORD" | sed \
-                -e 's/%/%25/g' \
-                -e 's/#/%23/g' \
-                -e 's/?/%3F/g' \
-                -e 's|/|%2F|g' \
-                -e 's/@/%40/g' \
-                -e 's/ /%20/g')
+              # Percent-encode EVERY byte of the password (od hex + prefix):
+              # a whitelist escape let legal passwords like p[ass] through
+              # raw and Go's URI parser rejected the DSN. Encoding all bytes
+              # is always-valid userinfo and round-trips in url.UserPassword.
+              ESCAPED_PASSWORD=$(printf '%s' "$JANUS_PG_PASSWORD" \
+                | od -An -tx1 | tr -d ' \n' | sed 's/\(..\)/%\1/g')
               exec /migrate \
                 -path {{ .Values.config.migration.path }} \
                 -database "postgres://{{ .Values.postgres.user }}:${ESCAPED_PASSWORD}@{{ .Values.postgres.host }}:{{ .Values.postgres.port }}/{{ .Values.postgres.database }}?sslmode={{ .Values.postgres.sslMode | default "disable" }}" \

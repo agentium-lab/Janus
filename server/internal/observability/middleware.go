@@ -72,8 +72,12 @@ func RequestLatencyMiddleware(tenantFromPath func(string) string) func(http.Hand
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
-			next.ServeHTTP(sw, r)
+			// Pass the ORIGINAL writer: this middleware only measures
+			// wall time, and wrapping in statusWriter strips http.Flusher
+			// (SSE) and http.Hijacker (WebSocket) from every downstream
+			// handler — REST/A2A SSE answered 500 and WS upgrades failed
+			// whenever auth was enabled (the only chain that mounts this).
+			next.ServeHTTP(w, r)
 			tenant := tenantFromPath(r.URL.Path)
 			if tenant == "" {
 				tenant = "platform"

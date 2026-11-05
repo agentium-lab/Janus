@@ -4,8 +4,14 @@ from enum import Enum
 
 
 class TargetType(str, Enum):
+    # Canonical server-side target types (core/task.go): the server emits
+    # all five; "semantic" is kept only as a legacy alias so old client
+    # payloads still parse — the server itself never sends it.
     AGENT = "agent"
     MAILBOX = "mailbox"
+    CAPABILITY = "capability"
+    GROUP = "group"
+    HUMAN = "human"
     SEMANTIC = "semantic"
 
 
@@ -28,10 +34,18 @@ class TraceContext(BaseModel):
 class TaskEnvelope(BaseModel):
     janus_version: str = "0.1"
     task_id: str = ""
+    idempotency_key: str = ""
     tenant_id: str = ""
     source_agent: str = ""
     target: Target = Field(default_factory=Target)
     priority: str = "normal"
+    deadline: Optional[Any] = None
+    ttl_seconds: int = 0
+    # Governance passthroughs: kept as raw dicts so policy/budget fields
+    # survive a parse -> dump round-trip instead of being silently dropped.
+    budget: Optional[dict[str, Any]] = None
+    policy: Optional[dict[str, Any]] = None
+    context_refs: list[dict[str, Any]] = Field(default_factory=list)
     payload: Payload = Field(default_factory=Payload)
     trace: TraceContext = Field(default_factory=TraceContext)
 
@@ -47,6 +61,7 @@ class Task(BaseModel):
     priority: str = ""
     envelope: Optional[TaskEnvelope] = None
     attempt_count: int = 0
+    replay_count: int = 0
     created_at: str = ""
     updated_at: str = ""
 
@@ -56,11 +71,21 @@ class TaskError(BaseModel):
     message: str = ""
 
 
+class AgentCapability(BaseModel):
+    capability: str = ""
+    description: str = ""
+    capability_schema: Optional[str] = Field(None, alias="schema")
+
+    model_config = {"populate_by_name": True}
+
+
 class RegisterAgentRequest(BaseModel):
     id: str
     display_name: str = ""
     protocol: str = "a2a"
-    capabilities: list[str] = Field(default_factory=list)
+    # The server stores capability OBJECTS (core AgentCapability); the old
+    # list[str] shape made every real registration fail validation.
+    capabilities: list[AgentCapability] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -107,14 +132,6 @@ class NackRequest(BaseModel):
 class Tenant(BaseModel):
     id: str = ""
     name: str = ""
-
-
-class AgentCapability(BaseModel):
-    capability: str = ""
-    description: str = ""
-    capability_schema: Optional[str] = Field(None, alias="schema")
-
-    model_config = {"populate_by_name": True}
 
 
 class Agent(BaseModel):

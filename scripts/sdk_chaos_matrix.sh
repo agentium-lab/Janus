@@ -605,10 +605,10 @@ done
 say "SUMMARY: SDK chaos matrix"
 echo "  cases: PASS=$CASES_PASS FAIL=$CASES_FAIL"
 echo "  languages: ${LANGS[*]}"
-echo "  cases_detail: eof network-cut lease-lost ack-failure 90s (per language)"
+echo "  cases_detail: eof network-cut lease-lost ack-failure 90s stop (per language)"
 if [ "$CASES_FAIL" -gt 0 ]; then
   echo "SDK_CHAOS_PASS=0 ($CASES_FAIL case(s) failed)"
   exit 1
 fi
 echo "SDK_CHAOS_PASS=1"
-echo "SDK_CHAOS_METRICS langs=${LANGS[*]} cases=5 slow_leaselost_s=$SLOW_LEASELOST_S ack_wait_short=$ACK_WAIT_SHORT slow_90s_s=$SLOW_90S_S netcut_s=$NETCUT_S"
+echo "SDK_CHAOS_METRICS langs=${LANGS[*]} cases=6 slow_leaselost_s=$SLOW_LEASELOST_S ack_wait_short=$ACK_WAIT_SHORT slow_90s_s=$SLOW_90S_S netcut_s=$NETCUT_S"

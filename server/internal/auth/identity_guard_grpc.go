@@ -14,6 +14,15 @@ import (
 // invariants suite enumerates the generated ServiceDescs and fails the
 // build when a new method is undeclared.
 var grpcAgentIdentityExtractors = map[string]func(req interface{}) string{
+	"/janus.v1.MailboxService/CreateMailbox": func(req interface{}) string {
+		// The mailbox owner IS a declared agent identity: a bound key must
+		// not create mailboxes owned by another agent (the HTTP surface has
+		// enforced this since GA-01; the gRPC exemption let it through).
+		if r, ok := req.(*pb.CreateMailboxRequest); ok {
+			return r.GetAgentId()
+		}
+		return ""
+	},
 	"/janus.v1.AgentService/RegisterAgent": func(req interface{}) string {
 		if r, ok := req.(*pb.RegisterAgentRequest); ok {
 			return r.GetId()
@@ -61,7 +70,6 @@ var grpcMethodsWithoutAgentIdentity = map[string]bool{
 	"/janus.v1.DLQService/QueryDLQ":           true,
 	"/janus.v1.DLQService/ReplayDLQ":          true,
 	"/janus.v1.DLQService/DiscardDLQ":         true,
-	"/janus.v1.MailboxService/CreateMailbox":  true,
 	"/janus.v1.MailboxService/GetMailbox":     true,
 	"/janus.v1.MailboxService/UpdateMailbox":  true,
 	"/janus.v1.MailboxService/PauseMailbox":   true,

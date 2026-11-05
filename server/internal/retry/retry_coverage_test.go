@@ -3,12 +3,10 @@ package retry
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -32,57 +30,13 @@ const retrySkipFn = `CREATE OR REPLACE FUNCTION retry_cov_skip() RETURNS trigger
 	END;
 $$ LANGUAGE plpgsql`
 
-// openRetryLeakyTestDB is like openRetryTestDB but never calls pool.Close().
-// The RowsAffected==0 code path under test abandons an open transaction and
-// never releases its pooled connection (see report), which would make
-// pool.Close() block forever. DROP DATABASE WITH (FORCE) reclaims everything.
+// openRetryLeakyTestDB opens a throwaway retry DB whose pool IS closed
+// normally at cleanup: the zero-rows path used to abandon its transaction
+// and hold the connection forever (pool.Close would block), which the
+// defer-Rollback fix on the race-loser branch eliminated.
 func openRetryLeakyTestDB(t *testing.T) *pgxpool.Pool {
-	t.Helper()
-	host := os.Getenv("JANUS_PG_HOST")
-	if host == "" {
-		host = "localhost"
-	}
-	port := os.Getenv("JANUS_PG_PORT")
-	if port == "" {
-		port = "5432"
-	}
-	user := os.Getenv("JANUS_PG_USER")
-	if user == "" {
-		user = "janus"
-	}
-	testDB := fmt.Sprintf("janus_retrytest_%d", time.Now().UnixNano())
-	ctx := context.Background()
-	adminDSN := fmt.Sprintf("host=%s port=%s user=%s dbname=janus_test sslmode=disable", host, port, user)
-	adminConn, err := pgx.Connect(ctx, adminDSN)
-	if err != nil {
-		t.Skipf("postgres not reachable: %v", err)
-	}
-	_, err = adminConn.Exec(ctx, fmt.Sprintf("CREATE DATABASE %s", testDB))
-	require.NoError(t, err)
-	adminConn.Close(ctx)
-
-	dsn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s sslmode=disable", host, port, user, testDB)
-	pool, err := pgxpool.New(ctx, dsn)
-	require.NoError(t, err)
-	require.NoError(t, pool.Ping(ctx))
-
-	migrationsDir := findRetryMigrationsDir()
-	entries, _ := os.ReadDir(migrationsDir)
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".up.sql") {
-			up, _ := os.ReadFile(migrationsDir + "/" + e.Name())
-			_, err := pool.Exec(ctx, string(up))
-			require.NoError(t, err, "migration %s", e.Name())
-		}
-	}
-
-	t.Cleanup(func() {
-		c, err := pgx.Connect(context.Background(), adminDSN)
-		if err == nil {
-			c.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", testDB))
-			c.Close(context.Background())
-		}
-	})
+	pool := openRetryTestDB(t)
+	t.Cleanup(pool.Close)
 	return pool
 }
 

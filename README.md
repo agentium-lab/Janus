@@ -294,6 +294,21 @@ make verify-production         # all 11 gates + GA readiness
 
 ## Known Limitations
 
+### Enforcement semantics (what actually gates behavior)
+
+Inputs the API *accepts* are not all inputs the broker *enforces*. The
+authoritative map as of 2026-11:
+
+| Input | Semantics |
+|---|---|
+| Budget `tenant` / `agent` scope | **Enforced** at dispatch admission (RPM/TPM/concurrency) and settlement (durable PG ledger). |
+| Budget `team` scope | **Accepted, not enforced** — saved without error; scheduler and settlement read only tenant/agent scopes. Do not rely on team limits. |
+| `requires_human_approval` (policy/template) | **Accepted, not wired into Create admission** — the approval flow engages via policy `ApprovalRequired` decisions, not this field. |
+| Task `ttl_seconds` / `deadline` / `priority` | **Enforced from the `tasks` columns** (scheduling order, expiry scanner). Same-named envelope fields are advisory projections. |
+| `mailbox.max_concurrency` | **Accepted, not in the dispatch gate** — the claim transaction enforces tenant/agent budget concurrency, not the mailbox field. |
+| `tool.invoke` policy / tool audit events | **Audit-plane only** — tool `started` events are emitted at submit time, not at real execution stages, and `tool.invoke` does not gate tool execution. |
+| Helm TLS `certFile`/`keyFile` values | **Not wired** — Secret-based TLS (`existingSecret`) is the supported mode. |
+
 - **At-least-once delivery.** A worker whose lease expires mid-task (default 300s) will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should call the task heartbeat endpoint to renew the lease before expiry.
 - **Token & cost figures are agent-reported and unverified** (ADR-0002). Aggregates themselves gate nothing. What rejects dispatches is the admission-enforced surface — RPM / TPM / concurrency, which the broker counts itself — plus the settled daily-cost threshold described below. TPM is an admission estimate, not a trusted hard cap: a task counts its declared max_tokens (client-declared, hence advisory) or a minimal unit when undeclared; true consumption settles from ACK-reported usage against the durable PG budget. The daily-cost check is a settled-spend admission threshold — it REJECTS new dispatches once settled usage reaches the configured limit, but in-flight (unsettled) tasks can overshoot it, so it is not a strict hard cap. Monthly cost caps are not yet enforced.
 

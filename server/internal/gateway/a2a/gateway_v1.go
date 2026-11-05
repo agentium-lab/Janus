@@ -224,16 +224,19 @@ func (g *Gateway) handleV1StreamMessage(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Stream capability BEFORE Create: failing after the task is committed
+	// would hand the client a 500 for work that already exists (the
+	// "created but errored" ambiguity).
+	flusher, canFlush := w.(http.Flusher)
+	if !canFlush {
+		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", "streaming unsupported")
+		return
+	}
+
 	task := V1MessageToTask(req, tenantID, sourceAgent, mailboxFromRequest(r, req))
 	created, err := g.taskSvc.Create(r.Context(), task)
 	if err != nil {
 		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", sanitizeMsg(err.Error()))
-		return
-	}
-
-	flusher, canFlush := w.(http.Flusher)
-	if !canFlush {
-		writeV1Error(w, http.StatusInternalServerError, "INTERNAL", "streaming unsupported")
 		return
 	}
 	ch := g.subscriber.Subscribe(tenantID)
