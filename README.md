@@ -23,6 +23,13 @@ Janus is a production-grade task broker that sits **between** your agents — La
 
 It doesn't replace your agent runtime. It makes collaboration between runtimes production-safe.
 
+> **v1.11.0 — GA** (2026-11-06). External review at 9/10 with GA
+> recommendation, no open P1. Measured on the GA evidence rig (PG queue
+> driver, 120s sustained window): **100 task/s · 495 event/s · publish p95
+> 55ms · warm handoff p95 32ms**; in-window pull p95 218ms is recorded as
+> the accepted performance boundary on the test hardware. Delivery is
+> **at-least-once** (see [Enforcement semantics](#known-limitations)).
+
 ## Why Janus?
 
 Point-to-point agent calls work in demos. In production they break:
@@ -199,8 +206,6 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 **Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
 **Import:** `from janus_broker import JanusClient` · `import { Client } from "@agentium-lab/janus-sdk"`
 
-**Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
-
 > Naming note: distribution names carry a disambiguator where registries require it — the generic `janus-sdk` name on PyPI belongs to an unrelated project.
 
 All three SDKs share the same conformance fixtures (`sdk/conformance/`).
@@ -290,7 +295,12 @@ janus-event-replay-probe      # audit projection consistent?
 
 ## Verification
 
-**1,800+ test functions** · 7 fault scenarios · 11 verification gates
+**28 test packages · 1,380+ top-level tests (race-enabled, 0 FAIL)** · 7
+reliability fault scenarios on real PG/NATS · GA evidence drills in CI:
+PITR disaster recovery (unified business RTO 5.7s), Redis fail-closed
+runtime, NATS stream-loss rebuild, sustained-load rate gates, and a
+6-case × 3-language SDK chaos matrix (eof / network-cut / lease-lost /
+ack-failure / 90s / stop — 27/27 assertions).
 
 ```bash
 make verify                    # vet + staticcheck + tests + coverage ≥ 90% (CI enforces ≥ 85% to absorb PG timing variance)
@@ -301,14 +311,6 @@ make verify-production         # all 11 gates + GA readiness
 ```
 
 ---
-
-<div align="center">
-
-**[Janus](https://janusa2a.com)** — let agent collaboration stay reliable, governed, auditable, and recoverable in production.
-
-[Documentation](https://janusa2a.com/docs/quickstart.html) · [Report an Issue](https://github.com/agentium-lab/Janus/issues) · Apache-2.0
-
-</div>
 
 ## Known Limitations
 
@@ -331,3 +333,13 @@ authoritative map as of 2026-11:
 - **Token & cost figures are agent-reported and unverified** (ADR-0002). Aggregates themselves gate nothing. What rejects dispatches is the admission-enforced surface — RPM / TPM / concurrency, which the broker counts itself — plus the settled daily-cost threshold described below. TPM is an admission estimate, not a trusted hard cap: a task counts its declared max_tokens (client-declared, hence advisory) or a minimal unit when undeclared; true consumption settles from ACK-reported usage against the durable PG budget. The daily-cost check is a settled-spend admission threshold — it REJECTS new dispatches once settled usage reaches the configured limit, but in-flight (unsettled) tasks can overshoot it, so it is not a strict hard cap. Monthly cost caps are not yet enforced.
 
 \* ACP gateway is **deprecated** (protocol merged into A2A). Endpoints keep serving with `Deprecation`/`Sunset` headers until removal; new integrations should target `/a2a/`.
+
+---
+
+<div align="center">
+
+**[Janus](https://janusa2a.com)** — let agent collaboration stay reliable, governed, auditable, and recoverable in production.
+
+[Documentation](https://janusa2a.com/docs/quickstart.html) · [Report an Issue](https://github.com/agentium-lab/Janus/issues) · Apache-2.0
+
+</div>
