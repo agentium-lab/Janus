@@ -1,7 +1,8 @@
 # Single-file replacement draft for .github/workflows/nightly.yml.
 # Generated against main 155201547db8e8c32e94ade7676cb6daef45c11e.
 # Daily 11:17 Asia/Shanghai: functional; Sunday 12:47: isolated full performance.
-# Runtime helpers are embedded; no additional repository files are required.
+# Runtime helpers and GA07 temporary-copy cleanup fixes are embedded.
+# Only this YAML needs to be submitted; checkout scripts are never modified.
 "name": "Nightly Production Gates"
 "on":
   "schedule":
@@ -504,6 +505,9 @@
               "binary_mode": os.environ.get("BINARY_MODE", "shared-candidate"),
               "artifact_name": os.environ.get("EVIDENCE_ARTIFACT", ""),
           }
+          adapter = out / "ga07-script-adapter.json"
+          if adapter.exists():
+              record["test_harness"] = json.loads(adapter.read_text())
           (out / "result.json").write_text(json.dumps(record, indent=2) + "\n")
           (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
           print(case_id + ": " + status)
@@ -1159,7 +1163,7 @@
       "CANDIDATE_SHA": "${{ needs.prepare.outputs.sha }}"
       "EVIDENCE_ARTIFACT": "nightly-evidence-deployment-cells-${{ github.run_id }}-${{ github.run_attempt }}"
       "BINARY_MODE": "shared-candidate"
-      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"setup\", \"deployment_cells\"]"
+      "EXPECTED_STEP_IDS_JSON": "[\"artifact_verify\", \"prepare_ga07\", \"setup\", \"deployment_cells\"]"
     "steps":
       -
         "name": "Record suite start"
@@ -1198,6 +1202,127 @@
           sha256sum -c SHA256SUMS
           chmod +x bin/* tools/ci.sh
       -
+        "name": "Prepare temporary GA07 harness with bounded cleanup"
+        "id": "prepare_ga07"
+        "run": |
+          python3 - <<'JANUS_GA07_ADAPTER'
+          """Adapt only GA07 test-process cleanup in a temporary copy; preserve assertions."""
+          import difflib
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import shlex
+          import subprocess
+          import sys
+          
+          workspace = pathlib.Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          source_path = workspace / 'scripts/ga07_four_cell.sh'
+          source_bytes = source_path.read_bytes()
+          source = source_bytes.decode('utf-8')
+          evidence = pathlib.Path(os.environ.get('EVIDENCE_DIR', '/tmp/janus-evidence'))
+          evidence.mkdir(parents=True, exist_ok=True)
+          runtime = pathlib.Path(os.environ.get('GA07_RUNTIME_DIR', '/tmp/janus-ga07-runtime')).resolve()
+          if runtime == workspace or workspace in runtime.parents:
+              sys.exit('::error::GA07 runtime copy must be outside the candidate checkout')
+          if not (workspace / 'migrations').is_dir():
+              sys.exit('::error::Candidate migration directory is missing')
+          binary = pathlib.Path(os.environ['JANUS_API_BIN']).resolve()
+          if not binary.is_file() or not os.access(binary, os.X_OK):
+              sys.exit('::error::Shared candidate binary is not executable')
+          
+          changes = []
+          replacements = []
+          adapted = source
+          match = re.search(r'(?ms)^stop_cell_replicas\(\)[ \t]*\{.*?^\}', source)
+          if not match:
+              sys.exit('::error::GA07 cleanup function changed; review the embedded adapter')
+          old_block = match.group(0)
+          if '"${PIDS[@]:$CELL_START}"' not in old_block:
+              sys.exit('::error::GA07 per-cell PID ownership contract changed')
+          bare_wait = []
+          for index, line in enumerate(old_block.splitlines()):
+              command = line.split('||', 1)[0].strip()
+              words = shlex.split(command, comments=True)
+              if words and words[0] == 'wait':
+                  operands = [word for word in words[1:] if not re.fullmatch(r'\d*>\S*', word)]
+                  if not operands:
+                      bare_wait.append(index)
+          if len(bare_wait) == 1:
+              lines = old_block.splitlines()
+              old_line = lines[bare_wait[0]]
+              if not re.fullmatch(r'[ \t]*wait[ \t]+2>/dev/null[ \t]+\|\|[ \t]+true[ \t]*', old_line):
+                  sys.exit('::error::Unrecognized GA07 bare-wait form; adapter will not guess')
+              lines[bare_wait[0]] = '''  # CI harness: reap this cell's APIs; its Redis is stopped by its owner.
+            for pid in "${PIDS[@]:$CELL_START}"; do
+              wait "$pid" 2>/dev/null || true
+            done'''
+              new_block = '\n'.join(lines)
+              adapted = adapted.replace(old_block, new_block, 1)
+              replacements.append((old_block, new_block))
+              changes.append('wait-only-for-current-cell-api-pids')
+          elif not bare_wait and re.search(r'(?m)^[ \t]*wait[ \t]+"\$pid"', old_block):
+              pass  # A repository version with the same cleanup fix needs no adaptation.
+          else:
+              sys.exit('::error::GA07 cleanup no longer matches a known old or fixed form')
+          
+          old_trap = 'trap cleanup EXIT INT TERM'
+          new_trap = "trap cleanup EXIT\ntrap 'exit 130' INT\ntrap 'exit 143' TERM"
+          if adapted.count(old_trap) == 1:
+              adapted = adapted.replace(old_trap, new_trap, 1)
+              replacements.append((old_trap, new_trap))
+              changes.append('stop-on-signal-before-exit-cleanup')
+          elif all(line in adapted.splitlines() for line in new_trap.splitlines()):
+              pass
+          else:
+              sys.exit('::error::GA07 signal traps changed; review the embedded adapter')
+          
+          old_root = 'ROOT="$(cd "$(dirname "$0")/.." && pwd)"'
+          new_root = 'ROOT="${GITHUB_WORKSPACE:?Candidate checkout must be available}"'
+          if adapted.count(old_root) != 1:
+              sys.exit('::error::GA07 root discovery changed; temporary-copy relocation requires review')
+          adapted = adapted.replace(old_root, new_root, 1)
+          replacements.append((old_root, new_root))
+          changes.append('resolve-migrations-against-original-candidate-checkout')
+          
+          # Reverse exactly the recorded substitutions to prove no other byte changed.
+          restored = adapted
+          for old, new in reversed(replacements):
+              if restored.count(new) != 1:
+                  sys.exit('::error::Ambiguous GA07 adaptation; refusing to execute')
+              restored = restored.replace(new, old, 1)
+          if restored != source:
+              sys.exit('::error::GA07 adaptation changed content outside the declared cleanup/root substitutions')
+          
+          syntax = subprocess.run(['bash', '-n'], input=adapted, text=True, capture_output=True)
+          if syntax.returncode:
+              sys.exit('::error::Adapted GA07 Bash syntax is invalid: ' + syntax.stderr)
+          if source_path.read_bytes() != source_bytes:
+              sys.exit('::error::Candidate GA07 source changed during adaptation')
+          runtime.mkdir(parents=True, exist_ok=True)
+          script = runtime / 'ga07_four_cell.sh'
+          script.write_text(adapted)
+          script.chmod(0o700)
+          metadata = {
+              'adapter_version': 1, 'candidate_sha': os.environ.get('CANDIDATE_SHA', ''),
+              'source_path': 'scripts/ga07_four_cell.sh', 'runtime_path': str(script),
+              'source_sha256': hashlib.sha256(source_bytes).hexdigest(),
+              'runtime_sha256': hashlib.sha256(adapted.encode()).hexdigest(),
+              'changes': changes, 'checkout_source_unchanged': True,
+              'scope': 'test process cleanup and temporary-copy root; business assertions preserved',
+          }
+          (evidence / 'ga07-script-adapter.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          (evidence / 'ga07-script-source.sh').write_bytes(source_bytes)
+          (evidence / 'ga07-script-executed.sh').write_text(adapted)
+          (evidence / 'ga07-script.diff').write_text(''.join(difflib.unified_diff(source.splitlines(True), adapted.splitlines(True), fromfile='candidate/scripts/ga07_four_cell.sh', tofile='temporary/ga07_four_cell.sh')))
+          with open(os.environ['GITHUB_ENV'], 'a') as env_file:
+              env_file.write('GA07_RUNTIME_SCRIPT=' + str(script) + '\n')
+          print('GA07 temporary harness:', script)
+          print('GA07 adaptations:', ', '.join(changes))
+          print('Candidate source unchanged; all task, delivery, retry, audit and Redis assertions preserved')
+          JANUS_GA07_ADAPTER
+      -
         "id": "setup"
         "name": "Prepare isolated deployment dependencies"
         "run": |
@@ -1215,7 +1340,8 @@
           set -euo pipefail
           mkdir -p "$EVIDENCE_DIR"
           {
-          timeout --signal=TERM --kill-after=20s 10m bash scripts/ga07_four_cell.sh
+          : "${GA07_RUNTIME_SCRIPT:?GA07 temporary harness was not prepared}"
+          timeout --signal=TERM --kill-after=20s 10m bash "$GA07_RUNTIME_SCRIPT"
           } 2>&1 | tee "$EVIDENCE_DIR/deployment_cells.log"
       -
         "name": "Collect logs before runner cleanup"
