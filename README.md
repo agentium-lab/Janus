@@ -2,7 +2,7 @@
 
 # Janus
 
-**A2A-native durable agent broker for enterprise agent networks**
+**A2A-native durable task broker for multi-agent systems**
 
 Reliably, securely, and auditably hand off tasks between AI agents —
 across frameworks, teams, and organizations.
@@ -15,7 +15,7 @@ across frameworks, teams, and organizations.
 [![CI](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml)
 [![Website](https://img.shields.io/badge/website-janusa2a.com-ff5c8a)](https://janusa2a.com)
 
-`♻️ Durable` `⚖️ Governed` `🔍 Auditable` `🔌 Multi-protocol` `🧩 SDK × 3`
+`♻️ Durable` `⚖️ Governed` `🔍 Auditable` `🔌 Multi-protocol` `🧩 SDK×3`
 
 [Documentation](https://janusa2a.com/docs/quickstart.html) · [Quick Start](#quick-start) · [Capabilities](#core-capabilities) · [Architecture](#architecture) · [Limitations](#known-limitations) · [Releases](https://github.com/agentium-lab/Janus/releases)
 
@@ -23,11 +23,12 @@ across frameworks, teams, and organizations.
 
 ---
 
-Janus is a production-grade task broker that sits **between** your agents — LangGraph, AutoGen, CrewAI, MCP tools, custom runtimes — so that agent-to-agent collaboration **doesn't lose tasks, doesn't overrun budgets, doesn't bypass policies, and provides durable audit trails**.
+Janus is a durable task broker that sits **between** your agents — LangGraph, AutoGen, CrewAI, MCP tools and custom runtimes — providing **recoverable handoffs, tenant isolation, task admission controls and durable audit trails**.
 
-It doesn't replace your agent runtime. It makes collaboration between runtimes production-safe.
+Your framework handles planning and execution; Janus persists the handoff, coordinates delivery and recovery, and records the outcome.
 
-> **v1.11.0 — GA** · 9/10 external review with GA recommendation, no open P1.
+> **v1.11.0 — GA** · [CI](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml) · [Nightly verification](https://github.com/agentium-lab/Janus/actions/workflows/nightly.yml)
+>
 > Delivery semantics are **at-least-once** — see [Enforcement semantics](#known-limitations)
 > for the authoritative map of what is enforced vs. merely accepted.
 
@@ -46,111 +47,172 @@ Point-to-point agent calls work in demos. In production they break:
 
 ## Quick Start
 
-**Prerequisites:** Go 1.25+ · PostgreSQL 13+ · NATS 2.10+ (JetStream) · Redis 7+
+Complete one local task from publication to `completed`. This recipe uses the root Compose stack, PostgreSQL queue mode and the bundled `acme` tenant.
+
+**Requirements:** Git, Docker with Compose v2, and Python 3.10+. Commands below use a macOS/Linux Bash shell. Docker builds the server; a local Go installation is not required.
+
+### 1. Start the development stack
 
 ```bash
-# 1. Start dependencies
-docker compose -f deployments/smoke-deps.compose.yaml up -d postgres nats redis
+git clone https://github.com/agentium-lab/Janus.git
+cd Janus
 
-# 2. Run migrations
-for f in migrations/*.up.sql; do psql -d janus -f "$f"; done
+docker compose up -d --build
 
-# 3. Build and run — binding localhost keeps auth-off safe for local dev
-cd server && go build -o janus-api ./cmd/janus-api/
-JANUS_PG_HOST=localhost JANUS_PG_USER=janus JANUS_PG_DATABASE=janus \
-JANUS_PG_SSLMODE=disable \
-JANUS_NATS_URL=nats://localhost:4222 JANUS_REDIS_ADDR=localhost:6379 \
-JANUS_HTTP_HOST=localhost JANUS_AUTH_ENABLED=false ./janus-api
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ./sdk/python
+
+export JANUS_API_KEY="janus_e12ebdab09a71c856666756ab26fd12db630041a96559b74066f66820c1d6d48"
 ```
+
+The key above is the repository's **public development key**, seeded by [api-key-seed](deployments/dev/seed-dev-key.sql). Production uses your own credentials and deployment configuration.
+
+Wait for an authenticated tenant query to succeed. This checks both API startup and completion of the seed job:
+
+```bash
+python - <<'PY'
+import os
+import time
+import httpx
+from janus_broker import JanusClient
+
+with JanusClient(tenant_id="acme", api_key=os.environ["JANUS_API_KEY"], timeout=2) as client:
+    for _ in range(60):
+        try:
+            client.get_tenant("acme")
+            break
+        except httpx.HTTPError:
+            time.sleep(1)
+    else:
+        raise SystemExit("Startup incomplete: check docker compose logs janus-api api-key-seed")
+print("Janus is ready; the acme tenant and dev key are available")
+PY
+```
+
+### 2. Send and complete a task
+
+Save the code as `first_task.py`, then run `python first_task.py` in the same activated environment. It registers both agents, creates an owned mailbox and includes the required trace ID. Unique IDs allow repeat runs against the local stack.
 
 <details>
-<summary><strong>⚙️ Single-dependency mode</strong> — PostgreSQL as the task queue itself (no NATS)</summary>
+<summary><strong>📨 first_task.py: complete registration, publication, delivery and settlement</strong></summary>
 
-```bash
-JANUS_QUEUE_DRIVER=pg ./janus-api   # plus your usual PG/Redis settings
+```python
+import os
+from time import monotonic, sleep
+from uuid import uuid4
+
+from janus_broker import (
+    AckRequest, CreateMailboxRequest, JanusClient, Payload,
+    PublishTaskRequest, RegisterAgentRequest, Target, TaskEnvelope,
+    TraceContext,
+)
+
+suffix = uuid4().hex[:8]
+producer, reviewer = f"product-{suffix}", f"reviewer-{suffix}"
+mailbox, task_id = f"reviews-{suffix}", f"task-{suffix}"
+
+with JanusClient(
+    base_url="http://localhost:8080", tenant_id="acme",
+    api_key=os.environ["JANUS_API_KEY"], timeout=5.0,
+) as client:
+    for agent_id in (producer, reviewer):
+        client.register_agent(RegisterAgentRequest(
+            id=agent_id, display_name=agent_id,
+        ))
+    client.create_mailbox(CreateMailboxRequest(
+        id=mailbox, agent_id=reviewer,
+    ))
+    client.publish_task(PublishTaskRequest(
+        id=task_id, source_agent=producer,
+        target_type="mailbox", target_value=mailbox,
+        envelope=TaskEnvelope(
+            task_id=task_id, tenant_id="acme", source_agent=producer,
+            target=Target(type="mailbox", value=mailbox),
+            payload=Payload(type="json", content='{"file":"app.py"}'),
+            trace=TraceContext(trace_id=uuid4().hex),
+        ),
+    ))
+
+    deadline = monotonic() + 30
+    while monotonic() < deadline:
+        delivery = client.pull_task(mailbox, reviewer)
+        if delivery and delivery.task:
+            break
+        sleep(0.2)
+    else:
+        raise TimeoutError("Task was not delivered; check the API logs")
+
+    assert delivery.task.id == task_id
+    lease_id = delivery.lease.lease_id
+    client.start_task(task_id, lease_id, agent_id=reviewer)
+    client.ack_task(task_id, AckRequest(
+        lease_id=lease_id, agent_id=reviewer,
+        result_ref="demo://review/approved",
+    ))
+    task = client.get_task(task_id)
+    assert task.status == "completed", task.status
+    print(f"{task.id}: {task.status}")
 ```
-
-Claims use `FOR UPDATE SKIP LOCKED`, so worker concurrency semantics match the NATS path. Add NATS back (`--profile with-nats`) when you want its throughput and event fan-out at scale.
-
-> **Full-stack alternative:** `docker compose up -d` runs everything with API-key auth enabled and seeds a public dev key for tenant `acme` (credential in [deployments/dev/seed-dev-key.sql](deployments/dev/seed-dev-key.sql)). Export it as `JANUS_API_KEY` and pass `api_key=` to the SDK client.
 
 </details>
 
-**Send your first task** — register an agent, publish by capability, pull → ack with lease protection:
+Expected output: `task-<id>: completed`. The `demo://` result reference is an illustrative URI; the example does not upload a file.
 
-```python
-from janus_broker import (
-    AckRequest, AgentCapability, JanusClient, Payload,
-    PublishTaskRequest, RegisterAgentRequest, Target, TaskEnvelope,
-)
+### 3. Connect your worker
 
-client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
-
-client.register_agent(RegisterAgentRequest(
-    id="reviewer",
-    display_name="Code Reviewer",
-    capabilities=[AgentCapability(capability="code_review", description="reviews source code")],
-))
-
-client.publish_task(PublishTaskRequest(
-    id="task-001",
-    source_agent="product",
-    target_type="capability",
-    target_value="code_review",
-    envelope=TaskEnvelope(
-        task_id="task-001", tenant_id="acme", source_agent="product",
-        target=Target(type="capability", value="code_review"),
-        payload=Payload(type="json", content="{}"),
-    ),
-))
-
-result = client.pull_task("review-mb", "reviewer")
-client.ack_task(result.task.id, AckRequest(
-    lease_id=result.lease.lease_id,
-    result_ref="s3://review-001.json",
-))
-```
+Use the worker helper for the continuous pull/heartbeat/settlement loop in your application: [Go](sdk/go/worker.go), [Python](sdk/python/janus_broker/worker.py), or [TypeScript](sdk/typescript/src/worker.ts). You implement the handler; result storage remains your application's responsibility.
 
 <details>
-<summary><strong>📈 Report live progress</strong> — the Worker-injected <code>(task, progress) → (result_ref, usage)</code> contract</summary>
+<summary><strong>Use NATS for task delivery</strong></summary>
+
+The root Compose stack defaults to `JANUS_QUEUE_DRIVER=pg`. To select JetStream delivery, keep PostgreSQL and start the NATS profile:
+
+```bash
+JANUS_QUEUE_DRIVER=nats docker compose --profile with-nats up -d --build
+```
+
+The SDK calls stay the same. This Compose setup is for local development; configure persistent dependencies for production.
+
+</details>
+
+<details>
+<summary><strong>📈 Report live progress</strong> — the Worker handler contract</summary>
+
+Pass a handler like this to `JanusWorker` for your configured agent and mailbox. The worker handles continuous pulls, lease renewal and settlement:
 
 ```python
 def process(task, progress):
     progress("Analyzing code...", percent=20)
     progress("Fixing issues...", percent=60)
-    return "s3://review-001.json", None  # (result_ref, token_usage)
-
-from janus_broker import JanusWorker
-worker = JanusWorker(client, agent_id="reviewer", mailbox_id="review-mb")
-worker.run(process)
-
-# Read the task's event trail from any client (progress + lifecycle):
-for evt in client.get_task_events("task-001"):
-    print(evt["event_type"], evt.get("payload"))
+    return "demo://review/approved", None  # (result_ref, token_usage)
 ```
+
+Your application stores the result; returning a reference does not upload a file. Query persisted events through `get_task_events(task_id)` on a configured client.
+
 </details>
 
-> 📖 **Full walkthrough:** the [Smart Customer Service tutorial](https://janusa2a.com/docs/quickstart.html#example-smart-service) builds a complete multi-agent exchange workflow — intent routing, crash recovery, parallel fan-out, and data flow between agents.
+> 📖 **Full walkthrough:** the [Smart Customer Service tutorial](https://janusa2a.com/docs/quickstart.html#example-smart-service) describes a more complete multi-agent workflow.
 
 ## Core Capabilities
 
 ### ♻️ Reliability
 
-| | Guarantee |
+| Feature | Guarantee |
 |---|---|
 | **Durable mailboxes** | Tasks survive agent crashes and API restarts |
 | **Transactional outbox** | `accepted ≠ queued` — PostgreSQL is the source of truth |
 | **ACK/NACK idempotency** | Duplicate ACKs never double-settle budgets |
-| **Retry with backoff** | Outbox-driven delayed retry, not NATS redelivery |
+| **Retry with backoff** | Persisted retry_at scheduling, republished through the Outbox |
 | **Dead Letter Queue** | Per-mailbox DLQ with replay / discard |
 | **Lease timeout** | Crashed agents' tasks automatically recovered |
-| **Fault-scenario suite** | 7 scenarios tested against real PG/NATS: fail, crash, expiry, duplicates |
+| **Fault-scenario suite** | 7 cases with real PostgreSQL and an injected queue driver; live NATS is covered by Nightly drills |
 
 ### ⚖️ Governance
 
-| | What it enforces |
+| Feature | Enforcement |
 |---|---|
-| **Policy engine** | Allow / deny / approval-required per agent, capability, tool, classification |
+| **Policy engine** | Task admission: allow / deny / approval-required by agent, capability and classification; tool-execution limits below |
 | **Budget control** | RPM / TPM / concurrency per tenant and agent *(team scope saved, not enforced — see [Limitations](#known-limitations))* |
 | **Approval workflow** | Human-in-the-loop for high-risk tasks (engages via policy `ApprovalRequired`; `requires_human_approval` alone does not gate Create) |
 | **Tool audit events** | Submit-time tool events; lifecycle-accurate execution stages are on the roadmap |
@@ -168,16 +230,21 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress. Task state is always durable in PostgreSQL; live notifications are best-effort. Clients should treat the stream as an optimization and poll `GET /tasks/{id}` for the authoritative terminal state.
+**SSE Streaming** (`GET /v1/tenants/{tenant}/tasks/{id}/stream`) — real-time task progress. Task state is always durable in PostgreSQL; live notifications are best-effort. Clients should treat the stream as an optimization and poll `GET /v1/tenants/{tenant}/tasks/{id}` for the authoritative terminal state.
 
 **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **WebSocket** (dashboard event stream) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`)
 
 <details>
 <summary><strong>A2A v1 subset Gateway</strong> · verified against the official a2a-go client in CI</summary>
 
-`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, cursor-paginated `GET /a2a/tasks`, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`, `A2A-Version` negotiation, typed errors with `ErrorInfo`.
+| Operation | Endpoint |
+|---|---|
+| Agent Card | `GET /.well-known/agent-card.json` |
+| Send / stream | `POST /a2a/message:send`, `POST /a2a/message:stream` |
+| Get / list | `GET /a2a/tasks/{id}`, cursor-paginated `GET /a2a/tasks` |
+| Subscribe / cancel | `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel` |
 
-Multi-turn continuation, history, and List filters are not yet supported — see [ADR-0005](docs/adr/0005-a2a-v1-conformance.md) for the full subset table.
+The v1 task/message endpoints require `A2A-Version: 1.0`. Protocol errors with a defined A2A reason include `ErrorInfo`. Multi-turn continuation, history and List filters are not supported.
 
 **ACP Gateway** (`/acp/*`) is deprecated — merged into A2A, Sunset 2026-12-31.
 </details>
@@ -186,9 +253,9 @@ Multi-turn continuation, history, and List filters are not yet supported — see
 
 | Observability | Security |
 |---|---|
-| OpenTelemetry — W3C traceparent + OTLP | API-key auth — SHA-256 hashed, prefix lookup, optional scopes |
-| Prometheus — 16+ metrics | mTLS — TLS 1.2+ with client cert verification |
-| Structured JSON logs — tenant/task/trace in every line | Tenant isolation — every query, subject, key, path scoped |
+| OpenTelemetry — service spans, optional OTLP export | API-key auth — SHA-256 hashed, prefix lookup, optional scopes |
+| Prometheus — task lifecycle, Outbox, retry, routing, audit and gRPC metrics | mTLS — TLS 1.2+ with client cert verification |
+| Structured JSON logs — task context and runtime events | Tenant isolation — authenticated-tenant authorization and data access |
 | Grafana dashboard — backlog, latency, errors pre-built | Agent identity binding — bound keys may only act as their agent (middleware + gRPC interceptor + service-layer authority) |
 | | Official-client interop — the a2a-go SDK drives our gateway in CI |
 
@@ -196,114 +263,136 @@ Multi-turn continuation, history, and List filters are not yet supported — see
 
 | Language | Package | Highlights |
 |---|---|---|
-| **Go** | `github.com/agentium-lab/Janus/sdk/go` | 39 methods + Worker helper |
-| **Python** | `janus-broker` (httpx + pydantic) | 34 methods + JanusWorker |
-| **TypeScript** | `@agentium-lab/janus-sdk` | 30 methods + Worker helper |
+| **Go** | `github.com/agentium-lab/Janus/sdk/go` | Client + Worker helper |
+| **Python** | `janus-broker` (httpx + pydantic) | Client + JanusWorker |
+| **TypeScript** | `@agentium-lab/janus-sdk` | Client + Worker helper |
+
+Run the Go command inside your application module; currently resolve both `core` and the SDK explicitly.
 
 ```bash
 pip install janus-broker        # Python
 npm i @agentium-lab/janus-sdk   # TypeScript
-go get github.com/agentium-lab/Janus/sdk/go   # Go
+go get github.com/agentium-lab/Janus/core@latest \
+  github.com/agentium-lab/Janus/sdk/go@latest  # Go
 ```
 
-All three SDKs share the same conformance fixtures (`sdk/conformance/`) and pass the same six-case chaos matrix (eof · network-cut · lease-lost · ack-failure · 90s · stop).
+All three SDKs share conformance fixtures (`sdk/conformance/`) and a six-case chaos matrix (eof · network-cut · lease-lost · ack-failure · 90s · stop).
 
 > Naming note: distribution names carry a disambiguator where registries require it — the generic `janus-sdk` name on PyPI belongs to an unrelated project.
 
 <details>
-<summary><strong>CLI</strong> — manage everything from the terminal</summary>
+<summary><strong>CLI</strong> — manage agents, tasks and project configuration</summary>
+
+Build the CLI with the Go toolchain in `go.work` (`mkdir -p bin && go build -o bin/janus ./cli`). The following are command references for existing resources; replace the uppercase IDs. The CLI reads `JANUS_API_KEY` from the environment.
 
 ```bash
-janus agent register --id reviewer --name "Code Reviewer"
-janus task publish --id task-001 --source product --target-value review-mb
-janus mailbox pull review-mb
-janus mailbox ack task-001 --lease <lease-id>
-
-janus api-key create --name ci-bot --scope admin
-janus api-key list
-janus api-key revoke <key-id>
-
-janus project init    # declarative project config
-janus project apply
-janus project diff
+bin/janus --tenant acme task status TASK_ID
+bin/janus --tenant acme mailbox pull MAILBOX_ID --agent AGENT_ID
+bin/janus --tenant acme mailbox ack TASK_ID --lease LEASE_ID
+bin/janus --tenant acme api-key list
+bin/janus project --help
 ```
 </details>
 
 ## Architecture
 
+```text
+ External Agents / SDKs / Frameworks
+                       │
+                       ▼
+ ┌────────────────────────────────────────────┐
+ │ Ingress                                    │
+ │                                            │
+ │ A2A · MCP · REST / gRPC · WebSocket        │
+ └────────────────────────────────────────────┘
+                       │
+                       ▼
+ ┌────────────────────────────────────────────┐
+ │ Services                                   │
+ │                                            │
+ │ Task · Dispatch · Policy · Budget          │
+ │ Approval · Audit · Routing · Intent        │
+ └────────────────────────────────────────────┘
+                       │
+                       ▼
+ ┌────────────────────────────────────────────┐
+ │ Background workers                         │
+ │                                            │
+ │ Outbox Publisher · Event Projector         │
+ │ Retry Scheduler · Lease Scanner            │
+ │ Heartbeat Sweeper                          │
+ └────────────────────────────────────────────┘
+                       │
+                       ▼
+ ┌────────────────────────────────────────────┐
+ │ Infrastructure                             │
+ │                                            │
+ │ PostgreSQL: state / leases / PG queue      │
+ │ NATS JetStream: optional task queue        │
+ │ Redis: presence / RPM / TPM limits         │
+ └────────────────────────────────────────────┘
 ```
- External Agents (A2A / ACP* / MCP / SDK / CI-CD)
-                      │
- ┌────────────────────▼────────────────────┐
- │                Ingress                  │
- │   A2A GW · ACP GW* · MCP GW · HTTP/gRPC │
- └────────────────────┬────────────────────┘
-                      │
- ┌────────────────────▼────────────────────┐
- │                Services                 │
- │  Task · Dispatch · Policy · Budget ·     │
- │  Approval · Audit · Routing · Intent     │
- └────────────────────┬────────────────────┘
-                      │
- ┌────────────────────▼────────────────────┐
- │                Workers                  │
- │  Outbox Publisher · Event Projector ·    │
- │  Lease Scanner · Heartbeat Sweeper       │
- └────────────────────┬────────────────────┘
-                      │
- ┌────────────────────▼────────────────────┐
- │             Infrastructure              │
- │  NATS JetStream (queue)                 │
- │  PostgreSQL (state)                     │
- │  Redis (heartbeat / rate limiting)      │
- │  Local Artifact Store                   │
- └─────────────────────────────────────────┘
-```
+
+PostgreSQL is the authority for state, leases, Outbox and settlement, and can also serve as the task queue. NATS is an alternative delivery driver; Redis supports presence and rate limiting. ContextRef APIs are available. Artifact storage is currently a library interface, not a public upload/download API.
 
 ## Key Design Invariants
 
-Every one of these is tested:
+These constraints define the production path and are covered by lifecycle and recovery tests:
 
-1. Business services never write to mailboxes directly — all enqueue goes through the transactional outbox
-2. `accepted ≠ queued` — a task publishes to NATS only after the DB commit
-3. One mailbox = one durable pull consumer
-4. Retry is driven by outbox `next_attempt_at`, not NATS redelivery
-5. ACK/NACK commits to DB first, then NATS
-6. Claiming requires a durable lease in PostgreSQL
-7. Redis stores no durable facts — heartbeat and rate-limiting only
-8. Policy and budget checks cannot be bypassed by routing
+1. Task state and delivery/audit intents are persisted transactionally; NATS publication is driven by the Outbox.
+2. `accepted ≠ queued` — acceptance and queue delivery are separate stages; NATS publishes after the DB commit.
+3. In NATS mode, one mailbox has one durable pull consumer; PG mode uses the database queue.
+4. Task retry is scheduled from persisted `retry_at` and republished through a transactional Outbox; message redelivery handles delivery recovery.
+5. ACK/NACK commits to PostgreSQL before the queue is acknowledged.
+6. Dispatch claims require a durable lease in PostgreSQL.
+7. Redis holds no durable facts; it supports presence and rate limiting.
+8. Routing checks the supported policy and budget constraints; their exact scope is listed under Known Limitations.
 
 ## Deployment
 
-```bash
-# Docker Compose (local / dev)
-docker compose -f deployments/smoke-deps.compose.yaml up -d
+**Local development:** run `docker compose up -d --build` from the repository root.
 
-# Helm (production) — probes, migration job, HPA, PDB, monitoring included
-helm install janus deployments/helm/janus-core/
-```
-
-<details>
-<summary><strong>Probe tools</strong></summary>
+**Production:** The [Helm chart](deployments/helm/janus-core/) deploys Janus against dependencies you provide. Start from its [values file](deployments/helm/janus-core/values.yaml), set `image.repository`/`image.tag` to an image you have verified is available, configure PostgreSQL credentials, select PG or NATS delivery, and configure TLS and Redis policy. Tenant/API-key provisioning and backups are part of your deployment setup.
 
 ```bash
-janus-migration-probe         # migrations up-to-date?
-janus-nats-persistence-probe  # JetStream persistence intact?
-janus-event-replay-probe      # audit projection consistent?
+cp deployments/helm/janus-core/values.yaml values.production.yaml
 ```
-</details>
+
+Edit `values.production.yaml` for your infrastructure, then install:
+
+```bash
+helm upgrade --install janus deployments/helm/janus-core/ \
+  --namespace janus --create-namespace \
+  --values values.production.yaml
+```
+
+For Helm TLS, use `config.tls.existingSecret` and the gateway CA settings. mTLS also requires matching client/probe credentials. The chart includes migration hooks, probes and optional HPA/PDB/monitoring configuration; it does not provision PostgreSQL, NATS or Redis.
+
+Use private dependency credentials, explicit API-key scopes and your own persistence/backup policy. [SECURITY.md](SECURITY.md) describes security reporting; the [configuration values](deployments/helm/janus-core/values.yaml) define the deployment options.
 
 ## Verification
 
-**28 test packages · 1,380+ race-enabled tests (0 FAIL)** · 7 reliability fault scenarios on real PG/NATS · GA evidence drills in CI: PITR disaster recovery, Redis fail-closed runtime, NATS stream-loss rebuild, and a 6-case × 3-language SDK chaos matrix.
+**Real-dependency scenarios** · **six faults × three SDK languages** · **deployment and recovery drills**
+
+| Evidence | Scope |
+|---|---|
+| [CI](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml) | Build, Go/SDK tests, contracts and Helm checks |
+| [Nightly](https://github.com/agentium-lab/Janus/actions/workflows/nightly.yml) | Auth, PG/NATS deployment cells, Redis fail-closed, failover/PITR, Helm upgrade/rollback and SDK fault scenarios |
+| [CodeQL](https://github.com/agentium-lab/Janus/actions/workflows/codeql.yml) | Go static security analysis |
+
+A [reference functional run](https://github.com/agentium-lab/Janus/actions/runs/42140317423) covers `ce11be3` (2026-11-06). Sustained load uses a separate profile; capacity and latency depend on the measured configuration, metrics and any `WAIVED` results, not a functional green run.
+
+For source development, use the toolchain in `go.work`:
 
 ```bash
-make verify                    # vet + staticcheck + tests + coverage ≥ 90%
+make verify                    # local coverage floor: 90%
 make contract-check            # API contract drift check
-make beta-fast                 # in-memory concurrent pipeline simulation
-go test ./server/tests/reliability/   # PG-backed fault scenarios
-make verify-production         # all gates + GA readiness
+make beta-fast                 # in-memory pipeline simulation
+go test ./server/tests/reliability/  # configure real dependencies
+make verify-production         # aggregate local gates
 ```
+
+CI currently uses an 85% coverage floor. Workflow definitions, runs and their PASS/FAIL/SKIP artifacts establish what actually executed.
 
 ## Known Limitations
 
@@ -319,7 +408,15 @@ Inputs the API *accepts* are not all inputs the broker *enforces*. The authorita
 | Task `ttl_seconds` / `deadline` / `priority` | ✅ **Enforced from the `tasks` columns** — same-named envelope fields are advisory projections |
 | `mailbox.max_concurrency` | ⚠️ **Accepted, not in the dispatch gate** — the claim transaction enforces tenant/agent budget concurrency |
 | `tool.invoke` policy / tool audit events | ⚠️ **Audit-plane only** — tool `started` events are emitted at submit time; `tool.invoke` does not gate tool execution |
+| Tracing | Service spans and optional OTLP export are wired; W3C traceparent extraction/injection is not connected in the production HTTP chain |
+| Artifact storage | ⚠️ **Library interface only** — no public upload/download API; applications store result data and return references |
 | Helm TLS `certFile`/`keyFile` values | ⚠️ **Not wired** — Secret-based TLS (`existingSecret`) is the supported mode |
+
+### Budget and cost semantics
+
+- TPM uses task-declared token estimates. Actual usage is agent-reported and cost uses an estimated unit price; this is not trusted billing.
+- Daily-cost admission checks use settled spend. In-flight tasks can exceed the threshold; monthly cost caps are not enforced.
+- Redis rate-check failures default to fail-open; fail-closed is configurable. Concurrency and durable settlement rely on PostgreSQL.
 
 ### Delivery semantics
 
