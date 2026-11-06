@@ -2,10 +2,10 @@
 
 # Janus
 
-**A2A 原生的持久化智能体任务总线 / A2A-native durable agent broker**
+**A2A-native durable agent broker for enterprise agent networks**
 
-在 AI 智能体之间可靠、安全、可审计地交接任务——
-跨框架、跨团队、跨组织。
+Reliably, securely, and auditably hand off tasks between AI agents —
+across frameworks, teams, and organizations.
 
 **English** · [简体中文](README.zh-CN.md)
 
