@@ -2,10 +2,12 @@
 
 # Janus
 
-**A2A-native durable agent broker for enterprise agent networks**
+**A2A 原生的持久化智能体任务总线 / A2A-native durable agent broker**
 
-Reliably, securely, and auditably hand off tasks between AI agents —
-across frameworks, teams, and organizations.
+在 AI 智能体之间可靠、安全、可审计地交接任务——
+跨框架、跨团队、跨组织。
+
+**English** · [简体中文](README.zh-CN.md)
 
 [![Release](https://img.shields.io/github/v/release/agentium-lab/Janus?color=brightgreen&label=release)](https://github.com/agentium-lab/Janus/releases)
 [![Go Version](https://img.shields.io/badge/go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
@@ -13,7 +15,9 @@ across frameworks, teams, and organizations.
 [![CI](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/agentium-lab/Janus/actions/workflows/ci.yml)
 [![Website](https://img.shields.io/badge/website-janusa2a.com-ff5c8a)](https://janusa2a.com)
 
-[Documentation](https://janusa2a.com/docs/quickstart.html) · [Quick Start](#quick-start) · [Architecture](#architecture) · [Releases](https://github.com/agentium-lab/Janus/releases)
+`♻️ Durable` `⚖️ Governed` `🔍 Auditable` `🔌 Multi-protocol` `🧩 SDK × 3`
+
+[Documentation](https://janusa2a.com/docs/quickstart.html) · [Quick Start](#quick-start) · [Capabilities](#core-capabilities) · [Architecture](#architecture) · [Limitations](#known-limitations) · [Releases](https://github.com/agentium-lab/Janus/releases)
 
 </div>
 
@@ -23,12 +27,9 @@ Janus is a production-grade task broker that sits **between** your agents — La
 
 It doesn't replace your agent runtime. It makes collaboration between runtimes production-safe.
 
-> **v1.11.0 — GA** (2026-11-06). External review at 9/10 with GA
-> recommendation, no open P1. Measured on the GA evidence rig (PG queue
-> driver, 120s sustained window): **100 task/s · 495 event/s · publish p95
-> 55ms · warm handoff p95 32ms**; in-window pull p95 218ms is recorded as
-> the accepted performance boundary on the test hardware. Delivery is
-> **at-least-once** (see [Enforcement semantics](#known-limitations)).
+> **v1.11.0 — GA** · 9/10 external review with GA recommendation, no open P1.
+> Delivery semantics are **at-least-once** — see [Enforcement semantics](#known-limitations)
+> for the authoritative map of what is enforced vs. merely accepted.
 
 ## Why Janus?
 
@@ -36,16 +37,16 @@ Point-to-point agent calls work in demos. In production they break:
 
 | Without a broker | With Janus |
 |---|---|
-| Tasks lost when an agent crashes mid-task | Durable mailboxes + lease recovery — tasks automatically return to the queue |
-| No unified audit trail across agents | Audit events written transactionally (outbox pattern), projected with automatic retry, replayable via REST — per tenant, task, and trace |
-| Downstream agents overwhelmed | RPM / TPM / concurrency budgets enforced per tenant and agent (team scope is saved but not yet enforced — see Enforcement semantics) |
-| Anyone can call anyone | Policy engine with allow / deny / approval-required rules |
-| Token spend is invisible | Usage ledger with per-scope accounting *(trusted cost metering: roadmap)* |
-| Wrong agent gets the task | Capability + group + intent routing, validated against the live catalog |
+| 😮‍💨 Tasks lost when an agent crashes mid-task | ♻️ Durable mailboxes + lease recovery — tasks automatically return to the queue |
+| 📝 No unified audit trail across agents | 🔍 Audit events written transactionally (outbox pattern), projected with retry, replayable via REST — per tenant, task, and trace |
+| 🌊 Downstream agents overwhelmed | ⚖️ RPM / TPM / concurrency budgets enforced per tenant and agent *(team scope: saved, not yet enforced — see [Limitations](#known-limitations))* |
+| 🔓 Anyone can call anyone | 🛡️ Policy engine with allow / deny / approval-required rules |
+| 💸 Token spend invisible | 📊 Usage ledger with per-scope accounting *(trusted cost metering: roadmap)* |
+| 🎯 Wrong agent gets the task | 🧭 Capability + group + intent routing, validated against the live catalog |
 
 ## Quick Start
 
-**Prerequisites:** Go 1.25+, PostgreSQL 13+, NATS 2.10+ (JetStream), Redis 7+
+**Prerequisites:** Go 1.25+ · PostgreSQL 13+ · NATS 2.10+ (JetStream) · Redis 7+
 
 ```bash
 # 1. Start dependencies
@@ -62,63 +63,47 @@ JANUS_NATS_URL=nats://localhost:4222 JANUS_REDIS_ADDR=localhost:6379 \
 JANUS_HTTP_HOST=localhost JANUS_AUTH_ENABLED=false ./janus-api
 ```
 
-### Running without NATS
-
-PostgreSQL can act as the task queue itself — deploy Janus with a single
-strong dependency:
+<details>
+<summary><strong>⚙️ Single-dependency mode</strong> — PostgreSQL as the task queue itself (no NATS)</summary>
 
 ```bash
 JANUS_QUEUE_DRIVER=pg ./janus-api   # plus your usual PG/Redis settings
-# or
-JANUS_QUEUE_DRIVER=pg docker compose up
 ```
 
-Claims use `FOR UPDATE SKIP LOCKED` so worker concurrency semantics match the
-NATS path. Add NATS back (`--profile with-nats`) when you want its throughput
-and event fan-out at scale.
+Claims use `FOR UPDATE SKIP LOCKED`, so worker concurrency semantics match the NATS path. Add NATS back (`--profile with-nats`) when you want its throughput and event fan-out at scale.
 
 > **Full-stack alternative:** `docker compose up -d` runs everything with API-key auth enabled and seeds a public dev key for tenant `acme` (credential in [deployments/dev/seed-dev-key.sql](deployments/dev/seed-dev-key.sql)). Export it as `JANUS_API_KEY` and pass `api_key=` to the SDK client.
 
-**Send your first task** — natural language in, routed to the right agent:
+</details>
+
+**Send your first task** — register an agent, publish by capability, pull → ack with lease protection:
 
 ```python
 from janus_broker import (
-    AckRequest,
-    AgentCapability,
-    JanusClient,
-    Payload,
-    PublishTaskRequest,
-    RegisterAgentRequest,
-    Target,
-    TaskEnvelope,
+    AckRequest, AgentCapability, JanusClient, Payload,
+    PublishTaskRequest, RegisterAgentRequest, Target, TaskEnvelope,
 )
 
 client = JanusClient(base_url="http://localhost:8080", tenant_id="acme")
 
-# Register an agent with its capabilities (request models, not raw dicts)
 client.register_agent(RegisterAgentRequest(
     id="reviewer",
     display_name="Code Reviewer",
     capabilities=[AgentCapability(capability="code_review", description="reviews source code")],
 ))
 
-# Publish routed by capability — the A2A gateway's intent resolver can
-# also turn natural language into this shape server-side
 client.publish_task(PublishTaskRequest(
     id="task-001",
     source_agent="product",
     target_type="capability",
     target_value="code_review",
     envelope=TaskEnvelope(
-        task_id="task-001",
-        tenant_id="acme",
-        source_agent="product",
+        task_id="task-001", tenant_id="acme", source_agent="product",
         target=Target(type="capability", value="code_review"),
         payload=Payload(type="json", content="{}"),
     ),
 ))
 
-# Pull → process → ack (with lease protection)
 result = client.pull_task("review-mb", "reviewer")
 client.ack_task(result.task.id, AckRequest(
     lease_id=result.lease.lease_id,
@@ -126,8 +111,8 @@ client.ack_task(result.task.id, AckRequest(
 ))
 ```
 
-**Report live progress** — handlers receive `(task, progress)` and return a
-`(result_ref, token_usage)` tuple (`progress()` is injected by the Worker):
+<details>
+<summary><strong>📈 Report live progress</strong> — the Worker-injected <code>(task, progress) → (result_ref, usage)</code> contract</summary>
 
 ```python
 def process(task, progress):
@@ -143,6 +128,7 @@ worker.run(process)
 for evt in client.get_task_events("task-001"):
     print(evt["event_type"], evt.get("payload"))
 ```
+</details>
 
 > 📖 **Full walkthrough:** the [Smart Customer Service tutorial](https://janusa2a.com/docs/quickstart.html#example-smart-service) builds a complete multi-agent exchange workflow — intent routing, crash recovery, parallel fan-out, and data flow between agents.
 
@@ -150,24 +136,24 @@ for evt in client.get_task_events("task-001"):
 
 ### ♻️ Reliability
 
-| Feature | What it guarantees |
+| | Guarantee |
 |---|---|
-| Durable mailboxes | Tasks survive agent crashes and API restarts |
-| Transactional outbox | `accepted ≠ queued` — PostgreSQL is the source of truth |
-| ACK/NACK idempotency | Duplicate ACKs never double-settle budgets |
-| Retry with backoff | Outbox-driven delayed retry, not NATS redelivery |
-| Dead Letter Queue | Per-mailbox DLQ with replay / discard |
-| Lease timeout | Crashed agents' tasks automatically recovered |
-| Fault-scenario suite | 7 scenarios tested against real PG/NATS: fail, crash, expiry, duplicates |
+| **Durable mailboxes** | Tasks survive agent crashes and API restarts |
+| **Transactional outbox** | `accepted ≠ queued` — PostgreSQL is the source of truth |
+| **ACK/NACK idempotency** | Duplicate ACKs never double-settle budgets |
+| **Retry with backoff** | Outbox-driven delayed retry, not NATS redelivery |
+| **Dead Letter Queue** | Per-mailbox DLQ with replay / discard |
+| **Lease timeout** | Crashed agents' tasks automatically recovered |
+| **Fault-scenario suite** | 7 scenarios tested against real PG/NATS: fail, crash, expiry, duplicates |
 
 ### ⚖️ Governance
 
-| Feature | What it enforces |
+| | What it enforces |
 |---|---|
-| Policy engine | Allow / deny / approval-required per agent, capability, tool, classification |
-| Budget control | RPM / TPM / concurrency per tenant and agent (team scope saved, not enforced — see Enforcement semantics) |
-| Approval workflow | Human-in-the-loop for high-risk tasks (engages via policy `ApprovalRequired`; `requires_human_approval` alone does not gate Create) |
-| Tool audit events | Submit-time tool events (`started` at submission); lifecycle-accurate execution stages are on the roadmap, see Enforcement semantics |
+| **Policy engine** | Allow / deny / approval-required per agent, capability, tool, classification |
+| **Budget control** | RPM / TPM / concurrency per tenant and agent *(team scope saved, not enforced — see [Limitations](#known-limitations))* |
+| **Approval workflow** | Human-in-the-loop for high-risk tasks (engages via policy `ApprovalRequired`; `requires_human_approval` alone does not gate Create) |
+| **Tool audit events** | Submit-time tool events; lifecycle-accurate execution stages are on the roadmap |
 
 ### 🧭 Routing
 
@@ -182,33 +168,47 @@ Plus a live **capability catalog**: `GET /v1/tenants/{tenant}/catalog` for clien
 
 ### 🔌 Protocols
 
-**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress. **Task state is always durable in PostgreSQL; live notifications are best-effort** (bounded retry, progress may drop under load). Clients should treat the stream as an optimization and poll `GET /tasks/{id}` for the authoritative terminal state — the GetTask path is always correct. · **HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **A2A v1 subset Gateway** (`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, `GET /a2a/tasks` cursor-paginated, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`, `A2A-Version` negotiation, typed errors with `ErrorInfo`; verified against the official a2a-go client in CI; multi-turn continuation, history, List filters not yet supported — see [ADR-0005](docs/adr/0005-a2a-v1-conformance.md) for the full subset table) · **ACP Gateway** (`/acp/*`, deprecated — merged into A2A, Sunset 2026-12-31) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`) · **WebSocket** (dashboard event stream)
+**SSE Streaming** (`GET /tasks/{id}/stream`) — real-time task progress. Task state is always durable in PostgreSQL; live notifications are best-effort. Clients should treat the stream as an optimization and poll `GET /tasks/{id}` for the authoritative terminal state.
+
+**HTTP REST** (`/v1/tenants/{tenant}/...`) · **gRPC** (proto-driven dual protocol) · **WebSocket** (dashboard event stream) · **MCP Gateway** (`/mcp/tools/call`, `/mcp/resources`)
+
+<details>
+<summary><strong>A2A v1 subset Gateway</strong> · verified against the official a2a-go client in CI</summary>
+
+`POST /a2a/message:send`, `POST /a2a/message:stream`, `GET /a2a/tasks/{id}`, `GET /a2a/tasks/{id}:subscribe`, `POST /a2a/tasks/{id}:cancel`, cursor-paginated `GET /a2a/tasks`, Agent Card at `/.well-known/agent-card.json` with `supportedInterfaces`, `A2A-Version` negotiation, typed errors with `ErrorInfo`.
+
+Multi-turn continuation, history, and List filters are not yet supported — see [ADR-0005](docs/adr/0005-a2a-v1-conformance.md) for the full subset table.
+
+**ACP Gateway** (`/acp/*`) is deprecated — merged into A2A, Sunset 2026-12-31.
+</details>
 
 ### 📊 Observability & 🔐 Security
 
 | Observability | Security |
 |---|---|
-| OpenTelemetry — W3C traceparent + OTLP | API-key auth — SHA-256 hashed, prefix lookup, optional scopes (`admin` / `task:write` / `task:read` / `audit:read`) |
+| OpenTelemetry — W3C traceparent + OTLP | API-key auth — SHA-256 hashed, prefix lookup, optional scopes |
 | Prometheus — 16+ metrics | mTLS — TLS 1.2+ with client cert verification |
 | Structured JSON logs — tenant/task/trace in every line | Tenant isolation — every query, subject, key, path scoped |
-| Grafana dashboard — backlog, latency, errors pre-built | TenantGuard — path tenant must match authenticated tenant |
-| | Agent identity binding — keys can carry `bound_agent_id`; bound keys may only act as their agent (enforced at middleware + gRPC interceptor + service-layer authority overwrite) |
-| | Official-client interop — the a2a-go SDK drives our gateway in CI (`server/tests/interop`), verifying Agent Card, send/stream, Get/List/Cancel, error mapping |
+| Grafana dashboard — backlog, latency, errors pre-built | Agent identity binding — bound keys may only act as their agent (middleware + gRPC interceptor + service-layer authority) |
+| | Official-client interop — the a2a-go SDK drives our gateway in CI |
 
 ## SDKs
 
-| Language | Package | Coverage |
+| Language | Package | Highlights |
 |---|---|---|
 | **Go** | `github.com/agentium-lab/Janus/sdk/go` | 39 methods + Worker helper |
-| **Python** | `janus_broker` (httpx + pydantic) | 34 methods + JanusWorker |
-| **TypeScript** | `@agentium-lab/janus-sdk` (`sdk/typescript/`) | 30 methods + Worker helper |
+| **Python** | `janus-broker` (httpx + pydantic) | 34 methods + JanusWorker |
+| **TypeScript** | `@agentium-lab/janus-sdk` | 30 methods + Worker helper |
 
-**Install:** `pip install janus-broker` · `npm i @agentium-lab/janus-sdk` · `go get github.com/agentium-lab/Janus/sdk/go`
-**Import:** `from janus_broker import JanusClient` · `import { Client } from "@agentium-lab/janus-sdk"`
+```bash
+pip install janus-broker        # Python
+npm i @agentium-lab/janus-sdk   # TypeScript
+go get github.com/agentium-lab/Janus/sdk/go   # Go
+```
+
+All three SDKs share the same conformance fixtures (`sdk/conformance/`) and pass the same six-case chaos matrix (eof · network-cut · lease-lost · ack-failure · 90s · stop).
 
 > Naming note: distribution names carry a disambiguator where registries require it — the generic `janus-sdk` name on PyPI belongs to an unrelated project.
-
-All three SDKs share the same conformance fixtures (`sdk/conformance/`).
 
 <details>
 <summary><strong>CLI</strong> — manage everything from the terminal</summary>
@@ -262,7 +262,7 @@ janus project diff
 
 ## Key Design Invariants
 
-These rules are what make Janus trustworthy — every one of them is tested:
+Every one of these is tested:
 
 1. Business services never write to mailboxes directly — all enqueue goes through the transactional outbox
 2. `accepted ≠ queued` — a task publishes to NATS only after the DB commit
@@ -295,44 +295,35 @@ janus-event-replay-probe      # audit projection consistent?
 
 ## Verification
 
-**28 test packages · 1,380+ top-level tests (race-enabled, 0 FAIL)** · 7
-reliability fault scenarios on real PG/NATS · GA evidence drills in CI:
-PITR disaster recovery (unified business RTO 5.7s), Redis fail-closed
-runtime, NATS stream-loss rebuild, sustained-load rate gates, and a
-6-case × 3-language SDK chaos matrix (eof / network-cut / lease-lost /
-ack-failure / 90s / stop — 27/27 assertions).
+**28 test packages · 1,380+ race-enabled tests (0 FAIL)** · 7 reliability fault scenarios on real PG/NATS · GA evidence drills in CI: PITR disaster recovery, Redis fail-closed runtime, NATS stream-loss rebuild, and a 6-case × 3-language SDK chaos matrix.
 
 ```bash
-make verify                    # vet + staticcheck + tests + coverage ≥ 90% (CI enforces ≥ 85% to absorb PG timing variance)
+make verify                    # vet + staticcheck + tests + coverage ≥ 90%
 make contract-check            # API contract drift check
 make beta-fast                 # in-memory concurrent pipeline simulation
 go test ./server/tests/reliability/   # PG-backed fault scenarios
-make verify-production         # all 11 gates + GA readiness
+make verify-production         # all gates + GA readiness
 ```
-
----
 
 ## Known Limitations
 
-### Enforcement semantics (what actually gates behavior)
+### Enforcement semantics — what actually gates behavior
 
-Inputs the API *accepts* are not all inputs the broker *enforces*. The
-authoritative map as of 2026-11:
+Inputs the API *accepts* are not all inputs the broker *enforces*. The authoritative map:
 
 | Input | Semantics |
 |---|---|
-| Budget `tenant` / `agent` scope | **Enforced** at dispatch admission (RPM/TPM/concurrency) and settlement (durable PG ledger). |
-| Budget `team` scope | **Accepted, not enforced** — saved without error; scheduler and settlement read only tenant/agent scopes. Do not rely on team limits. |
-| `requires_human_approval` (policy/template) | **Accepted, not wired into Create admission** — the approval flow engages via policy `ApprovalRequired` decisions, not this field. |
-| Task `ttl_seconds` / `deadline` / `priority` | **Enforced from the `tasks` columns** (scheduling order, expiry scanner). Same-named envelope fields are advisory projections. |
-| `mailbox.max_concurrency` | **Accepted, not in the dispatch gate** — the claim transaction enforces tenant/agent budget concurrency, not the mailbox field. |
-| `tool.invoke` policy / tool audit events | **Audit-plane only** — tool `started` events are emitted at submit time, not at real execution stages, and `tool.invoke` does not gate tool execution. |
-| Helm TLS `certFile`/`keyFile` values | **Not wired** — Secret-based TLS (`existingSecret`) is the supported mode. |
+| Budget `tenant` / `agent` scope | ✅ **Enforced** at dispatch admission (RPM/TPM/concurrency) and settlement (durable PG ledger) |
+| Budget `team` scope | ⚠️ **Accepted, not enforced** — saved without error; scheduler and settlement read only tenant/agent scopes |
+| `requires_human_approval` (policy/template) | ⚠️ **Accepted, not wired into Create admission** — the approval flow engages via policy `ApprovalRequired` decisions |
+| Task `ttl_seconds` / `deadline` / `priority` | ✅ **Enforced from the `tasks` columns** — same-named envelope fields are advisory projections |
+| `mailbox.max_concurrency` | ⚠️ **Accepted, not in the dispatch gate** — the claim transaction enforces tenant/agent budget concurrency |
+| `tool.invoke` policy / tool audit events | ⚠️ **Audit-plane only** — tool `started` events are emitted at submit time; `tool.invoke` does not gate tool execution |
+| Helm TLS `certFile`/`keyFile` values | ⚠️ **Not wired** — Secret-based TLS (`existingSecret`) is the supported mode |
 
-- **At-least-once delivery.** A worker whose lease expires mid-task (default 300s) will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should call the task heartbeat endpoint to renew the lease before expiry.
-- **Token & cost figures are agent-reported and unverified** (ADR-0002). Aggregates themselves gate nothing. What rejects dispatches is the admission-enforced surface — RPM / TPM / concurrency, which the broker counts itself — plus the settled daily-cost threshold described below. TPM is an admission estimate, not a trusted hard cap: a task counts its declared max_tokens (client-declared, hence advisory) or a minimal unit when undeclared; true consumption settles from ACK-reported usage against the durable PG budget. The daily-cost check is a settled-spend admission threshold — it REJECTS new dispatches once settled usage reaches the configured limit, but in-flight (unsettled) tasks can overshoot it, so it is not a strict hard cap. Monthly cost caps are not yet enforced.
+### Delivery semantics
 
-\* ACP gateway is **deprecated** (protocol merged into A2A). Endpoints keep serving with `Deprecation`/`Sunset` headers until removal; new integrations should target `/a2a/`.
+Delivery is **at-least-once**: a worker whose lease expires mid-task will see the same delivery redelivered after recovery. Broker state is protected by idempotent ACK/NACK and lease checks, but any *external* side effects your worker performs must be idempotent. Long-running tasks should heartbeat to renew the lease.
 
 ---
 
@@ -340,6 +331,6 @@ authoritative map as of 2026-11:
 
 **[Janus](https://janusa2a.com)** — let agent collaboration stay reliable, governed, auditable, and recoverable in production.
 
-[Documentation](https://janusa2a.com/docs/quickstart.html) · [Report an Issue](https://github.com/agentium-lab/Janus/issues) · Apache-2.0
+[Documentation](https://janusa2a.com/docs/quickstart.html) · [简体中文](README.zh-CN.md) · [Report an Issue](https://github.com/agentium-lab/Janus/issues) · Apache-2.0
 
 </div>
