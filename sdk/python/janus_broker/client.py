@@ -91,16 +91,24 @@ class JanusClient:
     def _url(self, path: str) -> str:
         return f"{self._base_url}{self._prefix}{path}"
 
-    def register_agent(self, req: RegisterAgentRequest) -> None:
+    def register_agent(self, req) -> None:
+        # Accepts a RegisterAgentRequest or an equivalent dict (validated
+        # through the model, so docs examples with plain dicts work).
         # by_alias: capability objects serialize their server-side field name
         # ("schema"), not the python attribute (capability_schema) — without
         # it the server silently dropped every capability schema.
+        if not isinstance(req, RegisterAgentRequest):
+            req = RegisterAgentRequest.model_validate(req)
         resp = self._client.post(
             self._url("/agents"), json=req.model_dump(exclude_none=True, by_alias=True)
         )
         self._check(resp)
 
-    def publish_task(self, req: PublishTaskRequest) -> dict:
+    def publish_task(self, req) -> dict:
+        # Accepts a PublishTaskRequest or an equivalent dict (validated
+        # through the model — the documented quick-start shape keeps working).
+        if not isinstance(req, PublishTaskRequest):
+            req = PublishTaskRequest.model_validate(req)
         resp = self._client.post(self._url("/tasks"), json=req.model_dump(exclude_none=True))
         self._check(resp)
         return resp.json()
@@ -134,14 +142,18 @@ class JanusClient:
         )
         self._check(resp)
 
-    def ack_task(self, task_id: str, req: AckRequest) -> None:
+    def ack_task(self, task_id: str, req) -> None:
+        if not isinstance(req, AckRequest):
+            req = AckRequest.model_validate(req)
         resp = self._client.post(
             self._url(f"/tasks/{task_id}/ack"),
             json=req.model_dump(exclude_none=True),
         )
         self._check(resp)
 
-    def nack_task(self, task_id: str, req: NackRequest) -> None:
+    def nack_task(self, task_id: str, req) -> None:
+        if not isinstance(req, NackRequest):
+            req = NackRequest.model_validate(req)
         resp = self._client.post(
             self._url(f"/tasks/{task_id}/nack"),
             json=req.model_dump(exclude_none=True),
