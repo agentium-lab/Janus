@@ -8,6 +8,7 @@ from .models import (
     AckRequest,
     NackRequest,
     Task,
+    CreateMailboxRequest,
 )
 
 
@@ -184,6 +185,9 @@ class JanusClient:
         return resp.json()
 
     def create_mailbox(self, req) -> dict:
+        # Accepts a CreateMailboxRequest or an equivalent dict.
+        if not isinstance(req, CreateMailboxRequest):
+            req = CreateMailboxRequest.model_validate(req)
         resp = self._client.post(self._url("/mailboxes"), json=req.model_dump(exclude_none=True))
         self._check(resp)
         return resp.json()
