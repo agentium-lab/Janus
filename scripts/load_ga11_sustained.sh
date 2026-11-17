@@ -264,6 +264,7 @@ consumer() {
   done
   [ "$n" -gt 0 ] || return 0
   cursor=$(( RANDOM % n ))
+  local errstreak=0 backoff
   while [ ! -f "$STOP_FILE" ]; do
     mb="${mbs[cursor]}"
     ag="${ags[cursor]}"
@@ -282,8 +283,22 @@ consumer() {
     fi
     if [ "$code" != "200" ]; then
       echo "PULL-$code-$mb" >> "$WORK/pullerr-$cid"
+      # Error backoff: without it a failing pull (e.g. 503 under runner-class
+      # CPU/disk starvation) retries with zero delay, and 128 workers turn a
+      # transient degradation into a ~300 req/s 503 flood that starves the
+      # publishers — the functional gates then measure the harness meltdown,
+      # not the broker. Escalate 250ms -> 2s; reset on any healthy pull.
+      errstreak=$(( errstreak + 1 ))
+      case $errstreak in
+        1) backoff=250 ;;
+        2) backoff=500 ;;
+        3) backoff=1000 ;;
+        *) backoff=2000 ;;
+      esac
+      sleep "$(awk "BEGIN{printf \"%.3f\", $backoff/1000}")"
       continue
     fi
+    errstreak=0
     echo $(( (te - ts) / 1000000 )) >> "$WORK/lat-pull-$cid"
     tid=$(jq -r '.task.id // empty' <<<"$json")
     lid=$(jq -r '.lease.lease_id // empty' <<<"$json")
