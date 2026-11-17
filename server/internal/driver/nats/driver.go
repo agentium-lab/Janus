@@ -324,6 +324,12 @@ func (d *Driver) ReplayEvents(ctx context.Context, filter core.EventReplayFilter
 // restored stream always matches what EnsureTenant would have built (the
 // restore path previously capped EVENTS at 10k msgs while the initial
 // build had no cap — silently shrinking the broker replay window).
+// streamMaxConsumers is the explicit per-stream consumer ceiling. NATS 2.15
+// interprets MaxConsumers -1 as "server default" (1000) rather than
+// unlimited; a positive explicit value is required to scale consumers past
+// 1000 per stream. 1M comfortably exceeds per-tenant mailbox counts.
+const streamMaxConsumers = 1_000_000
+
 func taskStreamConfig(tenantID string) jetstream.StreamConfig {
 	return jetstream.StreamConfig{
 		Name:       streamName(tenantID, "TASKS"),
@@ -332,6 +338,13 @@ func taskStreamConfig(tenantID string) jetstream.StreamConfig {
 		MaxAge:     7 * 24 * time.Hour,
 		Storage:    jetstream.FileStorage,
 		Duplicates: 2 * time.Minute,
+		// NATS 2.15 changed MaxConsumers semantics: -1 (and unset) now mean
+		// the SERVER DEFAULT — a 1000-consumer ceiling — instead of
+		// unlimited, and every mailbox owns one durable consumer on this
+		// stream. An explicit positive value is the only form 2.15 honors as
+		// a real limit; probe-verified against 2.15.3: -1
+		// rejects consumer #1001, a positive value admits it.
+		MaxConsumers: streamMaxConsumers,
 	}
 }
 
@@ -343,6 +356,7 @@ func eventStreamConfig(tenantID string) jetstream.StreamConfig {
 		MaxAge:     30 * 24 * time.Hour,
 		Storage:    jetstream.FileStorage,
 		Duplicates: 2 * time.Minute,
+		MaxConsumers: streamMaxConsumers,
 	}
 }
 
@@ -357,6 +371,9 @@ func retryStreamConfig(tenantID string) jetstream.StreamConfig {
 		// Go zero value made every healthy RETRY stream read as drifted and
 		// re-updated under the global lock on each reconcile pass.
 		Duplicates: 2 * time.Minute,
+		// NATS 2.15 defaults unset MaxConsumers to a 1000-consumer ceiling;
+		// see taskStreamConfig for the full rationale.
+		MaxConsumers: streamMaxConsumers,
 	}
 }
 
@@ -399,6 +416,7 @@ func dlqStreamConfig(tenantID, mailboxID string) jetstream.StreamConfig {
 		MaxMsgs:    10000,
 		Storage:    jetstream.FileStorage,
 		Duplicates: 2 * time.Minute,
+		MaxConsumers: streamMaxConsumers,
 	}
 }
 
