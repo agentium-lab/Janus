@@ -43,6 +43,13 @@
 # a random cursor starves cold mailboxes and leaves published tasks
 # undiscovered inside the drain.
 #
+# NOTE on NATS footprint: the throwaway tenant's streams and consumers are
+#   NEVER torn down — each full-profile run leaves ~NUM_MAILBOXES DLQ streams
+#   + consumers (~3.8GB resident at 10000 mailboxes) on the NATS it ran
+#   against. Run against an ephemeral NATS (CI does), or afterwards purge the
+#   JANUS_<tenant>_* streams on any long-lived instance. See
+#   docs/adr/0007-dlq-per-mailbox-stream-capacity.md.
+#
 # NOTE on server sizing: the outbox publisher AND the audit projector each
 # drain outbox.batch_size rows per outbox.worker_interval tick (defaults 50 /
 # 500ms = ~100 rows/s each). At TASK_RATE=100 the full profile produces ~600
