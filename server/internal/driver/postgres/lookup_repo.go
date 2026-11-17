@@ -112,6 +112,13 @@ func (r *agentLookupRepo) GetAgentMailbox(ctx context.Context, tenantID, agentID
 		tenantID, agentID,
 	).Scan(&mailboxID)
 	if err != nil {
+		// ErrNoRows is a client-facing "not found", not an infra error: name
+		// the agent so the message survives handler sanitization (the pgx text
+		// "no rows in result set" is an internalPattern and would flatten a
+		// legitimate 4xx into "bad request").
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", fmt.Errorf("agent %s has no active mailbox under tenant %s", agentID, tenantID)
+		}
 		return "", fmt.Errorf("agent %s mailbox not found: %w", agentID, err)
 	}
 	return mailboxID, nil
@@ -124,6 +131,11 @@ func (r *agentLookupRepo) ValidateMailbox(ctx context.Context, tenantID, mailbox
 		tenantID, mailboxID,
 	).Scan(&status)
 	if err != nil {
+		// Same rationale as GetAgentMailbox: a missing mailbox is a client
+		// 4xx ("mailbox not found"), never an internal error string.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("mailbox %s not found under tenant %s", mailboxID, tenantID)
+		}
 		return false, fmt.Errorf("validate mailbox: %w", err)
 	}
 	return status == "active", nil
