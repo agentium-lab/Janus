@@ -1,73 +1,89 @@
-server:
-  http_port: 8080
-  grpc_port: 9090
+# Janus API 本地配置示例 —— 与 server/internal/config/config.go 严格对齐
+#
+# 加载顺序：环境变量 > 本文件 > 内置默认值（即本文件注释里写的 default）。
+# 本文件所有键都可用环境变量覆盖：JANUS_ + 大写路径（点/下划线变下划线），
+#   例：postgres.max_conns -> JANUS_PG_MAX_CONNS（少数历史短名见 config.go bindEnvVars）。
+# 指定本文件路径：JANUS_CONFIG_FILE=/path/to/this.yaml（默认搜索 ./, /etc/janus/, ~/.janus/）。
+# 部署权威副本是 deployments/helm 的 configmap.yaml；两处语义以 config.go 为准。
+
+# 队列驱动："nats"（默认，NATS JetStream）| "pg"（单依赖模式，无 NATS，PG 队列）
+queue:
+  driver: nats            # default: nats | env: JANUS_QUEUE_DRIVER
+
+http_port: 8080           # default: 8080  | env: JANUS_HTTP_PORT
+http_host: ""             # default: ""（全部接口）；"127.0.0.1" 仅本地
+grpc_port: 9090           # default: 9090  | env: JANUS_GRPC_PORT
+
+postgres:                 # 默认值见 config.go；env 前缀 JANUS_PG_*
+  host: localhost
+  port: 5432
+  user: janus
+  password: ""            # 生产必改；env: JANUS_PG_PASSWORD
+  database: janus
+  max_conns: 20
+  sslmode: require        # 本地开发常用 disable；default: require
 
 nats:
-  url: "nats://localhost:4222"
+  url: nats://localhost:4222
 
-postgres:
-  host: "localhost"
-  port: 5432
-  user: "janus"
-  password: "${JANUS_PG_PASSWORD}"
-  database: "janus"
-  max_conns: 20
-
-cache:
-  driver: "redis"
-  mode: "standalone"
-  addr: "localhost:6379"
-  sentinel:
-    master_name: "mymaster"
-    addrs:
-      - "sentinel1:26379"
-      - "sentinel2:26379"
-      - "sentinel3:26379"
-  cluster:
-    addrs:
-      - "node1:6379"
-      - "node2:6379"
-      - "node3:6379"
-  password: "${JANUS_CACHE_PASSWORD}"
+redis:                    # 可选加速器（限流/心跳标记）；PG 为权威，缺席自动降级
+  addr: localhost:6379
+  password: ""
   db: 0
-  pool_size: 100
-
-log:
-  level: "info"
-  format: "json"
+  enable_tls: false
 
 migration:
-  auto: true
-  path: "migrations/"
+  auto: true              # 启动即应用 migrations/
+  path: migrations/
 
 heartbeat:
-  sweeper_interval: "30s"
-  ttl: "60s"
+  sweeper_interval: 30s
+  ttl: 60s
+
+mailbox:
+  reconcile_interval: 60s # PG<->broker 消费者漂移收敛窗口
+
+auth:
+  enabled: true           # API key 认证（X-API-Key / Bearer）
+
+tls:                      # HTTP+gRPC 同配置；cert+key 都设即启用；再加 client_ca_file 即 mTLS
+  enabled: false
+  cert_file: ""
+  key_file: ""
+  client_ca_file: ""
+  gateway:                # grpc-gateway 作为 gRPC 客户端连本进程 gRPC 的校验
+    ca_cert_file: ""      # 为空且未显式 insecure 时拒绝启动（不许无校验的 TLS）
+    insecure: false
+    server_name: ""       # 证书无 localhost SAN 时指定
+    client_cert_file: ""
+    client_key_file: ""
+
+cors:
+  allowed_origins: []     # 默认拒绝跨域；按需放行精确来源
+
+metrics:
+  enabled: true
+  path: /metrics
+
+tracing:
+  enabled: false
+  otlp_endpoint: localhost:4317
+  service_name: janus-api
 
 outbox:
-  enable: true
-  poll_interval: "500ms"
-  idle_backoff_max: "5s"
-  batch_size: 100
-  lease_duration: "60s"
-  max_retries: 5
-  listen_notify: true
+  worker_interval: 500ms
+  batch_size: 50          # 高写入场景调大（GA-11 满档用 1000）
+  lease_duration: 60s
+  max_attempts: 10
 
-observability:
-  metrics:
-    enabled: true
-    path: "/metrics"
-  tracing:
-    enabled: false
-    endpoint: ""
-    service_name: "janus-api"
-    insecure: true
+budget:
+  rate_limit_failure_mode: fail-open   # fail-open | fail-closed（Redis 不可得时的限流策略）
 
-llm:
+llm:                      # 自然语言 intent 解析（target_type=intent 需要）
   enabled: false
-  provider: "openai"
-  model: "gpt-4o-mini"
-  api_key: "${JANUS_LLM_API_KEY}"
-  base_url: "https://api.openai.com/v1"
+  provider: openai
+  model: gpt-4o-mini
+  api_key: ""             # env: JANUS_LLM_API_KEY
+  base_url: https://api.openai.com/v1
   max_tokens: 200
   timeout_seconds: 5
