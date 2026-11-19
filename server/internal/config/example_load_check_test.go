@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -10,6 +11,22 @@ import (
 // config.Load of the shipped file.
 
 func TestExampleYamlParsesThroughLoad(t *testing.T) {
+	// The FILE is under test, not ambient configuration: clear every
+	// JANUS_* override (CI pipelines export e.g. JANUS_PG_SSLMODE=disable
+	// for live-PG jobs) so viper resolves purely from the shipped file.
+	saved := map[string]string{}
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "JANUS_") {
+			k := strings.SplitN(kv, "=", 2)[0]
+			saved[k] = os.Getenv(k)
+			os.Unsetenv(k)
+		}
+	}
+	t.Cleanup(func() {
+		for k, v := range saved {
+			os.Setenv(k, v)
+		}
+	})
 	os.Setenv("JANUS_CONFIG_FILE", "../../../configs/janus.example.yaml")
 	t.Cleanup(func() { os.Unsetenv("JANUS_CONFIG_FILE") })
 	cfg := Load()
