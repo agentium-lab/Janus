@@ -103,6 +103,7 @@ var parityRoutes = []parityRoute{
 	{"approval reject", http.MethodPost, "/v1/tenants/acme/approvals/ap-1/reject", `{"approver":"x"}`, auth.ScopeAdmin, 200, `"status":"rejected"`, ""},
 	// artifacts (upload -> download -> delete -> gone; rows run in order)
 	{"artifact upload", http.MethodPut, "/v1/tenants/acme/artifacts/art-1", "parity artifact bytes", auth.ScopeTaskWrite, 201, `"hash":`, ""},
+	{"artifact list", http.MethodGet, "/v1/tenants/acme/artifacts", "", auth.ScopeTaskRead, 200, "art-1", ""},
 	{"artifact download", http.MethodGet, "/v1/tenants/acme/artifacts/art-1", "", auth.ScopeTaskRead, 200, "parity artifact bytes", ""},
 	{"artifact delete", http.MethodDelete, "/v1/tenants/acme/artifacts/art-1", "", auth.ScopeTaskWrite, 204, "", ""},
 	// context refs

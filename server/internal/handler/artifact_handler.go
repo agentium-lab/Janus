@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/agentium-lab/Janus/server/internal/artifact"
@@ -124,6 +125,31 @@ func (h *ArtifactHandler) Download(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.Copy(w, body)
+}
+
+func (h *ArtifactHandler) List(w http.ResponseWriter, r *http.Request) {
+	if h.disabled() {
+		writeError(w, http.StatusServiceUnavailable, "artifact store not configured (artifact.dir)")
+		return
+	}
+	tenantID := r.PathValue("tenantID")
+	if tenantID == "" {
+		writeError(w, http.StatusBadRequest, "tenant id is required")
+		return
+	}
+	root := filepath.Join(h.dir, tenantID)
+	arts := []*artifact.Artifact{}
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".meta.json") {
+			return nil
+		}
+		if art, merr := artifact.ReadMeta(path); merr == nil {
+			arts = append(arts, art)
+		}
+		return nil
+	})
+	sort.Slice(arts, func(i, j int) bool { return arts[i].ID < arts[j].ID })
+	writeJSON(w, http.StatusOK, map[string]interface{}{"artifacts": arts})
 }
 
 func (h *ArtifactHandler) Delete(w http.ResponseWriter, r *http.Request) {

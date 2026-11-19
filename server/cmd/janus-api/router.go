@@ -123,6 +123,7 @@ func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHa
 		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/approve": approvalH.Approve,
 		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/reject":  approvalH.Reject,
 		// artifacts
+		"GET /v1/tenants/{tenantID}/artifacts":               artifactH.List,
 		"PUT /v1/tenants/{tenantID}/artifacts/{artifactID}":    artifactH.Upload,
 		"GET /v1/tenants/{tenantID}/artifacts/{artifactID}":    artifactH.Download,
 		"DELETE /v1/tenants/{tenantID}/artifacts/{artifactID}": artifactH.Delete,

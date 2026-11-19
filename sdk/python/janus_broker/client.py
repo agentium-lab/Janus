@@ -208,6 +208,11 @@ class JanusClient:
         self._check(resp)
         return resp.json()
 
+    def list_artifacts(self) -> list:
+        resp = self._client.get(self._url("/artifacts"))
+        self._check(resp)
+        return resp.json().get("artifacts", [])
+
     def download_artifact(self, artifact_id: str) -> bytes:
         resp = self._client.get(self._url(f"/artifacts/{artifact_id}"))
         self._check(resp)

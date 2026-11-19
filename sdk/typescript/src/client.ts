@@ -141,6 +141,11 @@ export class Client {
     }
   }
 
+  async listArtifacts(): Promise<ArtifactInfo[]> {
+    const data = await this.json<{ artifacts?: ArtifactInfo[] }>("GET", "/artifacts");
+    return data.artifacts || [];
+  }
+
   async downloadArtifact(artifactID: string): Promise<Uint8Array> {
     const { resp, done } = await this.doFetch("GET", "/artifacts/" + encodeURIComponent(artifactID));
     try {

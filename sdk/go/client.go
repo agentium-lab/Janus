@@ -190,6 +190,17 @@ func (c *Client) UploadArtifact(ctx context.Context, artifactID, contentType str
 	return &info, nil
 }
 
+// ListArtifacts returns metadata for every artifact in the tenant store.
+func (c *Client) ListArtifacts(ctx context.Context) ([]ArtifactInfo, error) {
+	var out struct {
+		Artifacts []ArtifactInfo `json:"artifacts"`
+	}
+	if err := c.doGet(ctx, "/v1/tenants/"+c.tenantID+"/artifacts", &out); err != nil {
+		return nil, err
+	}
+	return out.Artifacts, nil
+}
+
 // DownloadArtifact fetches artifact bytes by ID.
 func (c *Client) DownloadArtifact(ctx context.Context, artifactID string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,

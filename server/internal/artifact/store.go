@@ -124,7 +124,7 @@ func (s *LocalArtifactStore) Get(ctx context.Context, tenantID, artifactID strin
 	// Metadata comes from the sidecar written at Store time so the body can be
 	// streamed without loading it into memory. Falls back to a stat-only
 	// record for artifacts stored before sidecars existed.
-	art, err := readMeta(metaPath(path))
+	art, err := ReadMeta(metaPath(path))
 	if err != nil {
 		info, statErr := os.Stat(path)
 		if statErr != nil {
@@ -147,7 +147,7 @@ func writeMeta(p string, art *Artifact) error {
 	return os.WriteFile(p, b, 0o644)
 }
 
-func readMeta(p string) (*Artifact, error) {
+func ReadMeta(p string) (*Artifact, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		return nil, err
