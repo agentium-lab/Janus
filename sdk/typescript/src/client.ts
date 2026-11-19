@@ -20,6 +20,14 @@ import type {
   CreateAPIKeyRequest,
 } from "./types";
 
+export interface ArtifactInfo {
+  id: string;
+  tenant_id: string;
+  hash: string;
+  size: number;
+  content_type: string;
+}
+
 export interface ClientConfig {
   baseURL: string;
   tenantID: string;
@@ -56,8 +64,12 @@ export class Client {
   // The timeout covers connect, headers, AND body reads: aborting the
   // controller interrupts an in-flight body read too, so the timer stays
   // armed until the caller has consumed the body.
-  private async doFetch(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ resp: Response; done: () => void }> {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+  private async doFetch(method: string, path: string, body?: unknown, signal?: AbortSignal, contentType?: string): Promise<{ resp: Response; done: () => void }> {
+    const rawBody = body instanceof Uint8Array;
+    const headers: Record<string, string> = rawBody || contentType
+      ? {}
+      : { "Content-Type": "application/json" };
+    if (contentType) headers["Content-Type"] = contentType;
     if (this.apiKey) headers["X-API-Key"] = this.apiKey;
 
     const controller = new AbortController();
@@ -70,7 +82,7 @@ export class Client {
       const resp = await fetch(this.url(path), {
         method,
         headers,
-        body: body ? JSON.stringify(body) : undefined,
+        body: body ? (rawBody ? (body as Uint8Array) : JSON.stringify(body)) : undefined,
         signal: controller.signal,
       });
       if (!resp.ok) {
@@ -115,6 +127,32 @@ export class Client {
 
   async registerAgent(req: RegisterAgentRequest): Promise<{ id: string }> {
     return this.json("POST", "/agents", req);
+  }
+
+  // --- Artifact (minimal local store) ---
+
+  async uploadArtifact(artifactID: string, data: Uint8Array | string, contentType?: string): Promise<ArtifactInfo> {
+    const body = typeof data === "string" ? new TextEncoder().encode(data) : data;
+    const { resp, done } = await this.doFetch("PUT", "/artifacts/" + encodeURIComponent(artifactID), body, undefined, contentType);
+    try {
+      return await resp.json() as ArtifactInfo;
+    } finally {
+      done();
+    }
+  }
+
+  async downloadArtifact(artifactID: string): Promise<Uint8Array> {
+    const { resp, done } = await this.doFetch("GET", "/artifacts/" + encodeURIComponent(artifactID));
+    try {
+      return new Uint8Array(await resp.arrayBuffer());
+    } finally {
+      done();
+    }
+  }
+
+  async deleteArtifact(artifactID: string): Promise<void> {
+    const { done } = await this.doFetch("DELETE", "/artifacts/" + encodeURIComponent(artifactID));
+    done();
   }
 
   async listAgents(): Promise<Agent[]> {

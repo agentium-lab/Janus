@@ -4,12 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/artifact"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/handler"
 	"github.com/agentium-lab/Janus/server/internal/service"
@@ -99,6 +101,10 @@ var parityRoutes = []parityRoute{
 	{"approval get", http.MethodGet, "/v1/tenants/acme/approvals/ap-1", "", auth.ScopeTaskRead, 200, "MARKER-APPROVAL-GET", ""},
 	{"approval approve", http.MethodPost, "/v1/tenants/acme/approvals/ap-1/approve", `{"approver":"x"}`, auth.ScopeAdmin, 200, `"status":"approved"`, ""},
 	{"approval reject", http.MethodPost, "/v1/tenants/acme/approvals/ap-1/reject", `{"approver":"x"}`, auth.ScopeAdmin, 200, `"status":"rejected"`, ""},
+	// artifacts (upload -> download -> delete -> gone; rows run in order)
+	{"artifact upload", http.MethodPut, "/v1/tenants/acme/artifacts/art-1", "parity artifact bytes", auth.ScopeTaskWrite, 201, `"hash":`, ""},
+	{"artifact download", http.MethodGet, "/v1/tenants/acme/artifacts/art-1", "", auth.ScopeTaskRead, 200, "parity artifact bytes", ""},
+	{"artifact delete", http.MethodDelete, "/v1/tenants/acme/artifacts/art-1", "", auth.ScopeTaskWrite, 204, "", ""},
 	// context refs
 	{"context ref get", http.MethodGet, "/v1/tenants/acme/context-refs/ref-1", "", auth.ScopeTaskRead, 200, "MARKER-CTXREF-GET", ""},
 	{"context ref attach", http.MethodPost, "/v1/tenants/acme/context-refs", `{"type":"document","uri":"s3://b/f"}`, auth.ScopeTaskWrite, 200, `"type":"document"`, ""},
@@ -296,6 +302,11 @@ func newParityRouter(dispatchSvc handler.DispatchService) http.Handler {
 // fake) while keeping every other binding identical to the parity router.
 func newParityRouterWith(dispatchSvc handler.DispatchService, taskSvc handler.TaskService) http.Handler {
 	stub := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	artifactDir, aerr := os.MkdirTemp("", "parity-artifacts-*")
+	if aerr != nil {
+		panic("parity artifact dir: " + aerr.Error())
+	}
+	artifactH := handler.NewArtifactHandler(artifact.NewLocalArtifactStore(artifactDir), artifactDir, 10, 1024)
 	return newRouter(
 		handler.NewTenantHandler(fakeTenantSvc{}),
 		handler.NewAgentHandler(fakeAgentSvc{}),
@@ -305,6 +316,7 @@ func newParityRouterWith(dispatchSvc handler.DispatchService, taskSvc handler.Ta
 		handler.NewAuditHandler(fakeAuditSvc{}),
 		handler.NewApprovalHandler(fakeApprovalSvc{}),
 		handler.NewContextRefHandler(service.NewContextRefService(fakeContextRefRepo{})),
+		artifactH,
 		nil, // wsH: /ws is not part of the tenant route table
 		handler.NewSSEHandler(closedBroadcaster{}),
 		handler.NewProgressHandler(fakeProgressSvc{}, nopPublisher{}),
@@ -476,6 +488,7 @@ var routeTableWildcards = map[string]string{
 	"{traceID}":    "tr-1",
 	"{scopeType}":  "mailbox",
 	"{scopeID}":    "mb-1",
+	"{artifactID}": "art-1",
 }
 
 func materializeRoutePattern(pattern string) string {

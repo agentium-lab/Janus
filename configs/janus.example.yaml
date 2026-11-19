@@ -79,6 +79,11 @@ outbox:
 budget:
   rate_limit_failure_mode: fail-open   # fail-open | fail-closed（Redis 不可得时的限流策略）
 
+artifact:                # 最小版本地文件柜（小文件/试用模式；生产存储请自带 S3——企业版范畴）
+  dir: ""                 # 空 = 功能关闭（路由返回 503）；env: JANUS_ARTIFACT_DIR
+  max_size_mb: 10         # 单文件硬顶，超限 413
+  tenant_quota_mb: 1024   # 每租户总配额，超限 413
+
 llm:                      # 自然语言 intent 解析（target_type=intent 需要）
   enabled: false
   provider: openai

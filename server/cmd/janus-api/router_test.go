@@ -74,6 +74,7 @@ func newTestRouter() http.Handler {
 		handler.NewAuditHandler(fakeAuditSvc{}),
 		nil, // approvalH
 		nil, // contextRefH
+		nil, // artifactH
 		nil, // wsH
 		nil, // sseH
 		nil, // progressH

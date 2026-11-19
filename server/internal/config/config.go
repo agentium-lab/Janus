@@ -22,6 +22,7 @@ type Config struct {
 	Migration MigrationConfig `mapstructure:"migration"`
 	Heartbeat HeartbeatConfig `mapstructure:"heartbeat"`
 	Mailbox   MailboxConfig   `mapstructure:"mailbox"`
+	Artifact ArtifactConfig  `mapstructure:"artifact"`
 	Auth      AuthConfig      `mapstructure:"auth"`
 	TLS       TLSConfig       `mapstructure:"tls"`
 	CORS      CORSConfig      `mapstructure:"cors"`
@@ -105,6 +106,15 @@ type MigrationConfig struct {
 type HeartbeatConfig struct {
 	SweeperInterval string `mapstructure:"sweeper_interval"`
 	TTL             string `mapstructure:"ttl"`
+}
+
+// ArtifactConfig: minimal local-disk artifact store (small-file/trial
+// mode — production storage is bring-your-own; S3 adapters are Enterprise).
+// An empty Dir disables the artifact routes (503 with a clear error).
+type ArtifactConfig struct {
+	Dir           string `mapstructure:"dir"`
+	MaxSizeMB     int    `mapstructure:"max_size_mb"`
+	TenantQuotaMB int    `mapstructure:"tenant_quota_mb"`
 }
 
 type MailboxConfig struct {
@@ -235,6 +245,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("migration.path", "migrations/")
 	v.SetDefault("heartbeat.sweeper_interval", "30s")
 	v.SetDefault("mailbox.reconcile_interval", "60s")
+	v.SetDefault("artifact.dir", "")
+	v.SetDefault("artifact.max_size_mb", 10)
+	v.SetDefault("artifact.tenant_quota_mb", 1024)
 	v.SetDefault("heartbeat.ttl", "60s")
 	v.SetDefault("auth.enabled", true)
 	v.SetDefault("tls.enabled", false)
@@ -281,6 +294,9 @@ func bindEnvVars(v *viper.Viper) {
 		"JANUS_MIGRATION_PATH":                 "migration.path",
 		"JANUS_HB_SWEEPER_INTERVAL":            "heartbeat.sweeper_interval",
 		"JANUS_MAILBOX_RECONCILE_INTERVAL":     "mailbox.reconcile_interval",
+		"JANUS_ARTIFACT_DIR":                   "artifact.dir",
+		"JANUS_ARTIFACT_MAX_SIZE_MB":           "artifact.max_size_mb",
+		"JANUS_ARTIFACT_TENANT_QUOTA_MB":       "artifact.tenant_quota_mb",
 		"JANUS_HB_TTL":                         "heartbeat.ttl",
 		"JANUS_AUTH_ENABLED":                   "auth.enabled",
 		"JANUS_TLS_ENABLED":                    "tls.enabled",

@@ -197,6 +197,26 @@ class JanusClient:
         self._check(resp)
         return resp.json()
 
+    # --- Artifact (minimal local store) ---
+
+    def upload_artifact(self, artifact_id: str, data: bytes, content_type: str = "application/octet-stream") -> dict:
+        resp = self._client.put(
+            self._url(f"/artifacts/{artifact_id}"),
+            data=data,
+            headers={"Content-Type": content_type},
+        )
+        self._check(resp)
+        return resp.json()
+
+    def download_artifact(self, artifact_id: str) -> bytes:
+        resp = self._client.get(self._url(f"/artifacts/{artifact_id}"))
+        self._check(resp)
+        return resp.content
+
+    def delete_artifact(self, artifact_id: str) -> None:
+        resp = self._client.delete(self._url(f"/artifacts/{artifact_id}"))
+        self._check(resp)
+
     def update_mailbox(self, mailbox_id: str, req) -> dict:
         resp = self._client.patch(self._url(f"/mailboxes/{mailbox_id}"), json=req.model_dump(exclude_none=True))
         self._check(resp)

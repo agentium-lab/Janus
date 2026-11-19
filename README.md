@@ -201,6 +201,7 @@ Your application stores the result; returning a reference does not upload a file
 | Feature | Guarantee |
 |---|---|
 | **Durable mailboxes** | Tasks survive agent crashes and API restarts |
+| **Artifact handoff (trial mode)** | Agents deliver small result files through the broker: sha256 integrity, size/quota caps, local disk. Production storage: bring your own |
 | **Transactional outbox** | `accepted ≠ queued` — PostgreSQL is the source of truth |
 | **ACK/NACK idempotency** | Duplicate ACKs never double-settle budgets |
 | **Retry with backoff** | Persisted retry_at scheduling, republished through the Outbox |

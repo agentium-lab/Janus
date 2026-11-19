@@ -28,6 +28,9 @@ func TestExampleYamlParsesThroughLoad(t *testing.T) {
 	if cfg.TLS.Enabled || cfg.TLS.Gateway.Insecure || cfg.Metrics.Path != "/metrics" {
 		t.Fatalf("tls/metrics: %+v %+v", cfg.TLS, cfg.Metrics)
 	}
+	if cfg.Artifact.Dir != "" || cfg.Artifact.MaxSizeMB != 10 || cfg.Artifact.TenantQuotaMB != 1024 {
+		t.Fatalf("artifact: %+v", cfg.Artifact)
+	}
 	if cfg.LLM.Provider != "openai" || cfg.Redis.Addr != "localhost:6379" || cfg.Redis.EnableTLS {
 		t.Fatalf("llm/redis: %+v %+v", cfg.LLM, cfg.Redis)
 	}

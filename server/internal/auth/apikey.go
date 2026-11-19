@@ -197,6 +197,10 @@ var TenantRoutes = []TenantRoute{
 	{http.MethodGet, "/v1/tenants/{tenantID}/approvals/{approvalID}", ScopeTaskRead},
 	{http.MethodPost, "/v1/tenants/{tenantID}/approvals/{approvalID}/approve", ScopeAdmin},
 	{http.MethodPost, "/v1/tenants/{tenantID}/approvals/{approvalID}/reject", ScopeAdmin},
+	// artifacts (minimal local store: upload/download/delete)
+	{http.MethodPut, "/v1/tenants/{tenantID}/artifacts/{artifactID}", ScopeTaskWrite},
+	{http.MethodGet, "/v1/tenants/{tenantID}/artifacts/{artifactID}", ScopeTaskRead},
+	{http.MethodDelete, "/v1/tenants/{tenantID}/artifacts/{artifactID}", ScopeTaskWrite},
 	// context refs
 	{http.MethodPost, "/v1/tenants/{tenantID}/context-refs", ScopeTaskWrite},
 	{http.MethodGet, "/v1/tenants/{tenantID}/context-refs/{refID}", ScopeTaskRead},

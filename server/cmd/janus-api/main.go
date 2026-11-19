@@ -19,6 +19,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/agentium-lab/Janus/core"
+	"github.com/agentium-lab/Janus/server/internal/artifact"
 	"github.com/agentium-lab/Janus/server/internal/auth"
 	"github.com/agentium-lab/Janus/server/internal/bootstrap"
 	"github.com/agentium-lab/Janus/server/internal/config"
@@ -415,7 +416,20 @@ func main() {
 		log.Fatalf("grpc-gateway: %v", err)
 	}
 
-	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, wsH, sseH, progressH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH, policyH, budgetH)
+	// Artifact store (minimal local mode): nil handler + empty dir keeps the
+	// routes mounted but disabled (503) so the API surface is uniform.
+	var artifactH *handler.ArtifactHandler
+	if cfg.Artifact.Dir != "" {
+		artifactH = handler.NewArtifactHandler(
+			artifact.NewLocalArtifactStore(cfg.Artifact.Dir), cfg.Artifact.Dir,
+			cfg.Artifact.MaxSizeMB, cfg.Artifact.TenantQuotaMB)
+		log.Printf("artifact store enabled: dir=%s max_size_mb=%d tenant_quota_mb=%d",
+			cfg.Artifact.Dir, cfg.Artifact.MaxSizeMB, cfg.Artifact.TenantQuotaMB)
+	} else {
+		artifactH = handler.NewArtifactHandler(nil, "", cfg.Artifact.MaxSizeMB, cfg.Artifact.TenantQuotaMB)
+	}
+
+	mux := newRouter(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, artifactH, wsH, sseH, progressH, a2aGw, acpGw, mcpGw, dlqH, catalogH, apiKeyH, policyH, budgetH)
 
 	// Orchestration probes and the Prometheus scrape stay unauthenticated:
 	// health checkers and scrapers cannot present API keys, and blocking them

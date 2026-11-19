@@ -21,7 +21,7 @@ import (
 // with a scope guard carrying the entry's scope. Undefined path shapes match
 // no pattern and get ServeMux's 404 — no scope check, no handler.
 
-func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, wsH *handler.WebSocketHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
+func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, artifactH *handler.ArtifactHandler, wsH *handler.WebSocketHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, a2aGw http.Handler, acpGw http.Handler, mcpGw http.Handler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/ws", wsH.ServeHTTP)
@@ -48,7 +48,7 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 		}
 	})
 
-	handlers := tenantRouteHandlers(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, sseH, progressH, dlqH, catalogH, apiKeyH, policyH, budgetH)
+	handlers := tenantRouteHandlers(tenantH, agentH, taskH, mailboxH, dispatchH, auditH, approvalH, contextRefH, artifactH, sseH, progressH, dlqH, catalogH, apiKeyH, policyH, budgetH)
 	for _, rt := range auth.TenantRoutes {
 		target := rt.Method + " " + rt.Pattern
 		h, ok := handlers[target]
@@ -62,7 +62,7 @@ func newRouter(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, tas
 }
 
 // tenantRouteHandlers binds every route-table entry to its HTTP handler.
-func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) map[string]http.HandlerFunc {
+func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHandler, taskH *handler.TaskHandler, mailboxH *handler.MailboxHandler, dispatchH *handler.DispatchHandler, auditH *handler.AuditHandler, approvalH *handler.ApprovalHandler, contextRefH *handler.ContextRefHandler, artifactH *handler.ArtifactHandler, sseH *handler.SSEHandler, progressH *handler.ProgressHandler, dlqH *handler.DLQHandler, catalogH *handler.CatalogHandler, apiKeyH *handler.APIKeyHandler, policyH *handler.PolicyRuleHandler, budgetH *handler.BudgetHandler) map[string]http.HandlerFunc {
 	return map[string]http.HandlerFunc{
 		// tenant
 		"GET /v1/tenants/{tenantID}": tenantH.Get,
@@ -122,6 +122,10 @@ func tenantRouteHandlers(tenantH *handler.TenantHandler, agentH *handler.AgentHa
 		"GET /v1/tenants/{tenantID}/approvals/{approvalID}":          approvalH.Get,
 		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/approve": approvalH.Approve,
 		"POST /v1/tenants/{tenantID}/approvals/{approvalID}/reject":  approvalH.Reject,
+		// artifacts
+		"PUT /v1/tenants/{tenantID}/artifacts/{artifactID}":    artifactH.Upload,
+		"GET /v1/tenants/{tenantID}/artifacts/{artifactID}":    artifactH.Download,
+		"DELETE /v1/tenants/{tenantID}/artifacts/{artifactID}": artifactH.Delete,
 		// context refs
 		"POST /v1/tenants/{tenantID}/context-refs":               contextRefH.Attach,
 		"GET /v1/tenants/{tenantID}/context-refs/{refID}":        contextRefH.Get,

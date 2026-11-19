@@ -35,6 +35,7 @@ func newGuardTestRouter(svc *ga01TaskSvc) http.Handler {
 		nil, // auditH
 		nil, // approvalH
 		nil, // contextRefH
+		nil, // artifactH
 		nil, // wsH
 		nil, // sseH
 		nil, // progressH

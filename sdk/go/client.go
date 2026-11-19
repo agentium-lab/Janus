@@ -163,6 +163,52 @@ func (c *Client) RegisterAgent(ctx context.Context, req RegisterAgentRequest) er
 	return c.doPost(ctx, "/v1/tenants/"+c.tenantID+"/agents", req, nil)
 }
 
+// ArtifactInfo is the metadata returned by an artifact upload.
+type ArtifactInfo struct {
+	ID          string `json:"id"`
+	TenantID    string `json:"tenant_id"`
+	Hash        string `json:"hash"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"content_type"`
+}
+
+// UploadArtifact stores bytes in the tenant's local artifact store and
+// returns its sha256-backed metadata.
+func (c *Client) UploadArtifact(ctx context.Context, artifactID, contentType string, data []byte) (*ArtifactInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.baseURL+"/v1/tenants/"+c.tenantID+"/artifacts/"+artifactID, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	var info ArtifactInfo
+	if err := c.do(req, &info); err != nil {
+		return nil, err
+	}
+	return &info, nil
+}
+
+// DownloadArtifact fetches artifact bytes by ID.
+func (c *Client) DownloadArtifact(ctx context.Context, artifactID string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		c.baseURL+"/v1/tenants/"+c.tenantID+"/artifacts/"+artifactID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := c.do(req, &buf); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// DeleteArtifact removes an artifact from the tenant store.
+func (c *Client) DeleteArtifact(ctx context.Context, artifactID string) error {
+	return c.doWithBody(ctx, http.MethodDelete, "/v1/tenants/"+c.tenantID+"/artifacts/"+artifactID, nil, nil)
+}
+
 func (c *Client) ListAgents(ctx context.Context) ([]core.Agent, error) {
 	var resp struct {
 		Agents []core.Agent `json:"agents"`
