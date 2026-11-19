@@ -192,17 +192,14 @@ type fakeBudgetSvc struct {
 	gotRPM       int
 	gotTPM       int
 	gotMaxConc   int
-	gotDaily     float64
-	gotMonthly   float64
 }
 
-func (f *fakeBudgetSvc) Upsert(_ context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int, dailyCostUSD, monthlyCostUSD float64) (core.BudgetSpec, error) {
+func (f *fakeBudgetSvc) Upsert(_ context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int) (core.BudgetSpec, error) {
 	if f.upsertErr != nil {
 		return core.BudgetSpec{}, f.upsertErr
 	}
 	f.gotTenant, f.gotScopeType, f.gotScopeID = tenantID, scopeType, scopeID
 	f.gotRPM, f.gotTPM, f.gotMaxConc = rpm, tpm, maxConcurrency
-	f.gotDaily, f.gotMonthly = dailyCostUSD, monthlyCostUSD
 	return f.upsertd, nil
 }
 
@@ -225,7 +222,7 @@ func TestBudgetHandler_Upsert(t *testing.T) {
 	svc := &fakeBudgetSvc{upsertd: core.BudgetSpec{TenantID: "acme", ScopeType: "tenant", RPM: 100}}
 	h := NewBudgetHandler(svc)
 
-	body := `{"scope_type":"tenant","rpm":100,"tpm":1000,"max_concurrency":5,"daily_cost_usd":1.5,"monthly_cost_usd":30}`
+	body := `{"scope_type":"tenant","rpm":100,"tpm":1000,"max_concurrency":5}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/tenants/acme/budgets", strings.NewReader(body))
 	w := dispatchViaMux("POST /v1/tenants/{tenantID}/budgets", h.Upsert, req)
 
@@ -237,8 +234,6 @@ func TestBudgetHandler_Upsert(t *testing.T) {
 	assert.Equal(t, 100, svc.gotRPM)
 	assert.Equal(t, 1000, svc.gotTPM)
 	assert.Equal(t, 5, svc.gotMaxConc)
-	assert.Equal(t, 1.5, svc.gotDaily)
-	assert.Equal(t, 30.0, svc.gotMonthly)
 }
 
 func TestBudgetHandler_Upsert_BadJSON(t *testing.T) {

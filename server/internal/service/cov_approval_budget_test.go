@@ -127,27 +127,17 @@ func TestCov_BudgetReserve_RateLimiterBranches(t *testing.T) {
 	})
 }
 
-func TestCov_BudgetReserve_DailyUsageLookupError(t *testing.T) {
+func TestCov_BudgetReserve_CostLookupNeverHappens(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("tenant usage error", func(t *testing.T) {
-		repo := &mockBudgetRepo{budgets: map[string]*core.BudgetSpec{
-			"acme:tenant:acme": {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", DailyCostUSD: 5},
-		}}
-		svc := NewBudgetServiceWithUsage(repo, &cbBudgetUsage{dailyErr: errors.New("usage db down")})
-		err := svc.Reserve(ctx, "acme", "a1", nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "usage db down")
-	})
-
-	t.Run("agent usage error", func(t *testing.T) {
+	// ADR-0002: admission no longer consults reported cost at all, so a
+	// broken usage ledger must not break dispatch either.
+	t.Run("usage ledger down still admits", func(t *testing.T) {
 		repo := &mockBudgetRepo{budgets: map[string]*core.BudgetSpec{
 			"acme:agent:a1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "a1", DailyCostUSD: 5},
 		}}
-		svc := NewBudgetServiceWithUsage(repo, &cbBudgetUsage{dailyErr: errors.New("usage db down")})
-		err := svc.Reserve(ctx, "acme", "a1", nil)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "usage db down")
+		svc := NewBudgetServiceWithUsage(repo, &cbBudgetUsage{reserveErr: nil})
+		require.NoError(t, svc.Reserve(ctx, "acme", "a1", nil))
 	})
 }
 

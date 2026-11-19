@@ -227,44 +227,14 @@ func (s *BudgetService) Reserve(ctx context.Context, tenantID, agentID string, b
 		}
 	}
 
+	// ADR-0002: token/cost numbers are agent-reported and untrusted — they
+	// are visibility only. Cost caps on budgets are ignored at admission
+	// (the June-era cost rejection here was removed 2026-11-19); the usage
+	// ledger below still reserves the concurrency slot, which IS
+	// broker-counted and enforceable.
 	if s.usageRepo == nil {
 		return nil
 	}
-
-	tenantBudget, tbErr := s.repo.Get(ctx, tenantID, core.BudgetScopeTenant, tenantID)
-	if tbErr != nil && !errors.Is(tbErr, pgx.ErrNoRows) {
-		return fmt.Errorf("tenant budget lookup: %w", tbErr)
-	}
-	if tenantBudget != nil && tenantBudget.DailyCostUSD > 0 {
-		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeTenant), tenantID)
-		if err != nil {
-			return err
-		}
-		if dailyCost >= tenantBudget.DailyCostUSD {
-			return &core.BackpressureError{
-				Reason:  core.ReasonDailyBudgetExceeded,
-				Message: fmt.Sprintf("tenant %s: daily cost $%.2f >= limit $%.2f", tenantID, dailyCost, tenantBudget.DailyCostUSD),
-			}
-		}
-	}
-
-	agentBudget, abErr := s.repo.Get(ctx, tenantID, core.BudgetScopeAgent, agentID)
-	if abErr != nil && !errors.Is(abErr, pgx.ErrNoRows) {
-		return fmt.Errorf("agent budget lookup: %w", abErr)
-	}
-	if agentBudget != nil && agentBudget.DailyCostUSD > 0 {
-		_, dailyCost, _, err := s.usageRepo.GetDailyUsage(ctx, tenantID, string(core.BudgetScopeAgent), agentID)
-		if err != nil {
-			return err
-		}
-		if dailyCost >= agentBudget.DailyCostUSD {
-			return &core.BackpressureError{
-				Reason:  core.ReasonDailyBudgetExceeded,
-				Message: fmt.Sprintf("agent %s: daily cost $%.2f >= limit $%.2f", agentID, dailyCost, agentBudget.DailyCostUSD),
-			}
-		}
-	}
-
 	return s.usageRepo.ReserveTask(ctx, tenantID, string(core.BudgetScopeAgent), agentID)
 }
 

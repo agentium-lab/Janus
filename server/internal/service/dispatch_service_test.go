@@ -741,7 +741,7 @@ func TestGenerateLeaseID(t *testing.T) {
 	assert.Len(t, id1, 20)
 }
 
-func TestDispatchService_PullTask_BudgetDenied_DelayedNACK(t *testing.T) {
+func TestDispatchService_PullTask_ReportedCostNeverDenies(t *testing.T) {
 	qDrv := &mockDispatchQueueDriver{}
 	tRepo := &mockDispatchTaskRepo{tasks: make(map[string]*core.Task)}
 	aRepo := &mockDispatchAttemptRepo{}
@@ -766,8 +766,10 @@ func TestDispatchService_PullTask_BudgetDenied_DelayedNACK(t *testing.T) {
 		{TaskID: "task-budget-deny", DeliveryRef: "ref-budget", Payload: []byte("{}")},
 	}
 
-	_, err := svc.PullTask(ctx, "acme", "mb-1", "agent-1")
-	assert.Error(t, err, "budget exceeded should return error")
-
-	assert.GreaterOrEqual(t, len(qDrv.events), 1, "budget.exceeded event should be published")
+	// ADR-0002 (2026-11-19): reported cost must never deny dispatch — the
+	// reported usage here sits 10000x above the cap, yet the claim proceeds.
+	res, err := svc.PullTask(ctx, "acme", "mb-1", "agent-1")
+	require.NoError(t, err, "cost cap on reported usage must not deny the claim")
+	assert.NotNil(t, res)
+	assert.Equal(t, "task-budget-deny", res.Task.ID)
 }

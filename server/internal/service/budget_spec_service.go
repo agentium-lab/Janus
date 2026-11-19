@@ -32,7 +32,7 @@ var validScopeTypes = map[string]core.BudgetScopeType{
 	"task":           core.BudgetScopeTask,
 }
 
-func (s *BudgetSpecService) Upsert(ctx context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int, dailyCostUSD, monthlyCostUSD float64) (core.BudgetSpec, error) {
+func (s *BudgetSpecService) Upsert(ctx context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int) (core.BudgetSpec, error) {
 	st, ok := validScopeTypes[scopeType]
 	if !ok {
 		return core.BudgetSpec{}, errors.New("unknown scope_type")
@@ -47,8 +47,6 @@ func (s *BudgetSpecService) Upsert(ctx context.Context, tenantID, scopeType, sco
 		RPM:            rpm,
 		TPM:            tpm,
 		MaxConcurrency: maxConcurrency,
-		DailyCostUSD:   dailyCostUSD,
-		MonthlyCostUSD: monthlyCostUSD,
 	}
 	return spec, s.repo.Upsert(ctx, spec)
 }

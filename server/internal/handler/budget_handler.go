@@ -8,7 +8,7 @@ import (
 )
 
 type BudgetSpecAdminService interface {
-	Upsert(ctx context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int, dailyCostUSD, monthlyCostUSD float64) (core.BudgetSpec, error)
+	Upsert(ctx context.Context, tenantID, scopeType, scopeID string, rpm, tpm, maxConcurrency int) (core.BudgetSpec, error)
 	Get(ctx context.Context, tenantID, scopeType, scopeID string) (*core.BudgetSpec, error)
 	List(ctx context.Context, tenantID string) ([]*core.BudgetSpec, error)
 }
@@ -27,8 +27,6 @@ type upsertBudgetReq struct {
 	RPM            int     `json:"rpm,omitempty"`
 	TPM            int     `json:"tpm,omitempty"`
 	MaxConcurrency int     `json:"max_concurrency,omitempty"`
-	DailyCostUSD   float64 `json:"daily_cost_usd,omitempty"`
-	MonthlyCostUSD float64 `json:"monthly_cost_usd,omitempty"`
 }
 
 func (h *BudgetHandler) Upsert(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +37,7 @@ func (h *BudgetHandler) Upsert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	spec, err := h.svc.Upsert(r.Context(), tenantID, req.ScopeType, req.ScopeID,
-		req.RPM, req.TPM, req.MaxConcurrency, req.DailyCostUSD, req.MonthlyCostUSD)
+		req.RPM, req.TPM, req.MaxConcurrency)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

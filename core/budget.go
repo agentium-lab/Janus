@@ -23,7 +23,8 @@ type BudgetSpec struct {
 	TPM            int             `json:"tpm,omitempty"`
 	MaxConcurrency int             `json:"max_concurrency,omitempty"`
 	// Self-reported observability only (ADR-0002): values come from agent ACKs
-	// and are never verified or enforced. Aggregation/display is fine; any
+	// and are never verified or enforced: no rejection path reads them (the
+	// June-era cost rejection was removed 2026-11-19, ADR-0002). Aggregation/display is fine; any
 	// rejection logic reading these fields is a design error.
 	DailyCostUSD   float64   `json:"daily_cost_usd,omitempty"`
 	MonthlyCostUSD float64   `json:"monthly_cost_usd,omitempty"`

@@ -60,13 +60,13 @@ func TestBudgetSpecService_UpsertValidation(t *testing.T) {
 	repo := &fakeBudgetSpecRepo{}
 	s := NewBudgetSpecService(repo)
 
-	if _, err := s.Upsert(context.Background(), "acme", "galaxy", "", 0, 0, 0, 0, 0); err == nil {
+	if _, err := s.Upsert(context.Background(), "acme", "galaxy", "", 0, 0, 0); err == nil {
 		t.Fatal("unknown scope_type must be rejected")
 	}
-	if _, err := s.Upsert(context.Background(), "acme", "agent", "", 0, 0, 0, 0, 0); err == nil {
+	if _, err := s.Upsert(context.Background(), "acme", "agent", "", 0, 0, 0); err == nil {
 		t.Fatal("non-tenant scope without scope_id must be rejected")
 	}
-	spec, err := s.Upsert(context.Background(), "acme", "tenant", "", 60, 100000, 4, 5, 50)
+	spec, err := s.Upsert(context.Background(), "acme", "tenant", "", 60, 100000, 4)
 	if err != nil {
 		t.Fatalf("tenant-scope upsert rejected: %v", err)
 	}

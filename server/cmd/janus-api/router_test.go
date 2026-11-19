@@ -41,7 +41,7 @@ func (fakeBudgetSvc) List(context.Context, string) ([]*core.BudgetSpec, error) {
 	return []*core.BudgetSpec{{ScopeID: "MARKER-BUDGET-LIST"}}, nil
 }
 
-func (fakeBudgetSvc) Upsert(context.Context, string, string, string, int, int, int, float64, float64) (core.BudgetSpec, error) {
+func (fakeBudgetSvc) Upsert(context.Context, string, string, string, int, int, int) (core.BudgetSpec, error) {
 	return core.BudgetSpec{ScopeID: "MARKER-BUDGET-UPSERT"}, nil
 }
 

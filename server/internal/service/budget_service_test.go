@@ -307,7 +307,11 @@ func TestBudgetService_Reserve_WithUsageRepo(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-func TestBudgetService_Reserve_DailyCostExceeded_Tenant(t *testing.T) {
+// ADR-0002: cost numbers are agent-reported and untrusted — admission
+// must NEVER reject on them, even when a budget carries a cost cap and
+// reported usage sits far above it. These tests pin the contract that the
+// June-era cost rejection (removed 2026-11-19) cannot come back silently.
+func TestBudgetService_Reserve_CostCapsNeverReject_Tenant(t *testing.T) {
 	repo := &mockBudgetRepo{
 		budgets: map[string]*core.BudgetSpec{
 			"acme:tenant:acme": {TenantID: "acme", ScopeType: core.BudgetScopeTenant, ScopeID: "acme", DailyCostUSD: 10.0},
@@ -315,16 +319,12 @@ func TestBudgetService_Reserve_DailyCostExceeded_Tenant(t *testing.T) {
 	}
 	usageRepo := &mockBudgetUsageRepo{dailyCost: 15.0}
 	svc := NewBudgetServiceWithUsage(repo, usageRepo)
-	ctx := context.Background()
 
-	err := svc.Reserve(ctx, "acme", "agent-1", nil)
-	require.Error(t, err)
-	var bpErr *core.BackpressureError
-	require.ErrorAs(t, err, &bpErr)
-	assert.Equal(t, core.ReasonDailyBudgetExceeded, bpErr.Reason)
+	err := svc.Reserve(context.Background(), "acme", "agent-1", nil)
+	require.NoError(t, err, "reported cost above a cap must not reject admission")
 }
 
-func TestBudgetService_Reserve_DailyCostExceeded_Agent(t *testing.T) {
+func TestBudgetService_Reserve_CostCapsNeverReject_Agent(t *testing.T) {
 	repo := &mockBudgetRepo{
 		budgets: map[string]*core.BudgetSpec{
 			"acme:agent:agent-1": {TenantID: "acme", ScopeType: core.BudgetScopeAgent, ScopeID: "agent-1", DailyCostUSD: 5.0},
@@ -332,13 +332,9 @@ func TestBudgetService_Reserve_DailyCostExceeded_Agent(t *testing.T) {
 	}
 	usageRepo := &mockBudgetUsageRepo{dailyCost: 8.0}
 	svc := NewBudgetServiceWithUsage(repo, usageRepo)
-	ctx := context.Background()
 
-	err := svc.Reserve(ctx, "acme", "agent-1", nil)
-	require.Error(t, err)
-	var bpErr *core.BackpressureError
-	require.ErrorAs(t, err, &bpErr)
-	assert.Equal(t, core.ReasonDailyBudgetExceeded, bpErr.Reason)
+	err := svc.Reserve(context.Background(), "acme", "agent-1", nil)
+	require.NoError(t, err, "reported cost above a cap must not reject admission")
 }
 
 func TestBudgetService_Reserve_ReserveError(t *testing.T) {
